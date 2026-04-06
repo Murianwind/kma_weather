@@ -24,9 +24,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ("초미세먼지", "pm25Value", "µg/m³", SensorDeviceClass.PM25, "pm25"),
         ("초미세먼지등급", "pm25Grade", None, None, "pm25_grade"),
         ("현재날씨", "current_condition_kor", None, None, "current_weather"),
+        # [수정] 풍속 자동 변환을 막기 위해 DeviceClass를 제거하고 순수 m/s 문자열 사용
         ("현재풍속", "WSD", "m/s", None, "current_wind_speed"), 
         ("현재풍향", "VEC_KOR", None, None, "current_wind_direction"),
-        # [추가] 업데이트 시간을 확인하는 센서
         ("업데이트 시간", "updated_at", None, SensorDeviceClass.TIMESTAMP, "last_updated"),
     ]
     
@@ -64,18 +64,17 @@ class KMACustomSensor(SensorEntity):
         if val is None or str(val).strip() == "" or str(val).strip() == "-":
             return None
             
-        # [방어] TIMESTAMP 센서는 문자열 그대로 반환하지 않고 datetime 형식으로 파싱
         if self._attr_device_class == SensorDeviceClass.TIMESTAMP:
             try: return datetime.fromisoformat(str(val))
-            except: return val
+            except Exception: return val
             
         if self._attr_device_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
             try: return int(float(val))
-            except: return None
+            except Exception: return None
             
-        if self._attr_device_class in [SensorDeviceClass.PM10, SensorDeviceClass.PM25, SensorDeviceClass.WIND_SPEED]:
+        if self._attr_device_class in [SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
             try: return float(val)
-            except: return None
+            except Exception: return None
 
         return val
 
