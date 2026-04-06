@@ -4,7 +4,7 @@ import aiohttp
 import math
 from datetime import datetime, timedelta
 from urllib.parse import quote
-import pytz
+from zoneinfo import ZoneInfo
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ class KMAWeatherAPI:
         self.air_key = api_key
         self.reg_id_temp = reg_id_temp
         self.reg_id_land = reg_id_land
-        self.tz = pytz.timezone("Asia/Seoul")
+        self.tz = ZoneInfo("Asia/Seoul")
         self.lat = self.lon = self.nx = self.ny = None
 
     def _wgs84_to_tm(self, lat, lon):
