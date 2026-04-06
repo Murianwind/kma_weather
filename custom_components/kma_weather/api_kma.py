@@ -125,6 +125,7 @@ class KMAWeatherAPI:
         
         weather_data["rain_start_time"] = rain_start
         weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
+        weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
         return {"weather": weather_data, "air": air_data or {}}
 
     def _get_condition(self, s, p):
