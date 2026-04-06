@@ -15,7 +15,7 @@
 
 ### 방법 1: HACS (권장)
 1. **HACS > Integrations > 우측 상단 메뉴 > Custom repositories** 선택.
-2. 본 저장소 URL(`https://github.com/murianwind/kma_weather`)을 입력하고 Category를 **Integration**으로 선택하여 추가합니다.
+2. 본 저장소 URL(<a href="https://github.com/murianwind/kma_weather" target="_blank">https://github.com/murianwind/kma_weather</a>)을 입력하고 Category를 **Integration**으로 선택하여 추가합니다.
 3. 목록에서 **기상청 스마트 날씨 (KMA Weather Smart)**를 찾아 설치합니다.
 4. Home Assistant를 **재시작**합니다.
 
@@ -27,16 +27,16 @@
 ## ⚙️ 설정 가이드
 
 ### 1. API 키 신청 (필수)
-아래 3개 항목을 [공공데이터포털](https://www.data.go.kr/)에서 신청하고 **일반 인증키(Encoding)**를 준비하세요.
-1. [기상청 단기예보](https://www.data.go.kr/data/15084084/openapi.do)
-2. [기상청 중기예보](https://www.data.go.kr/data/15059468/openapi.do)
-3. [에어코리아 대기오염](https://www.data.go.kr/data/15073861/openapi.do)
+아래 3개 항목을 [공공데이터포털](https://www.data.go.kr/)에서 신청하고 **일반 인증키(Encoding)**를 준비하세요. (링크 클릭 시 새 창에서 열립니다.)
+1. <a href="https://www.data.go.kr/data/15084084/openapi.do" target="_blank">기상청 단기예보 신청하기</a>
+2. <a href="https://www.data.go.kr/data/15059468/openapi.do" target="_blank">기상청 중기예보 신청하기</a>
+3. <a href="https://www.data.go.kr/data/15073861/openapi.do" target="_blank">에어코리아 대기오염 신청하기</a>
 
 ### 2. 통합구성요소 추가
 1. **설정 > 기기 및 서비스 > 통합구성요소 추가**에서 `기상청 스마트 날씨`를 검색합니다.
 2. **인증키**: 복사한 Encoding 키를 입력합니다.
 3. **위치 선택**: 고정된 `Zone` 또는 이동 중인 `device_tracker`를 선택합니다.
-4. **Prefix**: 센서 ID 앞에 붙을 영문(예: `home`, `car`)을 입력합니다. (비워둘 시 기본값 사용)
+4. **Prefix**: 센서 ID 앞에 붙을 영문(예: `home`, `car`)을 입력합니다.
 
 ## 📊 제공 엔티티 (Prefix: home 기준 예시)
 
