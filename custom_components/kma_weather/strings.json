@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "기상청 스마트 날씨 설정",
+        "description": "기상청 및 에어코리아 API 키를 입력해주세요. [공공데이터포털](https://www.data.go.kr/)에서 신청 가능합니다.\n\n위치 소스를 선택하면 해당 위치의 날씨를 자동으로 추적합니다.",
+        "data": {
+          "kma_api_key": "기상청 단기예보 API 키",
+          "air_api_key": "에어코리아 API 키",
+          "location_type": "위치 추적 방식",
+          "zone_id": "대상 Zone (고정)",
+          "mobile_device_id": "모바일 기기 센서 (이동)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "연결에 실패했습니다.",
+      "invalid_auth": "API 키가 유효하지 않습니다.",
+      "unknown": "알 수 없는 오류가 발생했습니다."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "location_type": "위치 추적 방식",
+          "zone_id": "대상 Zone (고정)",
+          "mobile_device_id": "모바일 기기 센서 (이동)"
+        }
+      }
+    }
+  }
+}
