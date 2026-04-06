@@ -9,6 +9,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     sensor_map = [
         ("현재온도", "TMP", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "current_temperature"),
+        # [추가] 체감온도 센서
+        ("현재체감온도", "apparent_temp", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "apparent_temperature"),
         ("현재습도", "REH", "%", SensorDeviceClass.HUMIDITY, "current_humidity"),
         ("강수확률", "POP", "%", None, "precipitation_probability"),
         ("내일오전날씨", "weather_am_tomorrow", None, None, "tomorrow_am_weather"),
@@ -41,58 +43,26 @@ class KMACustomSensor(SensorEntity):
         self._attr_name = name
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = dev_class
-        
         prefix = entry.data.get(CONF_PREFIX, "kma").lower()
         self.entity_id = f"sensor.{prefix}_{intuitive_id}"
         self._attr_unique_id = f"{entry.entry_id}_{intuitive_id}"
-        
-        # [수정] 기기 정보에 제조사와 모델명 추가
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.title,
-            "manufacturer": "Murianwind",
-            "model": "integration"
-        }
-        
+        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title, "manufacturer": "Murianwind", "model": "integration"}
         if dev_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
-            self._attr_suggested_display_precision = 0
+            self._attr_suggested_display_precision = 1 if key == "apparent_temp" else 0
 
     @property
     def native_value(self):
         d = self.coordinator.data
         if not d: return None
-        
-        if self._key in ["pm10Value", "pm10Grade", "pm25Value", "pm25Grade"]:
-            val = d.get("air", {}).get(self._key)
-        else:
-            val = d.get("weather", {}).get(self._key)
-            
-        if val is None or str(val).strip() == "" or str(val).strip() == "-":
-            return None
-            
+        val = d.get("air", {}).get(self._key) if self._key.startswith("pm") else d.get("weather", {}).get(self._key)
+        if val is None or str(val).strip() in ["", "-"]: return None
         if self._attr_device_class == SensorDeviceClass.TIMESTAMP:
             try: return datetime.fromisoformat(str(val))
-            except Exception: return val
-            
-        if self._attr_device_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
-            try: return int(float(val))
-            except Exception: return None
-            
-        if self._attr_device_class in [SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
-            try: return float(val)
-            except Exception: return None
-
+            except: return val
+        if self._attr_device_class == SensorDeviceClass.TEMPERATURE:
+            try: return float(val) if self._key == "apparent_temp" else int(float(val))
+            except: return None
         return val
-
-    @property
-    def extra_state_attributes(self):
-        attrs = {}
-        if self._key == "location_weather":
-            data = self.coordinator.data
-            if data and "weather" in data:
-                attrs["Latitude"] = data["weather"].get("latitude")
-                attrs["Longitude"] = data["weather"].get("longitude")
-        return attrs
 
 class APIExpirationSensor(SensorEntity):
     _attr_has_entity_name = True
@@ -102,13 +72,6 @@ class APIExpirationSensor(SensorEntity):
         self.entity_id = f"sensor.{prefix}_api_expiration_days"
         self._attr_name = "API 인증키 남은 일수"
         self._attr_unique_id = f"{entry.entry_id}_api_expiry"
-        
-        # [수정] 기기 정보에 제조사와 모델명 추가
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.title,
-            "manufacturer": "Murianwind",
-            "model": "integration"
-        }
+        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title, "manufacturer": "Murianwind", "model": "integration"}
     @property
     def native_value(self): return 730
