@@ -41,12 +41,21 @@ class KMACustomSensor(SensorEntity):
         self._attr_device_class = dev_class
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
+        
+        # [해결 3] 온도 및 습도 센서는 무조건 소수점 없이 정수로만 표시
+        if dev_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
+            self._attr_suggested_display_precision = 0
 
     @property
     def native_value(self):
         d = self.coordinator.data
         if not d: return None
-        val = d.get("air", {}).get(self._key) if "pm" in self._key else d.get("weather", {}).get(self._key)
+        
+        # [해결 1] "pm" 텍스트 포함 여부가 아닌 정확한 키 이름으로 미세먼지 식별
+        if self._key in ["pm10Value", "pm10Grade", "pm25Value", "pm25Grade"]:
+            val = d.get("air", {}).get(self._key)
+        else:
+            val = d.get("weather", {}).get(self._key)
         
         if self._attr_device_class == SensorDeviceClass.TEMPERATURE and val is not None:
             try: return int(float(val))
@@ -56,7 +65,6 @@ class KMACustomSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        """[수정] 현재위치 센서의 경우 Latitude와 Longitude를 속성으로 추가"""
         attrs = {}
         if self._key == "location_weather":
             data = self.coordinator.data
