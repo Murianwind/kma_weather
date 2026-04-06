@@ -1,6 +1,7 @@
 """Sensor platform for KMA Weather."""
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.const import UnitOfTemperature
+from datetime import datetime
 from .const import DOMAIN, CONF_PREFIX
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -25,6 +26,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ("현재날씨", "current_condition_kor", None, None, "current_weather"),
         ("현재풍속", "WSD", "m/s", None, "current_wind_speed"), 
         ("현재풍향", "VEC_KOR", None, None, "current_wind_direction"),
+        # [추가] 업데이트 시간을 확인하는 센서
+        ("업데이트 시간", "updated_at", None, SensorDeviceClass.TIMESTAMP, "last_updated"),
     ]
     
     entities = [KMACustomSensor(coordinator, entry, *s) for s in sensor_map]
@@ -58,9 +61,13 @@ class KMACustomSensor(SensorEntity):
         else:
             val = d.get("weather", {}).get(self._key)
             
-        # [핵심 방어] 데이터가 비어있으면 문자열 대신 무조건 None 반환 (Crash 방지)
         if val is None or str(val).strip() == "" or str(val).strip() == "-":
             return None
+            
+        # [방어] TIMESTAMP 센서는 문자열 그대로 반환하지 않고 datetime 형식으로 파싱
+        if self._attr_device_class == SensorDeviceClass.TIMESTAMP:
+            try: return datetime.fromisoformat(str(val))
+            except: return val
             
         if self._attr_device_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
             try: return int(float(val))
