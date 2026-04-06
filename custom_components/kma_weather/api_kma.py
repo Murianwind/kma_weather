@@ -22,7 +22,6 @@ class KMAApiClient:
         
         weather = self._merge_forecasts(short_term, mid_land, mid_ta, now)
         
-        # [수정] 체감온도 계산 후 즉시 정수로 변환하여 소수점 발생 원천 차단
         apparent = self._calculate_apparent_temp(
             weather.get("TMP"), weather.get("REH"), weather.get("WSD")
         )
@@ -83,9 +82,10 @@ class KMAApiClient:
     def _merge_forecasts(self, short, mid_l, mid_t, now):
         daily_raw = short.pop("daily_raw", {})
         today_str = now.strftime('%Y%m%d')
-        tom_str = (now + timedelta(days=1)).strftime('%Y%m%d')
         
-        if tom_str in daily_raw and daily_raw[tom_str]['tmps']:
+        # 내일 데이터 보정
+        tom_str = (now + timedelta(days=1)).strftime('%Y%m%d')
+        if tom_str in daily_raw:
             short["TMX_tomorrow"] = int(float(short.get(f"TMX_{tom_str}", max(daily_raw[tom_str]['tmps']))))
             short["TMN_tomorrow"] = int(float(short.get(f"TMN_{tom_str}", min(daily_raw[tom_str]['tmps']))))
             short["weather_am_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['am'].get('SKY'), daily_raw[tom_str]['am'].get('PTY'))
@@ -100,21 +100,31 @@ class KMAApiClient:
         short["VEC_KOR"] = self._get_wind_dir(short.get("VEC"))
         
         daily, twice = [], []
+
         for i in range(11):
             dt_obj = now + timedelta(days=i)
             dt_str = dt_obj.strftime('%Y%m%d')
+            
+            # [수정] datetime 생성 시 주간(09:00), 야간(21:00)을 명시하여 정렬 꼬임 방지
+            dt_am = dt_obj.replace(hour=9, minute=0, second=0, microsecond=0)
+            dt_pm = dt_obj.replace(hour=21, minute=0, second=0, microsecond=0)
+
             if i <= 3 and dt_str in daily_raw:
                 d = daily_raw[dt_str]
                 daily.append({
-                    "datetime": dt_obj.isoformat(),
+                    "datetime": dt_obj.replace(hour=12).isoformat(), # 일별 예보는 낮 12시 기준
                     "native_temperature": int(max(d['tmps'])),
                     "native_templow": int(min(d['tmps'])),
                     "condition": self._get_condition(d['pm'].get('SKY','1'), d['pm'].get('PTY','0')),
                     "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                 })
+                # [수정] 주간(am)을 무조건 먼저 넣고 야간(pm)을 넣음
+                # 현재 시간이 오후여도 '주간' 데이터를 리스트에 포함시켜야 카드 정렬이 유지됨
                 for p in ["am", "pm"]:
+                    p_dt = dt_am if p == "am" else dt_pm
                     twice.append({
-                        "datetime": dt_obj.isoformat(), "is_daytime": (p == "pm"),
+                        "datetime": p_dt.isoformat(),
+                        "is_daytime": (p == "am"), # 주간이 True
                         "condition": self._get_condition(d[p].get('SKY','1'), d[p].get('PTY','0')),
                         "native_temperature": int(max(d['tmps'])) if p == "pm" else int(min(d['tmps'])),
                         "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
@@ -122,16 +132,22 @@ class KMAApiClient:
             elif mid_l.get(f"wf{i}") or mid_l.get(f"wf{i}Am"):
                 wf_am, wf_pm = mid_l.get(f"wf{i}Am", mid_l.get(f"wf{i}")), mid_l.get(f"wf{i}Pm", mid_l.get(f"wf{i}"))
                 t_max, t_min = int(float(mid_t.get(f"taMax{i}", 0))), int(float(mid_t.get(f"taMin{i}", 0)))
+                
                 daily.append({
-                    "datetime": dt_obj.isoformat(), "native_temperature": t_max, "native_templow": t_min,
-                    "condition": self._mid_wf_to_condition(wf_pm), "precipitation_probability": int(mid_l.get(f"rnSt{i}Pm", 0))
+                    "datetime": dt_obj.replace(hour=12).isoformat(),
+                    "native_temperature": t_max, "native_templow": t_min,
+                    "condition": self._mid_wf_to_condition(wf_pm),
+                    "precipitation_probability": int(mid_l.get(f"rnSt{i}Pm", 0))
                 })
+                # 중기 예보도 주간(09시), 야간(21시)으로 타임스탬프 고정
                 twice.append({
-                    "datetime": dt_obj.isoformat(), "is_daytime": False, "condition": self._mid_wf_to_condition(wf_am),
+                    "datetime": dt_am.isoformat(), "is_daytime": True,
+                    "condition": self._mid_wf_to_condition(wf_am),
                     "native_temperature": t_min, "precipitation_probability": int(mid_l.get(f"rnSt{i}Am", 0))
                 })
                 twice.append({
-                    "datetime": dt_obj.isoformat(), "is_daytime": True, "condition": self._mid_wf_to_condition(wf_pm),
+                    "datetime": dt_pm.isoformat(), "is_daytime": False,
+                    "condition": self._mid_wf_to_condition(wf_pm),
                     "native_temperature": t_max, "precipitation_probability": int(mid_l.get(f"rnSt{i}Pm", 0))
                 })
 
