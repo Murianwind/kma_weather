@@ -8,6 +8,8 @@ CONF_LOCATION_ENTITY: Final = "location_entity"
 CONF_REG_ID_TEMP: Final = "reg_id_temp"
 CONF_REG_ID_LAND: Final = "reg_id_land"
 CONF_PREFIX: Final = "prefix"
+CONF_APPLY_DATE: Final = "apply_date"    # API 신청일
+CONF_EXPIRE_DATE: Final = "expire_date"  # API 만료예정일
 
 def convert_grid(lat, lon):
     """위경도 -> 기상청 격자(nx, ny) 변환"""
