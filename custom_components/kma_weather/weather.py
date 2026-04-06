@@ -5,7 +5,7 @@ from homeassistant.components.weather import (
     Forecast,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import UnitOfTemperature, UnitOfSpeed
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -22,7 +22,11 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
     """Representation of KMA Weather."""
     _attr_has_entity_name = True
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_native_speed_unit = "m/s" 
+    
+    # [해결] 백엔드에서 규격에 맞는 m/s 단위를 선언.
+    # 만약 HA UI에서 여전히 km/h로 나온다면, 날씨 카드의 톱니바퀴를 눌러 직접 m/s로 변경해야 합니다.
+    _attr_native_speed_unit = UnitOfSpeed.METERS_PER_SECOND 
+    
     _attr_native_pressure_unit = "hPa"
     _attr_native_precipitation_unit = "mm"
     
@@ -30,12 +34,9 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
-        
-        # [핵심] Weather 엔티티도 Prefix를 사용하여 ID 강제
         prefix = entry.data.get(CONF_PREFIX, "kma").lower()
         self.entity_id = f"weather.{prefix}_weather_summary"
         self._attr_unique_id = f"{entry.entry_id}_weather"
-        
         self._attr_name = "날씨 요약"
         self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
 
