@@ -41,7 +41,8 @@ class KMACustomSensor(SensorEntity):
     def native_value(self):
         d = self.coordinator.data
         if not d: return None
-        return d["air"].get(self._key) if "pm" in self._key else d["weather"].get(self._key)
+        val = d["air"].get(self._key) if "pm" in self._key else d["weather"].get(self._key)
+        return val if val is not None else "알 수 없음"
 
 class APIExpirationSensor(SensorEntity):
     _attr_has_entity_name = True
