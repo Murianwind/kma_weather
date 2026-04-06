@@ -40,13 +40,45 @@
 
 ## 📊 제공 엔티티 (Prefix: home 기준 예시)
 
-| 엔티티 ID | 이름 | 비고 |
+## 📊 제공 엔티티 목록 (Prefix: `home` 기준 예시)
+
+### 🌡️ 기온 및 하늘 상태
+| 엔티티 ID | 이름 | 특징 |
 | :--- | :--- | :--- |
-| `weather.home_weather_summary` | 날씨 요약 | 10일치 예보 포함 |
+| `sensor.home_current_temperature` | 현재 온도 | 현재 기온 (정수 표기, °C) |
+| `sensor.home_today_high_temperature` | 최고 온도 | 오늘 예상 최고 기온 |
+| `sensor.home_today_low_temperature` | 최저 온도 | 오늘 예상 최저 기온 |
+| `sensor.home_tomorrow_high_temperature` | 내일 최고 온도 | 내일 예상 최고 기온 |
+| `sensor.home_tomorrow_low_temperature` | 내일 최저 온도 | 내일 예상 최저 기온 |
+| `sensor.home_current_weather` | 현재 날씨 | 한글 상태 (예: 맑음, 흐림) |
+| `sensor.home_tomorrow_am_weather` | 내일 오전 날씨 | 내일 오전 하늘 상태 |
+| `sensor.home_tomorrow_pm_weather` | 내일 오후 날씨 | 내일 오후 하늘 상태 |
+
+### 🌧️ 강수 및 습도/바람
+| 엔티티 ID | 이름 | 특징 |
+| :--- | :--- | :--- |
+| `sensor.home_precipitation_probability` | 강수 확률 | 현재 위치 강수 확률 (%) |
+| `sensor.home_rain_start_time` | 비 시작 시간 | "비안옴" 또는 시작 시각 표기 |
+| `sensor.home_current_humidity` | 현재 습도 | 상대 습도 (%) |
+| `sensor.home_current_wind_speed` | 현재 풍속 | 기상청 원본 데이터 (m/s) |
+| `sensor.home_current_wind_direction` | 현재 풍향 | 한글 방위 (예: 북서풍) |
+
+### 😷 미세먼지 (에어코리아)
+| 엔티티 ID | 이름 | 특징 |
+| :--- | :--- | :--- |
+| `sensor.home_pm10` | 미세먼지 | PM10 농도 및 등급 |
+| `sensor.home_pm25` | 초미세먼지 | PM2.5 농도 및 등급 |
+| `sensor.home_pm10_grade` | 미세먼지 등급 | 한글 등급 (예: 좋음, 보통) |
+| `sensor.home_pm25_grade` | 초미세먼지 등급 | 한글 등급 (예: 좋음, 보통) |
+
+### 🏠 위치 및 시스템
+| 엔티티 ID | 이름 | 특징 |
+| :--- | :--- | :--- |
+| `weather.home_weather_summary` | 날씨 요약 | 10일 상세 예보 카드 |
 | `sensor.home_current_location` | 현재 위치 | 행정구역 동/읍/면 표기 |
-| `sensor.home_today_high_temperature` | 최고 온도 | 정수 표기 (15 °C) |
-| `sensor.home_rain_start_time` | 비 시작 시간 | "비안옴" 또는 시작 시각 |
-| `button.home_manual_update` | 수동 업데이트 | 이동 기기 전용 버튼 |
+| `sensor.home_last_updated` | 업데이트 시간 | 데이터 최종 수신 시각 |
+| `sensor.home_api_expiration_days` | API 남은 일수 | 인증키 만료 관리 센서 |
+| `button.home_manual_update` | 수동 업데이트 | **이동 기기 전용** 즉시 갱신 버튼 |
 
 ## 🛠️ 기기 정보
 * **제조사**: Murianwind
