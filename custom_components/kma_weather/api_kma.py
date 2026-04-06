@@ -22,7 +22,7 @@ class KMAApiClient:
         
         weather = self._merge_forecasts(short_term, mid_land, mid_ta, now)
         
-        # [수정] 체감온도 계산 결과를 int()로 감싸 정수로 변환
+        # [수정] 체감온도 계산 후 즉시 정수로 변환하여 소수점 발생 원천 차단
         apparent = self._calculate_apparent_temp(
             weather.get("TMP"), weather.get("REH"), weather.get("WSD")
         )
@@ -50,9 +50,7 @@ class KMAApiClient:
         base_h = max([h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= now.hour], default=2)
         url = f"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?serviceKey={self.api_key}&dataType=JSON&numOfRows=1000&base_date={today_str}&base_time={base_h:02d}00&nx={nx}&ny={ny}"
         
-        data = {"rain_start_time": "비안옴"}
-        daily_raw = {}
-
+        data, daily_raw = {"rain_start_time": "비안옴"}, {}
         try:
             async with self.session.get(url, timeout=15) as resp:
                 res = await resp.json()
@@ -85,73 +83,59 @@ class KMAApiClient:
     def _merge_forecasts(self, short, mid_l, mid_t, now):
         daily_raw = short.pop("daily_raw", {})
         today_str = now.strftime('%Y%m%d')
-        
         tom_str = (now + timedelta(days=1)).strftime('%Y%m%d')
+        
         if tom_str in daily_raw and daily_raw[tom_str]['tmps']:
-            short["TMX_tomorrow"] = short.get(f"TMX_{tom_str}", max(daily_raw[tom_str]['tmps']))
-            short["TMN_tomorrow"] = short.get(f"TMN_{tom_str}", min(daily_raw[tom_str]['tmps']))
+            short["TMX_tomorrow"] = int(float(short.get(f"TMX_{tom_str}", max(daily_raw[tom_str]['tmps']))))
+            short["TMN_tomorrow"] = int(float(short.get(f"TMN_{tom_str}", min(daily_raw[tom_str]['tmps']))))
             short["weather_am_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['am'].get('SKY'), daily_raw[tom_str]['am'].get('PTY'))
             short["weather_pm_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['pm'].get('SKY'), daily_raw[tom_str]['pm'].get('PTY'))
 
-        # 모든 온도 데이터를 정수(int)로 변환하여 할당
-        short["TMX_today"] = int(float(short.get(f"TMX_{today_str}", max(daily_raw[today_str]['tmps'])))) if today_str in daily_raw else None
-        short["TMN_today"] = int(float(short.get(f"TMN_{today_str}", min(daily_raw[today_str]['tmps'])))) if today_str in daily_raw else None
+        if today_str in daily_raw:
+            short["TMX_today"] = int(float(short.get(f"TMX_{today_str}", max(daily_raw[today_str]['tmps']))))
+            short["TMN_today"] = int(float(short.get(f"TMN_{today_str}", min(daily_raw[today_str]['tmps']))))
         
         short["current_condition_kor"] = self._sky_to_kor(short.get("SKY"), short.get("PTY"))
         short["current_condition"] = self._get_condition(short.get("SKY"), short.get("PTY"))
         short["VEC_KOR"] = self._get_wind_dir(short.get("VEC"))
         
         daily, twice = [], []
-
         for i in range(11):
             dt_obj = now + timedelta(days=i)
             dt_str = dt_obj.strftime('%Y%m%d')
-            
             if i <= 3 and dt_str in daily_raw:
                 d = daily_raw[dt_str]
                 daily.append({
                     "datetime": dt_obj.isoformat(),
-                    "native_temperature": int(max(d['tmps'])) if d['tmps'] else None,
-                    "native_templow": int(min(d['tmps'])) if d['tmps'] else None,
+                    "native_temperature": int(max(d['tmps'])),
+                    "native_templow": int(min(d['tmps'])),
                     "condition": self._get_condition(d['pm'].get('SKY','1'), d['pm'].get('PTY','0')),
                     "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                 })
                 for p in ["am", "pm"]:
                     twice.append({
-                        "datetime": dt_obj.isoformat(),
-                        "is_daytime": (p == "pm"),
+                        "datetime": dt_obj.isoformat(), "is_daytime": (p == "pm"),
                         "condition": self._get_condition(d[p].get('SKY','1'), d[p].get('PTY','0')),
                         "native_temperature": int(max(d['tmps'])) if p == "pm" else int(min(d['tmps'])),
                         "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                     })
             elif mid_l.get(f"wf{i}") or mid_l.get(f"wf{i}Am"):
-                wf_am = mid_l.get(f"wf{i}Am", mid_l.get(f"wf{i}"))
-                wf_pm = mid_l.get(f"wf{i}Pm", mid_l.get(f"wf{i}"))
-                t_max = int(float(mid_t.get(f"taMax{i}", 0)))
-                t_min = int(float(mid_t.get(f"taMin{i}", 0)))
-                pop_am = int(mid_l.get(f"rnSt{i}Am", 0))
-                pop_pm = int(mid_l.get(f"rnSt{i}Pm", 0))
-
+                wf_am, wf_pm = mid_l.get(f"wf{i}Am", mid_l.get(f"wf{i}")), mid_l.get(f"wf{i}Pm", mid_l.get(f"wf{i}"))
+                t_max, t_min = int(float(mid_t.get(f"taMax{i}", 0))), int(float(mid_t.get(f"taMin{i}", 0)))
                 daily.append({
-                    "datetime": dt_obj.isoformat(),
-                    "native_temperature": t_max,
-                    "native_templow": t_min,
-                    "condition": self._mid_wf_to_condition(wf_pm),
-                    "precipitation_probability": max(pop_am, pop_pm)
+                    "datetime": dt_obj.isoformat(), "native_temperature": t_max, "native_templow": t_min,
+                    "condition": self._mid_wf_to_condition(wf_pm), "precipitation_probability": int(mid_l.get(f"rnSt{i}Pm", 0))
                 })
                 twice.append({
-                    "datetime": dt_obj.isoformat(), "is_daytime": False,
-                    "condition": self._mid_wf_to_condition(wf_am),
-                    "native_temperature": t_min, "precipitation_probability": pop_am
+                    "datetime": dt_obj.isoformat(), "is_daytime": False, "condition": self._mid_wf_to_condition(wf_am),
+                    "native_temperature": t_min, "precipitation_probability": int(mid_l.get(f"rnSt{i}Am", 0))
                 })
                 twice.append({
-                    "datetime": dt_obj.isoformat(), "is_daytime": True,
-                    "condition": self._mid_wf_to_condition(wf_pm),
-                    "native_temperature": t_max, "precipitation_probability": pop_pm
+                    "datetime": dt_obj.isoformat(), "is_daytime": True, "condition": self._mid_wf_to_condition(wf_pm),
+                    "native_temperature": t_max, "precipitation_probability": int(mid_l.get(f"rnSt{i}Pm", 0))
                 })
 
-        short["forecast_daily"] = daily
-        short["forecast_twice_daily"] = twice
+        short["forecast_daily"], short["forecast_twice_daily"] = daily, twice
         return short
 
     def _sky_to_kor(self, s, p):
