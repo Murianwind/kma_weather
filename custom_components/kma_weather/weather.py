@@ -10,11 +10,12 @@ class KMAWeatherEntity(WeatherEntity):
     _attr_has_entity_name = True
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_native_speed_unit = UnitOfSpeed.METERS_PER_SECOND
+    _attr_native_pressure_unit = "hPa"
     _attr_native_precipitation_unit = "mm"
-    _attr_supported_features = WeatherEntityFeature.FORECAST_DAILY
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
+        self.coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_weather"
         self._attr_name = "날씨 요약"
         self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
@@ -25,17 +26,16 @@ class KMAWeatherEntity(WeatherEntity):
 
     @property
     def native_temperature(self):
-        try: return float(self.coordinator.data.get("weather", {}).get("TMP", 0))
-        except: return 0.0
+        return self.coordinator.data.get("weather", {}).get("TMP")
 
     @property
-    def extra_state_attributes(self):
-        w = self.coordinator.data.get("weather", {})
-        return {
-            "today_max": w.get("TMX_today"),
-            "today_min": w.get("TMN_today"),
-            "tomorrow_am": w.get("weather_am_tomorrow"),
-            "tomorrow_pm": w.get("weather_pm_tomorrow"),
-            "location": w.get("location_weather"),
-            "attribution": "기상청 및 에어코리아 API",
-        }
+    def native_humidity(self):
+        return self.coordinator.data.get("weather", {}).get("REH")
+
+    @property
+    def native_wind_speed(self):
+        return self.coordinator.data.get("weather", {}).get("WSD")
+
+    @property
+    def wind_bearing(self):
+        return self.coordinator.data.get("weather", {}).get("VEC_KOR")
