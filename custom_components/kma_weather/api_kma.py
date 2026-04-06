@@ -20,7 +20,7 @@ class KMAApiClient:
         mid_land, mid_ta = await self._get_mid_term(now)
         air = await self._get_air_quality(lat, lon)
         
-        # [핵심] 10일치 전체 기간에 대해 daily와 twice 데이터를 모두 생성
+        # 병합 로직 호출
         weather = self._merge_forecasts(short_term, mid_land, mid_ta, now)
         
         weather["apparent_temp"] = self._calculate_apparent_temp(
@@ -85,7 +85,7 @@ class KMAApiClient:
         daily_raw = short.pop("daily_raw", {})
         today_str = now.strftime('%Y%m%d')
         
-        # 내일 온도 보정
+        # 내일 온도 보정 (기존 기능 유지)
         tom_str = (now + timedelta(days=1)).strftime('%Y%m%d')
         if tom_str in daily_raw and daily_raw[tom_str]['tmps']:
             short["TMX_tomorrow"] = short.get(f"TMX_{tom_str}", max(daily_raw[tom_str]['tmps']))
@@ -102,13 +102,13 @@ class KMAApiClient:
         
         daily, twice = [], []
 
-        # 0일부터 10일까지 루프 (목요일 및 매일 2회 10일치 보장)
+        # [핵심 수정] 0~10일 전체 루프 및 단기/중기 전환 시점(4일차) 최적화
         for i in range(11):
             dt_obj = now + timedelta(days=i)
             dt_str = dt_obj.strftime('%Y%m%d')
             
-            # 1. 단기 예보 영역 (0~3일차)
-            if dt_str in daily_raw:
+            # 1. 단기 예보 영역 (0일차~3일차: 월, 화, 수, 목)
+            if i <= 3 and dt_str in daily_raw:
                 d = daily_raw[dt_str]
                 daily.append({
                     "datetime": dt_obj.isoformat(),
@@ -126,7 +126,7 @@ class KMAApiClient:
                         "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                     })
             
-            # 2. 중기 예보 영역 (4~10일차)
+            # 2. 중기 예보 영역 (4일차~10일차: 금요일부터 시작)
             elif mid_l.get(f"wf{i}") or mid_l.get(f"wf{i}Am"):
                 wf_am = mid_l.get(f"wf{i}Am", mid_l.get(f"wf{i}"))
                 wf_pm = mid_l.get(f"wf{i}Pm", mid_l.get(f"wf{i}"))
@@ -135,7 +135,6 @@ class KMAApiClient:
                 pop_am = int(mid_l.get(f"rnSt{i}Am", 0))
                 pop_pm = int(mid_l.get(f"rnSt{i}Pm", 0))
 
-                # 매일 예보 추가
                 daily.append({
                     "datetime": dt_obj.isoformat(),
                     "native_temperature": t_max,
@@ -143,17 +142,16 @@ class KMAApiClient:
                     "condition": self._mid_wf_to_condition(wf_pm),
                     "precipitation_probability": max(pop_am, pop_pm)
                 })
-                # [수정] 중기 데이터도 '매일 2회' 리스트에 추가 (이 부분이 빠져서 5일치만 나왔던 것임)
                 twice.append({
                     "datetime": dt_obj.isoformat(),
-                    "is_daytime": False, # 오전
+                    "is_daytime": False,
                     "condition": self._mid_wf_to_condition(wf_am),
                     "native_temperature": t_min,
                     "precipitation_probability": pop_am
                 })
                 twice.append({
                     "datetime": dt_obj.isoformat(),
-                    "is_daytime": True, # 오후
+                    "is_daytime": True,
                     "condition": self._mid_wf_to_condition(wf_pm),
                     "native_temperature": t_max,
                     "precipitation_probability": pop_pm
