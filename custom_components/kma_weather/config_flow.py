@@ -1,8 +1,7 @@
-"""Config flow for KMA Weather."""
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers import selector
-from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX
+from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX, CONF_APPLY_DATE, CONF_EXPIRE_DATE
 
 class KMAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
@@ -21,7 +20,33 @@ class KMAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_LOCATION_ENTITY): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["zone", "device_tracker"])
                 ),
-                # 기본값(default)을 제거하여 완전한 빈칸으로 시작되도록 수정
                 vol.Required(CONF_PREFIX): str,
+                # [7번] 신청일/만료일 (YYYY-MM-DD 형식)
+                vol.Optional(CONF_APPLY_DATE): str,
+                vol.Optional(CONF_EXPIRE_DATE): str,
+            })
+        )
+
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        return KMAOptionsFlow(config_entry)
+
+class KMAOptionsFlow(config_entries.OptionsFlow):
+    """[7번] 만료일 수정용 Options Flow"""
+    def __init__(self, config_entry):
+        self.config_entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current_apply = self.config_entry.options.get(CONF_APPLY_DATE) or self.config_entry.data.get(CONF_APPLY_DATE, "")
+        current_expire = self.config_entry.options.get(CONF_EXPIRE_DATE) or self.config_entry.data.get(CONF_EXPIRE_DATE, "")
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Optional(CONF_APPLY_DATE, default=current_apply): str,
+                vol.Optional(CONF_EXPIRE_DATE, default=current_expire): str,
             })
         )
