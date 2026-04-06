@@ -1,109 +1,90 @@
-from homeassistant.components.weather import WeatherEntity, ForecastMode
+"""Weather platform for KMA Weather."""
+from homeassistant.components.weather import (
+    WeatherEntity,
+    WeatherEntityFeature,
+    Forecast,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfTemperature
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.const import UnitOfTemperature, UnitOfSpeed
-from homeassistant.helpers.entity import DeviceInfo
 from .const import DOMAIN, CONF_PREFIX
 
-async def async_setup_entry(hass, entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up KMA Weather entity."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([KMAWeatherEntity(coordinator, entry)])
 
 class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
+    """Representation of KMA Weather."""
+    _attr_has_entity_name = True
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_native_wind_speed_unit = "m/s" 
+    _attr_native_pressure_unit = "hPa"
+    _attr_native_precipitation_unit = "mm"
+    
+    _attr_supported_features = WeatherEntityFeature.FORECAST_DAILY | WeatherEntityFeature.FORECAST_TWICE_DAILY
+
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
-        self._entry = entry
         prefix = entry.data.get(CONF_PREFIX, "kma").lower()
-        self.entity_id = f"weather.{prefix}_weather"
-        self._attr_name = entry.title
+        self.entity_id = f"weather.{prefix}_weather_summary"
         self._attr_unique_id = f"{entry.entry_id}_weather"
-        self._attr_native_temperature_unit = UnitOfTemperature.CELSIUS
-        self._attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="Murianwind",
-            model="integration",
-        )
+        self._attr_name = "날씨 요약"
+        
+        # [수정] 기기 정보에 제조사와 모델명 추가
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": entry.title,
+            "manufacturer": "Murianwind",
+            "model": "integration"
+        }
 
     @property
     def condition(self):
-        if not self.coordinator.data: return None
-        return self.coordinator.data["weather"].get("current_condition")
+        return self.coordinator.data.get("weather", {}).get("current_condition")
 
     @property
     def native_temperature(self):
-        if not self.coordinator.data: return None
-        val = self.coordinator.data["weather"].get("TMP")
-        return float(val) if val is not None else None
+        try: return int(float(self.coordinator.data.get("weather", {}).get("TMP", 0)))
+        except Exception: return None
 
     @property
-    def humidity(self):
-        if not self.coordinator.data: return None
-        val = self.coordinator.data["weather"].get("REH")
-        return float(val) if val is not None else None
+    def native_humidity(self):
+        try: return int(float(self.coordinator.data.get("weather", {}).get("REH", 0)))
+        except Exception: return None
 
     @property
     def native_wind_speed(self):
-        if not self.coordinator.data: return None
-        val = self.coordinator.data["weather"].get("WSD")
-        return float(val) if val is not None else None
-
-    async def async_get_forecasts(self, forecast_type):
-        if not self.coordinator.data: return []
-        if forecast_type == ForecastMode.DAILY:
-            return self.coordinator.data["weather"].get("forecast_daily", [])
-        return []from homeassistant.components.weather import WeatherEntity, ForecastMode
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.const import UnitOfTemperature, UnitOfSpeed
-from homeassistant.helpers.entity import DeviceInfo
-from .const import DOMAIN, CONF_PREFIX
-
-async def async_setup_entry(hass, entry, async_add_entities):
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([KMAWeatherEntity(coordinator, entry)])
-
-class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator)
-        self._entry = entry
-        prefix = entry.data.get(CONF_PREFIX, "kma").lower()
-        self.entity_id = f"weather.{prefix}_weather"
-        self._attr_name = entry.title
-        self._attr_unique_id = f"{entry.entry_id}_weather"
-        self._attr_native_temperature_unit = UnitOfTemperature.CELSIUS
-        self._attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="Murianwind",
-            model="integration",
-        )
+        try: return float(self.coordinator.data.get("weather", {}).get("WSD", 0))
+        except Exception: return None
 
     @property
-    def condition(self):
-        if not self.coordinator.data: return None
-        return self.coordinator.data["weather"].get("current_condition")
+    def wind_bearing(self):
+        return self.coordinator.data.get("weather", {}).get("VEC_KOR")
+
+    async def async_forecast_daily(self) -> list[Forecast] | None:
+        return self.coordinator.data.get("weather", {}).get("forecast_daily", [])
+
+    async def async_forecast_twice_daily(self) -> list[Forecast] | None:
+        return self.coordinator.data.get("weather", {}).get("forecast_twice_daily", [])
 
     @property
-    def native_temperature(self):
-        if not self.coordinator.data: return None
-        val = self.coordinator.data["weather"].get("TMP")
-        return float(val) if val is not None else None
-
-    @property
-    def humidity(self):
-        if not self.coordinator.data: return None
-        val = self.coordinator.data["weather"].get("REH")
-        return float(val) if val is not None else None
-
-    @property
-    def native_wind_speed(self):
-        if not self.coordinator.data: return None
-        val = self.coordinator.data["weather"].get("WSD")
-        return float(val) if val is not None else None
-
-    async def async_get_forecasts(self, forecast_type):
-        if not self.coordinator.data: return []
-        if forecast_type == ForecastMode.DAILY:
-            return self.coordinator.data["weather"].get("forecast_daily", [])
-        return []
+    def extra_state_attributes(self):
+        """기상청 및 대기질 추가 속성 노출"""
+        if not self.coordinator.data:
+            return None
+            
+        w = self.coordinator.data.get("weather", {})
+        air = self.coordinator.data.get("air", {})
+        
+        return {
+            "rain_start_time": w.get("rain_start_time"),
+            "pm10": air.get("pm10Value"),
+            "pm25": air.get("pm25Value"),
+            "station": air.get("station"),
+            "attribution": "기상청 및 에어코리아 API",
+        }
