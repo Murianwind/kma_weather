@@ -6,7 +6,6 @@ from .const import DOMAIN
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     
-    # 총 18개의 센서 (기존 16개 + 현재온/습도 추가)
     sensor_map = [
         ("현재온도", "TMP", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
         ("현재습도", "REH", "%", SensorDeviceClass.HUMIDITY),
@@ -24,7 +23,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ("초미세먼지", "pm25Value", "㎍/㎥", SensorDeviceClass.PM25),
         ("초미세먼지등급", "pm25Grade", None, None),
         ("현재날씨", "current_condition_kor", None, None),
-        ("현재풍속", "WSD", "m/s", SensorDeviceClass.WIND_SPEED),
+        # [해결 2] 기기 클래스(SensorDeviceClass)를 None으로 지정하여 km/h 강제 변환 방지
+        ("현재풍속", "WSD", "m/s", None), 
         ("현재풍향", "VEC_KOR", None, None),
     ]
     
