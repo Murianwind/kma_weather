@@ -17,7 +17,6 @@ XO = 43
 YO = 136
 
 def convert_grid(lat, lon):
-    """위경도를 기상청 격자 좌표로 변환"""
     import math
     PI = math.pi
     DEGRAD = PI / 180.0
