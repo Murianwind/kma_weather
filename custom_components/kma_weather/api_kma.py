@@ -20,12 +20,13 @@ class KMAApiClient:
         mid_land, mid_ta = await self._get_mid_term(now)
         air = await self._get_air_quality(lat, lon)
         
-        # 병합 로직 호출
         weather = self._merge_forecasts(short_term, mid_land, mid_ta, now)
         
-        weather["apparent_temp"] = self._calculate_apparent_temp(
+        # [수정] 체감온도 계산 결과를 int()로 감싸 정수로 변환
+        apparent = self._calculate_apparent_temp(
             weather.get("TMP"), weather.get("REH"), weather.get("WSD")
         )
+        weather["apparent_temp"] = int(float(apparent)) if apparent is not None else None
         
         weather["location_weather"] = await self._get_address(lat, lon)
         weather["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -37,11 +38,11 @@ class KMAApiClient:
             t, rh = float(temp), float(reh)
             v = float(wsd) * 3.6
             if t <= 10 and v >= 4.68:
-                return round(13.12 + 0.6215 * t - 11.37 * (v**0.16) + 0.3965 * t * (v**0.16), 1)
+                return 13.12 + 0.6215 * t - 11.37 * (v**0.16) + 0.3965 * t * (v**0.16)
             if t >= 18:
                 tw = t * math.atan(0.151977 * (rh + 8.313595)**0.5) + math.atan(t + rh) - math.atan(rh - 1.676331) + 0.00391838 * (rh**1.5) * math.atan(0.023101 * rh) - 4.686035
-                return round(-0.25 + 1.04 * tw + 0.65, 1)
-            return round(t, 1)
+                return -0.25 + 1.04 * tw + 0.65
+            return t
         except: return temp
 
     async def _get_short_term(self, nx, ny, now):
@@ -85,7 +86,6 @@ class KMAApiClient:
         daily_raw = short.pop("daily_raw", {})
         today_str = now.strftime('%Y%m%d')
         
-        # 내일 온도 보정 (기존 기능 유지)
         tom_str = (now + timedelta(days=1)).strftime('%Y%m%d')
         if tom_str in daily_raw and daily_raw[tom_str]['tmps']:
             short["TMX_tomorrow"] = short.get(f"TMX_{tom_str}", max(daily_raw[tom_str]['tmps']))
@@ -93,8 +93,9 @@ class KMAApiClient:
             short["weather_am_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['am'].get('SKY'), daily_raw[tom_str]['am'].get('PTY'))
             short["weather_pm_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['pm'].get('SKY'), daily_raw[tom_str]['pm'].get('PTY'))
 
-        short["TMX_today"] = short.get(f"TMX_{today_str}", max(daily_raw[today_str]['tmps']) if today_str in daily_raw else None)
-        short["TMN_today"] = short.get(f"TMN_{today_str}", min(daily_raw[today_str]['tmps']) if today_str in daily_raw else None)
+        # 모든 온도 데이터를 정수(int)로 변환하여 할당
+        short["TMX_today"] = int(float(short.get(f"TMX_{today_str}", max(daily_raw[today_str]['tmps'])))) if today_str in daily_raw else None
+        short["TMN_today"] = int(float(short.get(f"TMN_{today_str}", min(daily_raw[today_str]['tmps'])))) if today_str in daily_raw else None
         
         short["current_condition_kor"] = self._sky_to_kor(short.get("SKY"), short.get("PTY"))
         short["current_condition"] = self._get_condition(short.get("SKY"), short.get("PTY"))
@@ -102,18 +103,16 @@ class KMAApiClient:
         
         daily, twice = [], []
 
-        # [핵심 수정] 0~10일 전체 루프 및 단기/중기 전환 시점(4일차) 최적화
         for i in range(11):
             dt_obj = now + timedelta(days=i)
             dt_str = dt_obj.strftime('%Y%m%d')
             
-            # 1. 단기 예보 영역 (0일차~3일차: 월, 화, 수, 목)
             if i <= 3 and dt_str in daily_raw:
                 d = daily_raw[dt_str]
                 daily.append({
                     "datetime": dt_obj.isoformat(),
-                    "native_temperature": float(max(d['tmps'])) if d['tmps'] else None,
-                    "native_templow": float(min(d['tmps'])) if d['tmps'] else None,
+                    "native_temperature": int(max(d['tmps'])) if d['tmps'] else None,
+                    "native_templow": int(min(d['tmps'])) if d['tmps'] else None,
                     "condition": self._get_condition(d['pm'].get('SKY','1'), d['pm'].get('PTY','0')),
                     "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                 })
@@ -122,16 +121,14 @@ class KMAApiClient:
                         "datetime": dt_obj.isoformat(),
                         "is_daytime": (p == "pm"),
                         "condition": self._get_condition(d[p].get('SKY','1'), d[p].get('PTY','0')),
-                        "native_temperature": float(max(d['tmps'])) if p == "pm" else float(min(d['tmps'])),
+                        "native_temperature": int(max(d['tmps'])) if p == "pm" else int(min(d['tmps'])),
                         "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                     })
-            
-            # 2. 중기 예보 영역 (4일차~10일차: 금요일부터 시작)
             elif mid_l.get(f"wf{i}") or mid_l.get(f"wf{i}Am"):
                 wf_am = mid_l.get(f"wf{i}Am", mid_l.get(f"wf{i}"))
                 wf_pm = mid_l.get(f"wf{i}Pm", mid_l.get(f"wf{i}"))
-                t_max = float(mid_t.get(f"taMax{i}", 0))
-                t_min = float(mid_t.get(f"taMin{i}", 0))
+                t_max = int(float(mid_t.get(f"taMax{i}", 0)))
+                t_min = int(float(mid_t.get(f"taMin{i}", 0)))
                 pop_am = int(mid_l.get(f"rnSt{i}Am", 0))
                 pop_pm = int(mid_l.get(f"rnSt{i}Pm", 0))
 
@@ -143,18 +140,14 @@ class KMAApiClient:
                     "precipitation_probability": max(pop_am, pop_pm)
                 })
                 twice.append({
-                    "datetime": dt_obj.isoformat(),
-                    "is_daytime": False,
+                    "datetime": dt_obj.isoformat(), "is_daytime": False,
                     "condition": self._mid_wf_to_condition(wf_am),
-                    "native_temperature": t_min,
-                    "precipitation_probability": pop_am
+                    "native_temperature": t_min, "precipitation_probability": pop_am
                 })
                 twice.append({
-                    "datetime": dt_obj.isoformat(),
-                    "is_daytime": True,
+                    "datetime": dt_obj.isoformat(), "is_daytime": True,
                     "condition": self._mid_wf_to_condition(wf_pm),
-                    "native_temperature": t_max,
-                    "precipitation_probability": pop_pm
+                    "native_temperature": t_max, "precipitation_probability": pop_pm
                 })
 
         short["forecast_daily"] = daily
