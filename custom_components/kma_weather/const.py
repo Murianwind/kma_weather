@@ -5,6 +5,7 @@ DOMAIN: Final = "kma_weather"
 
 CONF_API_KEY: Final = "api_key"
 CONF_LOCATION_ENTITY: Final = "location_entity"
+CONF_PREFIX: Final = "prefix" # 엔티티 ID 생성을 위한 Prefix 추가
 
 # 기상청 LCC 격자 변환 상수
 RE = 6371.00877
