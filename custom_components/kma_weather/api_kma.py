@@ -103,7 +103,6 @@ class KMAApiClient:
         except Exception as e:
             _LOGGER.error("단기예보 API 호출 실패: %s", e)
 
-        # [해결 4] TMX/TMN 방어 로직 강화 (None일 경우 0이 아니라 대기하도록 처리)
         keys_to_cache = ["TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow", "weather_am_tomorrow", "weather_pm_tomorrow"]
         for k in keys_to_cache:
             if k in data: self._cache[k] = data[k]
@@ -171,7 +170,6 @@ class KMAApiClient:
             if d_info['pm']:
                 twice.append({"datetime": f"{dt_str}T15:00:00+09:00", "is_daytime": False, "condition": self._get_condition(d_info['pm'].get('SKY', '1'), d_info['pm'].get('PTY', '0')), "native_temperature": int(float(d_info['pm'].get('TMP', t_max))), "native_precipitation_probability": int(d_info['pm'].get('POP', 0))})
 
-        # [해결 2] 중기예보(3~10일)에서도 매일 2회(AM/PM) 예보를 twice 배열에 추가
         if mid_land and mid_ta:
             for i in range(3, 11):
                 d_str = (now + timedelta(days=i)).strftime("%Y%m%d")
@@ -180,35 +178,43 @@ class KMAApiClient:
                 t_max = mid_ta.get(f"taMax{i}")
                 t_min = mid_ta.get(f"taMin{i}")
                 
+                # [해결] 기상청에서 해당일(예: 목요일) 데이터를 비웠을 경우 강제로 다음날 온도 빌려오기 (건너뜀 방지)
+                if t_max is None or str(t_max).strip() == "": t_max = mid_ta.get(f"taMax{i+1}", 20)
+                if t_min is None or str(t_min).strip() == "": t_min = mid_ta.get(f"taMin{i+1}", 10)
+                
+                try:
+                    t_max_val = int(float(t_max))
+                    t_min_val = int(float(t_min))
+                except:
+                    t_max_val, t_min_val = 20, 10
+                
                 wf_pm = mid_land.get(f"wf{i}Pm", mid_land.get(f"wf{i}", "맑음"))
                 pop_pm = mid_land.get(f"rnSt{i}Pm", mid_land.get(f"rnSt{i}", 0))
                 wf_am = mid_land.get(f"wf{i}Am", mid_land.get(f"wf{i}", "맑음"))
                 pop_am = mid_land.get(f"rnSt{i}Am", mid_land.get(f"rnSt{i}", 0))
 
-                if t_max is not None and t_min is not None:
-                    daily.append({
-                        "datetime": f"{dt_str}T12:00:00+09:00",
-                        "condition": self._map_mid_sky(str(wf_pm)),
-                        "native_temperature": int(t_max),
-                        "native_templow": int(t_min),
-                        "native_precipitation_probability": int(pop_pm) if pop_pm else 0,
-                    })
+                daily.append({
+                    "datetime": f"{dt_str}T12:00:00+09:00",
+                    "condition": self._map_mid_sky(str(wf_pm)),
+                    "native_temperature": t_max_val,
+                    "native_templow": t_min_val,
+                    "native_precipitation_probability": int(pop_pm) if pop_pm else 0,
+                })
 
-                    # 매일 2회 배열에 추가
-                    twice.append({
-                        "datetime": f"{dt_str}T09:00:00+09:00",
-                        "is_daytime": True,
-                        "condition": self._map_mid_sky(str(wf_am)),
-                        "native_temperature": int(t_min), # 오전 기온은 최저기온으로 대체
-                        "native_precipitation_probability": int(pop_am) if pop_am else 0,
-                    })
-                    twice.append({
-                        "datetime": f"{dt_str}T15:00:00+09:00",
-                        "is_daytime": False,
-                        "condition": self._map_mid_sky(str(wf_pm)),
-                        "native_temperature": int(t_max), # 오후 기온은 최고기온으로 대체
-                        "native_precipitation_probability": int(pop_pm) if pop_pm else 0,
-                    })
+                twice.append({
+                    "datetime": f"{dt_str}T09:00:00+09:00",
+                    "is_daytime": True,
+                    "condition": self._map_mid_sky(str(wf_am)),
+                    "native_temperature": t_min_val, 
+                    "native_precipitation_probability": int(pop_am) if pop_am else 0,
+                })
+                twice.append({
+                    "datetime": f"{dt_str}T15:00:00+09:00",
+                    "is_daytime": False,
+                    "condition": self._map_mid_sky(str(wf_pm)),
+                    "native_temperature": t_max_val, 
+                    "native_precipitation_probability": int(pop_pm) if pop_pm else 0,
+                })
 
         short_term["forecast_daily"] = daily
         short_term["forecast_twice_daily"] = twice
