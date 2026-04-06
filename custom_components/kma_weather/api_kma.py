@@ -16,15 +16,14 @@ class KMAApiClient:
         nx, ny = convert_grid(lat, lon)
         now = datetime.now()
         
-        # 1. 원천 데이터 수집
         short_term = await self._get_short_term(nx, ny, now)
         mid_land, mid_ta = await self._get_mid_term(now)
         air = await self._get_air_quality(lat, lon)
         
-        # 2. 데이터 병합 (기존의 완벽했던 병합 로직 복원)
+        # 데이터 병합 (목요일 공백 및 매일 2회 로직 포함)
         weather = self._merge_forecasts(short_term, mid_land, mid_ta, now)
         
-        # 3. 체감온도 계산 (기존 기온/습도/풍속 데이터 활용)
+        # 지능형 체감온도 산출
         weather["apparent_temp"] = self._calculate_apparent_temp(
             weather.get("TMP"), weather.get("REH"), weather.get("WSD")
         )
@@ -35,7 +34,6 @@ class KMAApiClient:
         return {"weather": weather, "air": air}
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
-        """계절별 체감온도 공식 적용"""
         try:
             t, rh = float(temp), float(reh)
             v = float(wsd) * 3.6
@@ -48,13 +46,12 @@ class KMAApiClient:
         except: return temp
 
     async def _get_short_term(self, nx, ny, now):
-        """단기예보 수집 및 텍스트 변환 (복원됨)"""
         today_str = now.strftime('%Y%m%d')
         base_h = max([h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= now.hour], default=2)
         url = f"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?serviceKey={self.api_key}&dataType=JSON&numOfRows=1000&base_date={today_str}&base_time={base_h:02d}00&nx={nx}&ny={ny}"
         
         data = {"rain_start_time": "비안옴"}
-        daily_raw = {} # 날씨 요약 생성을 위한 날짜별 묶음
+        daily_raw = {}
 
         try:
             async with self.session.get(url, timeout=15) as resp:
@@ -62,31 +59,20 @@ class KMAApiClient:
                 items = res['response']['body']['items']['item']
                 for it in items:
                     cat, val, dt, tm = it['category'], it['fcstValue'], it['fcstDate'], it['fcstTime']
-                    
                     if dt not in daily_raw: daily_raw[dt] = {'am': {}, 'pm': {}, 'tmps': [], 'pops': []}
                     if cat == 'TMP': daily_raw[dt]['tmps'].append(float(val))
                     if cat == 'POP': daily_raw[dt]['pops'].append(int(val))
                     if tm == '0900': daily_raw[dt]['am'][cat] = val
                     if tm == '1500': daily_raw[dt]['pm'][cat] = val
-                    
                     if dt == today_str and cat not in data: data[cat] = val
                     if cat == 'TMX': data[f"TMX_{dt}"] = val
                     if cat == 'TMN': data[f"TMN_{dt}"] = val
-
-            # 내일 날씨 텍스트 명시적 저장
-            tom_str = (now + timedelta(days=1)).strftime('%Y%m%d')
-            if tom_str in daily_raw:
-                data['weather_am_tomorrow'] = self._sky_to_kor(daily_raw[tom_str]['am'].get('SKY'), daily_raw[tom_str]['am'].get('PTY'))
-                data['weather_pm_tomorrow'] = self._sky_to_kor(daily_raw[tom_str]['pm'].get('SKY'), daily_raw[tom_str]['pm'].get('PTY'))
-
-        except Exception as e:
-            _LOGGER.error("단기예보 로드 실패: %s", e)
+        except Exception as e: _LOGGER.error("단기예보 로드 실패: %s", e)
             
         data["daily_raw"] = daily_raw
         return data
 
     async def _get_mid_term(self, now):
-        """중기예보 수집 로직 복원"""
         try:
             base = (now if now.hour >= 6 else now - timedelta(days=1)).strftime("%Y%m%d") + ("1800" if now.hour < 6 or now.hour >= 18 else "0600")
             l_url = f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst?serviceKey={self.api_key}&dataType=JSON&regId=11B00000&tmFc={base}"
@@ -98,11 +84,17 @@ class KMAApiClient:
         except: return {}, {}
 
     def _merge_forecasts(self, short, mid_l, mid_t, now):
-        """날씨 요약 카드(매일/매일 2회) 로직 완전 복원"""
         daily_raw = short.pop("daily_raw", {})
         today_str = now.strftime('%Y%m%d')
         
-        # 기본 센서 데이터 매핑
+        # [수정] 내일 온도 알 수 없음 방지 로직
+        tom_str = (now + timedelta(days=1)).strftime('%Y%m%d')
+        if tom_str in daily_raw:
+            short["TMX_tomorrow"] = short.get(f"TMX_{tom_str}", max(daily_raw[tom_str]['tmps']) if daily_raw[tom_str]['tmps'] else None)
+            short["TMN_tomorrow"] = short.get(f"TMN_{tom_str}", min(daily_raw[tom_str]['tmps']) if daily_raw[tom_str]['tmps'] else None)
+            short["weather_am_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['am'].get('SKY'), daily_raw[tom_str]['am'].get('PTY'))
+            short["weather_pm_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['pm'].get('SKY'), daily_raw[tom_str]['pm'].get('PTY'))
+
         short["TMX_today"] = short.get(f"TMX_{today_str}", max(daily_raw[today_str]['tmps']) if today_str in daily_raw else None)
         short["TMN_today"] = short.get(f"TMN_{today_str}", min(daily_raw[today_str]['tmps']) if today_str in daily_raw else None)
         
@@ -112,34 +104,31 @@ class KMAApiClient:
         
         daily, twice = [], []
 
-        # 1. 단기 예보 기반 리스트 생성 (1~3일차)
-        for i in range(3):
+        # 1. 단기 및 중기 전수 병합 (목요일 누락 방지)
+        for i in range(11):
             dt_obj = now + timedelta(days=i)
             dt_str = dt_obj.strftime('%Y%m%d')
+            
             if dt_str in daily_raw:
                 d = daily_raw[dt_str]
-                # 매일 예보
                 daily.append({
                     "datetime": dt_obj.isoformat(),
-                    "native_temperature": max(d['tmps']) if d['tmps'] else None,
-                    "native_templow": min(d['tmps']) if d['tmps'] else None,
+                    "native_temperature": float(max(d['tmps'])) if d['tmps'] else None,
+                    "native_templow": float(min(d['tmps'])) if d['tmps'] else None,
                     "condition": self._get_condition(d['pm'].get('SKY','1'), d['pm'].get('PTY','0')),
-                    "native_precipitation_probability": max(d['pops']) if d['pops'] else 0
+                    "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                 })
-                # 매일 2회 예보
+                # [수정] 매일 2회 표준 규격 반영
                 for p in ["am", "pm"]:
                     twice.append({
                         "datetime": dt_obj.isoformat(),
+                        "is_daytime": (p == "pm"),
                         "condition": self._get_condition(d[p].get('SKY','1'), d[p].get('PTY','0')),
-                        "native_temperature": max(d['tmps']) if p == "pm" else min(d['tmps']),
-                        "precipitation_probability": max(d['pops']) if d['pops'] else 0
+                        "native_temperature": float(max(d['tmps'])) if p == "pm" else float(min(d['tmps'])),
+                        "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                     })
-
-        # 2. 중기 예보 기반 리스트 확장 (4~10일차)
-        for i in range(3, 11):
-            dt_obj = now + timedelta(days=i)
-            wf = mid_l.get(f"wf{i}", mid_l.get(f"wf{i}Am"))
-            if wf:
+            elif mid_l.get(f"wf{i}") or mid_l.get(f"wf{i}Am"):
+                wf = mid_l.get(f"wf{i}", mid_l.get(f"wf{i}Am"))
                 daily.append({
                     "datetime": dt_obj.isoformat(),
                     "native_temperature": float(mid_t.get(f"taMax{i}", 0)),
@@ -172,6 +161,7 @@ class KMAApiClient:
         except: return "정보없음"
 
     async def _get_air_quality(self, lat, lon):
+        grade_map = {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우 나쁨"}
         return {"pm10Value": "35", "pm10Grade": "보통", "pm25Value": "18", "pm25Grade": "좋음"}
 
     async def _get_address(self, lat, lon):
