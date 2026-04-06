@@ -20,10 +20,9 @@ class KMAApiClient:
         mid_land, mid_ta = await self._get_mid_term(now)
         air = await self._get_air_quality(lat, lon)
         
-        # 데이터 병합 (목요일 공백 및 매일 2회 로직 포함)
+        # [핵심] 10일치 전체 기간에 대해 daily와 twice 데이터를 모두 생성
         weather = self._merge_forecasts(short_term, mid_land, mid_ta, now)
         
-        # 지능형 체감온도 산출
         weather["apparent_temp"] = self._calculate_apparent_temp(
             weather.get("TMP"), weather.get("REH"), weather.get("WSD")
         )
@@ -68,7 +67,6 @@ class KMAApiClient:
                     if cat == 'TMX': data[f"TMX_{dt}"] = val
                     if cat == 'TMN': data[f"TMN_{dt}"] = val
         except Exception as e: _LOGGER.error("단기예보 로드 실패: %s", e)
-            
         data["daily_raw"] = daily_raw
         return data
 
@@ -87,11 +85,11 @@ class KMAApiClient:
         daily_raw = short.pop("daily_raw", {})
         today_str = now.strftime('%Y%m%d')
         
-        # [수정] 내일 온도 알 수 없음 방지 로직
+        # 내일 온도 보정
         tom_str = (now + timedelta(days=1)).strftime('%Y%m%d')
-        if tom_str in daily_raw:
-            short["TMX_tomorrow"] = short.get(f"TMX_{tom_str}", max(daily_raw[tom_str]['tmps']) if daily_raw[tom_str]['tmps'] else None)
-            short["TMN_tomorrow"] = short.get(f"TMN_{tom_str}", min(daily_raw[tom_str]['tmps']) if daily_raw[tom_str]['tmps'] else None)
+        if tom_str in daily_raw and daily_raw[tom_str]['tmps']:
+            short["TMX_tomorrow"] = short.get(f"TMX_{tom_str}", max(daily_raw[tom_str]['tmps']))
+            short["TMN_tomorrow"] = short.get(f"TMN_{tom_str}", min(daily_raw[tom_str]['tmps']))
             short["weather_am_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['am'].get('SKY'), daily_raw[tom_str]['am'].get('PTY'))
             short["weather_pm_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['pm'].get('SKY'), daily_raw[tom_str]['pm'].get('PTY'))
 
@@ -104,11 +102,12 @@ class KMAApiClient:
         
         daily, twice = [], []
 
-        # 1. 단기 및 중기 전수 병합 (목요일 누락 방지)
+        # 0일부터 10일까지 루프 (목요일 및 매일 2회 10일치 보장)
         for i in range(11):
             dt_obj = now + timedelta(days=i)
             dt_str = dt_obj.strftime('%Y%m%d')
             
+            # 1. 단기 예보 영역 (0~3일차)
             if dt_str in daily_raw:
                 d = daily_raw[dt_str]
                 daily.append({
@@ -118,7 +117,6 @@ class KMAApiClient:
                     "condition": self._get_condition(d['pm'].get('SKY','1'), d['pm'].get('PTY','0')),
                     "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                 })
-                # [수정] 매일 2회 표준 규격 반영
                 for p in ["am", "pm"]:
                     twice.append({
                         "datetime": dt_obj.isoformat(),
@@ -127,13 +125,38 @@ class KMAApiClient:
                         "native_temperature": float(max(d['tmps'])) if p == "pm" else float(min(d['tmps'])),
                         "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
                     })
+            
+            # 2. 중기 예보 영역 (4~10일차)
             elif mid_l.get(f"wf{i}") or mid_l.get(f"wf{i}Am"):
-                wf = mid_l.get(f"wf{i}", mid_l.get(f"wf{i}Am"))
+                wf_am = mid_l.get(f"wf{i}Am", mid_l.get(f"wf{i}"))
+                wf_pm = mid_l.get(f"wf{i}Pm", mid_l.get(f"wf{i}"))
+                t_max = float(mid_t.get(f"taMax{i}", 0))
+                t_min = float(mid_t.get(f"taMin{i}", 0))
+                pop_am = int(mid_l.get(f"rnSt{i}Am", 0))
+                pop_pm = int(mid_l.get(f"rnSt{i}Pm", 0))
+
+                # 매일 예보 추가
                 daily.append({
                     "datetime": dt_obj.isoformat(),
-                    "native_temperature": float(mid_t.get(f"taMax{i}", 0)),
-                    "native_templow": float(mid_t.get(f"taMin{i}", 0)),
-                    "condition": self._mid_wf_to_condition(wf)
+                    "native_temperature": t_max,
+                    "native_templow": t_min,
+                    "condition": self._mid_wf_to_condition(wf_pm),
+                    "precipitation_probability": max(pop_am, pop_pm)
+                })
+                # [수정] 중기 데이터도 '매일 2회' 리스트에 추가 (이 부분이 빠져서 5일치만 나왔던 것임)
+                twice.append({
+                    "datetime": dt_obj.isoformat(),
+                    "is_daytime": False, # 오전
+                    "condition": self._mid_wf_to_condition(wf_am),
+                    "native_temperature": t_min,
+                    "precipitation_probability": pop_am
+                })
+                twice.append({
+                    "datetime": dt_obj.isoformat(),
+                    "is_daytime": True, # 오후
+                    "condition": self._mid_wf_to_condition(wf_pm),
+                    "native_temperature": t_max,
+                    "precipitation_probability": pop_pm
                 })
 
         short["forecast_daily"] = daily
@@ -161,7 +184,6 @@ class KMAApiClient:
         except: return "정보없음"
 
     async def _get_air_quality(self, lat, lon):
-        grade_map = {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우 나쁨"}
         return {"pm10Value": "35", "pm10Grade": "보통", "pm25Value": "18", "pm25Grade": "좋음"}
 
     async def _get_address(self, lat, lon):
