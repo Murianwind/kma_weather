@@ -30,18 +30,28 @@ class KMAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(config_entry):
         return KMAOptionsFlow(config_entry)
 
+
 class KMAOptionsFlow(config_entries.OptionsFlow):
+    """Options flow — HA 2024.x 이상 호환: config_entry를 생성자에서 받되
+       self.config_entry 프로퍼티(부모 클래스 제공)와 충돌하지 않도록
+       _entry 로 별도 보관합니다."""
+
     def __init__(self, config_entry):
-        self.config_entry = config_entry
+        self._entry = config_entry
 
     async def async_step_init(self, user_input=None):
         if user_input is not None:
-            # 설정 업데이트 시 즉시 반영을 위해 entry 업데이트 트리거
             return self.async_create_entry(title="", data=user_input)
 
-        # 현재 설정값 불러오기 (options 최우선, 없으면 data)
-        current_apply = self.config_entry.options.get(CONF_APPLY_DATE) or self.config_entry.data.get(CONF_APPLY_DATE, "")
-        current_expire = self.config_entry.options.get(CONF_EXPIRE_DATE) or self.config_entry.data.get(CONF_EXPIRE_DATE, "")
+        # options 우선, 없으면 data 폴백
+        current_apply = (
+            self._entry.options.get(CONF_APPLY_DATE)
+            or self._entry.data.get(CONF_APPLY_DATE, "")
+        )
+        current_expire = (
+            self._entry.options.get(CONF_EXPIRE_DATE)
+            or self._entry.data.get(CONF_EXPIRE_DATE, "")
+        )
 
         return self.async_show_form(
             step_id="init",
