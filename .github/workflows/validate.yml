@@ -10,10 +10,13 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout 로컬 파일
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: HACS 유효성 검사
+      - name: HACS Action
         uses: hacs/action@main
         with:
           category: weather
+        env:
+          # Node.js 24 환경 강제 사용 (2026년 가이드 반영)
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
