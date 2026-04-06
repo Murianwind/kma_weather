@@ -1,9 +1,9 @@
+"""Constants for KMA Weather."""
 from typing import Final
 
 DOMAIN: Final = "kma_weather"
 
-CONF_KMA_API_KEY: Final = "kma_api_key"
-CONF_AIR_API_KEY: Final = "air_api_key"
+CONF_API_KEY: Final = "api_key"
 CONF_LOCATION_TYPE: Final = "location_type"
 CONF_ZONE_ID: Final = "zone_id"
 CONF_MOBILE_DEVICE_ID: Final = "mobile_device_id"
@@ -22,6 +22,7 @@ XO = 43
 YO = 136
 
 def convert_grid(lat, lon):
+    """위경도를 기상청 격자 좌표로 변환"""
     import math
     PI = math.pi
     DEGRAD = PI / 180.0
@@ -40,7 +41,7 @@ def convert_grid(lat, lon):
     ra = re * sf / math.pow(ra, sn)
     theta = lon * DEGRAD - olon
     if theta > PI: theta -= 2.0 * PI
-    if theta < -PI: theta = theta + 2.0 * PI
+    if theta < -PI: theta += 2.0 * PI
     theta *= sn
     nx = math.floor(ra * math.sin(theta) + XO + 0.5)
     ny = math.floor(ro - ra * math.cos(theta) + YO + 0.5)
