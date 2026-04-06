@@ -2,7 +2,10 @@ from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, Sen
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, EntityCategory
 from datetime import date
+import logging
 from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
+
+_LOGGER = logging.getLogger(__name__)
 
 # [이름, 단위, 아이콘, DeviceClass, ID명, EntityCategory]
 SENSOR_TYPES = {
@@ -17,7 +20,6 @@ SENSOR_TYPES = {
     "pm10Grade":            ["미세먼지 등급", None,                               "mdi:check-circle-outline", None,                        "pm10_grade",       None],
     "pm25Value":            ["초미세먼지 농도", "㎍/㎥",                          "mdi:blur-linear",        None,                          "pm25",             None],
     "pm25Grade":            ["초미세먼지 등급", None,                             "mdi:check-circle-outline", None,                        "pm25_grade",       None],
-    # [3번] DIAGNOSTIC 센서
     "last_updated":         ["업데이트 시간", None,                               "mdi:update",             SensorDeviceClass.TIMESTAMP,   "last_updated",     EntityCategory.DIAGNOSTIC],
     "api_expire":           ["API 잔여일수",  "일",                               "mdi:key-alert",          None,                          "api_expire",       EntityCategory.DIAGNOSTIC],
 }
@@ -25,7 +27,6 @@ SENSOR_TYPES = {
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     entities = [KMACustomSensor(coordinator, s_type, entry) for s_type in SENSOR_TYPES]
-    # [5번] 현재위치 디버그 센서 (별도 클래스)
     entities.append(KMALocationDebugSensor(coordinator, entry))
     async_add_entities(entities)
 
@@ -44,20 +45,22 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         self._attr_icon = details[2]
         self._attr_device_class = details[3]
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
-        # [3번] EntityCategory 설정
         self._attr_entity_category = details[5]
 
     @property
     def native_value(self):
-        # [7번] api_expire는 만료일로부터 실시간 계산
+        # [수정] api_expire 계산 로직 보강
         if self._type == "api_expire":
+            # options 우선 참조, 없을 시 data 참조
             expire_str = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
             if not expire_str:
                 return None
             try:
-                expire = date.fromisoformat(expire_str)
-                return (expire - date.today()).days
-            except Exception:
+                expire = date.fromisoformat(str(expire_str).strip())
+                days_left = (expire - date.today()).days
+                return days_left
+            except (ValueError, TypeError) as e:
+                _LOGGER.error("날짜 형식 오류 (%s): %s", expire_str, e)
                 return None
 
         data = self.coordinator.data
@@ -66,14 +69,16 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if self._type in weather:
             val = weather[self._type]
             if self._type in ["TMP", "REH", "WSD", "POP"] and val is not None:
-                return float(val)
+                try:
+                    return float(val)
+                except ValueError:
+                    return val
             return val
         return data.get("air", {}).get(self._type)
 
-# [5번] 현재위치 + 디버그 정보 센서
 class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
     _attr_icon = "mdi:map-marker"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC  # [3번]
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
@@ -86,7 +91,6 @@ class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
     def native_value(self):
         if not self.coordinator.data: return None
         w = self.coordinator.data.get("weather", {})
-        # 좌표를 현재위치 값으로 표시
         lat = w.get("debug_lat")
         lon = w.get("debug_lon")
         if lat and lon:
