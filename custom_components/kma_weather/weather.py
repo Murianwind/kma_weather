@@ -1,4 +1,4 @@
-from homeassistant.components.weather import WeatherEntity, WeatherEntityFeature, Forecast
+from homeassistant.components.weather import WeatherEntity, WeatherEntityFeature
 from homeassistant.const import UnitOfTemperature, UnitOfSpeed, UnitOfPrecipitation
 from .const import DOMAIN
 
@@ -16,7 +16,7 @@ class KMAWeatherEntity(WeatherEntity):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_weather"
-        self._attr_name = "기상청 날씨"
+        self._attr_name = "날씨 요약"
         self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
 
     @property
@@ -35,7 +35,6 @@ class KMAWeatherEntity(WeatherEntity):
             "today_min": w.get("TMN_today"),
             "tomorrow_am": w.get("weather_am_tomorrow"),
             "tomorrow_pm": w.get("weather_pm_tomorrow"),
-            "rain_start": w.get("rain_start_time"),
             "location": w.get("location_weather"),
             "attribution": "기상청 및 에어코리아 API"
         }
