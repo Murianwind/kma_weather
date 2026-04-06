@@ -1,0 +1,8 @@
+{
+  "name": "KMA Smart Weather",
+  "render_readme": true,
+  "category": "weather",
+  "homeassistant": "2024.1.0",
+  "zip_release": false,
+  "filename": "kma_weather.zip"
+}
