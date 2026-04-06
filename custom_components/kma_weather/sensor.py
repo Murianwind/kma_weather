@@ -58,33 +58,36 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         # 1. API 만료일 계산
         if self._type == "api_expire":
             expire_str = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
-            if not expire_str: return None
+            if not expire_str:
+                return None
             try:
                 expire = date.fromisoformat(str(expire_str).strip())
                 return (expire - date.today()).days
-            except Exception: return None
+            except Exception:
+                return None
 
-        if not self.coordinator.data: return None
-        
-        # 2. 업데이트 시간 (최상위 레벨)
-        if self._type == "last_updated":
-            return self.coordinator.data.get("last_updated")
+        if not self.coordinator.data:
+            return None
 
-        # 3. 날씨 데이터 (weather 딕셔너리 내부)
         weather = self.coordinator.data.get("weather", {})
+        air = self.coordinator.data.get("air", {})
+
+        # 2. weather 딕셔너리에서 조회 (last_updated 포함 — coordinator.py에서 weather에 저장됨)
         if self._type in weather:
             val = weather.get(self._type)
             if self._type in ["TMP", "REH", "WSD", "POP"] and val is not None:
-                try: return float(val)
-                except (ValueError, TypeError): return val
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    return val
             return val
-            
-        # 4. 에어코리아 데이터 (air 딕셔너리 내부)
-        air = self.coordinator.data.get("air", {})
+
+        # 3. 에어코리아 데이터
         if self._type in air:
             return air.get(self._type)
-            
+
         return None
+
 
 class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
     _attr_icon = "mdi:map-marker"
@@ -106,14 +109,15 @@ class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        if not self.coordinator.data: return None
+        if not self.coordinator.data:
+            return None
         w = self.coordinator.data.get("weather", {})
-        # [수정] 좌표 대신 address 필드를 우선 반환
         return w.get("address") or f"{w.get('debug_lat')}, {w.get('debug_lon')}"
 
     @property
     def extra_state_attributes(self):
-        if not self.coordinator.data: return {}
+        if not self.coordinator.data:
+            return {}
         w = self.coordinator.data.get("weather", {})
         air = self.coordinator.data.get("air", {})
         return {
@@ -121,7 +125,7 @@ class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
             "ny": w.get("debug_ny"),
             "reg_id_temp": w.get("debug_reg_id_temp"),
             "reg_id_land": w.get("debug_reg_id_land"),
-            "air_station": air.get("station"), # [수정] air 딕셔너리 내 station 참조
+            "air_station": air.get("station"),
             "lat": w.get("debug_lat"),
             "lon": w.get("debug_lon"),
         }
