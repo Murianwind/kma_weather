@@ -1,24 +1,13 @@
 """Sensor platform for KMA Weather."""
-from homeassistant.components.sensor import (
-    SensorEntity,
-    SensorDeviceClass,
-    SensorStateClass,
-)
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature, UnitOfSpeed
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.const import UnitOfTemperature
 from .const import DOMAIN
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
-) -> None:
-    """Set up KMA Weather sensors."""
+async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
-
-    # UnitOfPercentage 대신 "%" 직접 사용 (ImportError 방지)
-    sensors = [
+    
+    # 총 18개의 센서 (기존 16개 + 현재온/습도 추가)
+    sensor_map = [
         ("현재온도", "TMP", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
         ("현재습도", "REH", "%", SensorDeviceClass.HUMIDITY),
         ("강수확률", "POP", "%", None),
@@ -38,36 +27,30 @@ async def async_setup_entry(
         ("현재풍속", "WSD", "m/s", SensorDeviceClass.WIND_SPEED),
         ("현재풍향", "VEC_KOR", None, None),
     ]
-
-    entities = [KMACustomSensor(coordinator, entry, *s) for s in sensors]
+    
+    entities = [KMACustomSensor(coordinator, entry, *s) for s in sensor_map]
     entities.append(APIExpirationSensor(entry))
     async_add_entities(entities)
 
-class KMACustomSensor(CoordinatorEntity, SensorEntity):
-    """KMA Custom Sensor."""
+class KMACustomSensor(SensorEntity):
     _attr_has_entity_name = True
-
     def __init__(self, coordinator, entry, name, key, unit, dev_class):
-        super().__init__(coordinator)
+        self.coordinator = coordinator
         self._key = key
         self._attr_name = name
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = dev_class
         self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.title,
-        }
+        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
 
     @property
     def native_value(self):
-        data = self.coordinator.data
-        if not data: return None
-        val = data.get("air", {}).get(self._key) if "pm" in self._key else data.get("weather", {}).get(self._key)
+        d = self.coordinator.data
+        if not d: return None
+        val = d.get("air", {}).get(self._key) if "pm" in self._key else d.get("weather", {}).get(self._key)
         return val if val is not None else "데이터 대기중"
 
 class APIExpirationSensor(SensorEntity):
-    """API Expiry Sensor."""
     _attr_has_entity_name = True
     _attr_native_unit_of_measurement = "일"
     def __init__(self, entry):
