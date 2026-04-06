@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "기상청 날씨 설정",
+        "description": "### API 키 발급 안내\n1. [기상청 단기예보](https://www.data.go.kr/tcs/dss/selectApiDataDetailView.do?publicDataPk=15084084) 신청\n2. [에어코리아 미세먼지](https://www.data.go.kr/tcs/dss/selectApiDataDetailView.do?publicDataPk=15073861) 신청\n\n위치 소스를 선택하면 해당 지역의 격자 좌표(NX, NY)를 자동으로 계산합니다.",
+        "data": {
+          "kma_api_key": "기상청 API 인증키 (Encoding)",
+          "air_api_key": "에어코리아 API 인증키 (Encoding)",
+          "location_type": "위치 기준",
+          "zone_id": "고정할 지역(Zone)",
+          "mobile_device_id": "추적할 모바일 기기"
+        }
+      }
+    }
+  }
+}
