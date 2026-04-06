@@ -3,13 +3,7 @@ from datetime import timedelta
 import logging
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from .const import (
-    DOMAIN, 
-    CONF_LOCATION_TYPE, 
-    LOCATION_TYPE_ZONE, 
-    CONF_ZONE_ID, 
-    CONF_MOBILE_DEVICE_ID
-)
+from .const import DOMAIN, CONF_LOCATION_ENTITY
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,17 +30,12 @@ class KMADataUpdateCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Error communicating with API: {exception}") from exception
 
     def _get_current_coordinates(self):
-        """Get coordinates based on location type."""
-        location_type = self.entry.data.get(CONF_LOCATION_TYPE)
-        
-        if location_type == LOCATION_TYPE_ZONE:
-            entity_id = self.entry.data.get(CONF_ZONE_ID)
-        else:
-            entity_id = self.entry.data.get(CONF_MOBILE_DEVICE_ID)
-            
+        """Get coordinates from the selected entity."""
+        entity_id = self.entry.data.get(CONF_LOCATION_ENTITY)
         state = self.hass.states.get(entity_id)
+        
         if state and "latitude" in state.attributes and "longitude" in state.attributes:
             return state.attributes["latitude"], state.attributes["longitude"]
             
-        # Fallback to home location
+        # 기본값: Home Assistant 설정 좌표
         return self.hass.config.latitude, self.hass.config.longitude
