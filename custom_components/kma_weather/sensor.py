@@ -1,28 +1,71 @@
-async def async_setup_entry(hass, entry, async_add_entities):
+import logging
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfTemperature, UnitOfPercentage, UnitOfSpeed
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import DOMAIN
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    
-    # 이미지 목록과 동일한 16개 핵심 센서
-    sensor_map = [
-        ("현재날씨", "current_condition"),
-        ("현재위치 날씨", "location_weather"),
-        ("현재풍속", "WSD"),
-        ("현재풍향", "VEC_KOR"),
-        ("최고온도", "TMX_today"),
-        ("최저온도", "TMN_today"),
-        ("강수확률", "POP"),
-        ("비시작시간오늘내일", "rain_start_time"),
-        ("내일최고온도", "TMX_tomorrow"),
-        ("내일최저온도", "TMN_tomorrow"),
-        ("내일오전날씨", "weather_am_tomorrow"),
-        ("내일오후날씨", "weather_pm_tomorrow"),
-        ("미세먼지", "pm10Value"),
-        ("미세먼지등급", "pm10GradeKOR"),
-        ("초미세먼지", "pm25Value"),
-        ("초미세먼지등급", "pm25GradeKOR"),
+
+    # 요구하신 16개 센서 목록
+    sensor_definitions = [
+        ("강수확률", "POP", UnitOfPercentage, None),
+        ("내일오전날씨", "weather_am_tomorrow", None, None),
+        ("내일오후날씨", "weather_pm_tomorrow", None, None),
+        ("내일최고온도", "TMX_tomorrow", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        ("내일최저온도", "TMN_tomorrow", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        ("미세먼지", "pm10Value", "㎍/㎥", SensorDeviceClass.PM10),
+        ("미세먼지등급", "pm10Grade", None, None),
+        ("비시작시간오늘내일", "rain_start_time", None, None),
+        ("현재위치 날씨", "location_weather", None, None),
+        ("초미세먼지", "pm25Value", "㎍/㎥", SensorDeviceClass.PM25),
+        ("초미세먼지등급", "pm25Grade", None, None),
+        ("최고온도", "TMX_today", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        ("최저온도", "TMN_today", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        ("현재날씨", "current_condition", None, None),
+        ("현재풍속", "WSD", UnitOfSpeed.METERS_PER_SECOND, SensorDeviceClass.WIND_SPEED),
+        ("현재풍향", "VEC_KOR", None, None),
     ]
+
+    entities = [KMACustomSensor(coordinator, entry, name, key, unit, dev_class) 
+                for name, key, unit, dev_class in sensor_definitions]
     
-    entities = [KMACustomSensor(coordinator, entry, name, key) for name, key in sensor_map]
+    entities.append(APIExpirationSensor(entry))
     async_add_entities(entities)
 
 class KMACustomSensor(CoordinatorEntity, SensorEntity):
-    # (이전 코드와 동일한 구조, data['weather'] 또는 data['air']에서 값을 가져옴)
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, entry, name, key, unit, dev_class):
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_name = name
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = dev_class
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data
+        if not data: return None
+        if "pm" in self._key:
+            return data.get("air", {}).get(self._key)
+        return data.get("weather", {}).get(self._key)
+
+class APIExpirationSensor(SensorEntity):
+    _attr_has_entity_name = True
+    _attr_native_unit_of_measurement = "days"
+
+    def __init__(self, entry):
+        self._attr_name = "API 인증키 남은 일수"
+        self._attr_unique_id = f"{entry.entry_id}_api_expiry"
+        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
+
+    @property
+    def native_value(self):
+        return 730
