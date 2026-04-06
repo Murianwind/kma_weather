@@ -22,6 +22,14 @@ SENSOR_TYPES = {
     "pm25Grade": ["초미세먼지 등급", None, "mdi:check-circle-outline", None, "pm25_grade", None],
     "last_updated": ["업데이트 시간", None, "mdi:update", SensorDeviceClass.TIMESTAMP, "last_updated", EntityCategory.DIAGNOSTIC],
     "api_expire": ["API 잔여일수", "일", "mdi:key-alert", None, "api_expire", EntityCategory.DIAGNOSTIC],
+    # ── 신규 추가 7개 ──────────────────────────────────────────────────────────
+    "apparent_temp": ["체감온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-lines", None, "apparent_temperature", None],
+    "TMX_today": ["오늘 최고기온", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-up", None, "today_temp_max", None],
+    "TMN_today": ["오늘 최저기온", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", None, "today_temp_min", None],
+    "TMX_tomorrow": ["내일 최고기온", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-up", None, "tomorrow_temp_max", None],
+    "TMN_tomorrow": ["내일 최저기온", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", None, "tomorrow_temp_min", None],
+    "weather_am_tomorrow": ["내일 오전 날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_weather_am", None],
+    "weather_pm_tomorrow": ["내일 오후 날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_weather_pm", None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
