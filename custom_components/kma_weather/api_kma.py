@@ -1,7 +1,7 @@
 """API client for KMA Weather."""
 import logging
 import aiohttp
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .const import convert_grid
 
 _LOGGER = logging.getLogger(__name__)
@@ -30,6 +30,8 @@ class KMAApiClient:
         weather["location_weather"] = await self._get_address(lat, lon)
         weather["latitude"] = lat
         weather["longitude"] = lon
+        # [해결] 데이터가 성공적으로 갱신된 현재 시간을 ISO 표준 형식으로 저장
+        weather["updated_at"] = datetime.now(timezone.utc).isoformat()
         
         return {"weather": weather, "air": air}
 
@@ -103,13 +105,11 @@ class KMAApiClient:
         except Exception as e:
             _LOGGER.error("단기예보 API 호출 실패: %s", e)
 
-        # 1. 캐시 병합
         keys_to_cache = ["TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow", "weather_am_tomorrow", "weather_pm_tomorrow"]
         for k in keys_to_cache:
             if k in data: self._cache[k] = data[k]
             elif self._cache[k] is not None: data[k] = self._cache[k]
 
-        # 2. [핵심 해결] 캐시에도 데이터가 없을 경우 시간별 기온에서 강제로 최대/최소 추출
         today_info = daily_data.get(today_str, {})
         if "TMX_today" not in data and today_info.get('tmps'): data["TMX_today"] = max(today_info['tmps'])
         if "TMN_today" not in data and today_info.get('tmps'): data["TMN_today"] = min(today_info['tmps'])
@@ -118,7 +118,6 @@ class KMAApiClient:
         if "TMX_tomorrow" not in data and tomorrow_info.get('tmps'): data["TMX_tomorrow"] = max(tomorrow_info['tmps'])
         if "TMN_tomorrow" not in data and tomorrow_info.get('tmps'): data["TMN_tomorrow"] = min(tomorrow_info['tmps'])
 
-        # 3. 정수 변환
         for k in ["TMP", "REH", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"]:
             if data.get(k) is not None: data[k] = int(data[k])
 
