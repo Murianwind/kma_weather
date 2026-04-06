@@ -1,4 +1,9 @@
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+"""Sensor platform for KMA Weather."""
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorDeviceClass,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature, UnitOfPercentage, UnitOfSpeed
 from homeassistant.core import HomeAssistant
@@ -6,7 +11,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up KMA Weather sensors."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
     # 요구하신 16개 센서 리스트 (이름, 데이터키, 단위, 클래스)
@@ -34,25 +42,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async_add_entities(entities)
 
 class KMACustomSensor(CoordinatorEntity, SensorEntity):
+    """Representation of a KMA Sensor."""
     _attr_has_entity_name = True
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator, entry, name, key, unit, dev_class):
+        """Initialize the sensor."""
         super().__init__(coordinator)
         self._key = key
         self._attr_name = name
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = dev_class
         self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": entry.title,
+            "manufacturer": "기상청",
+        }
 
     @property
     def native_value(self):
+        """Return the state of the sensor."""
         data = self.coordinator.data
         if not data: return None
-        return data["air"].get(self._key) if "pm" in self._key else data["weather"].get(self._key)
+        if "pm" in self._key:
+            return data.get("air", {}).get(self._key)
+        return data.get("weather", {}).get(self._key)
 
 class APIExpirationSensor(SensorEntity):
+    """Sensor for API Key expiration."""
     _attr_has_entity_name = True
     _attr_native_unit_of_measurement = "days"
     def __init__(self, entry):
