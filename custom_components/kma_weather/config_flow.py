@@ -29,12 +29,10 @@ class KMAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     def async_get_options_flow(config_entry):
-        return KMAOptionsFlow(config_entry)
+        return KMAOptionsFlow()
 
 class KMAOptionsFlow(config_entries.OptionsFlow):
     """[7번] 만료일 수정용 Options Flow"""
-    def __init__(self, config_entry):
-        self.config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
         if user_input is not None:
