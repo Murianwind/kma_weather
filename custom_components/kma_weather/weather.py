@@ -5,7 +5,7 @@ from homeassistant.components.weather import (
     Forecast,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature, UnitOfSpeed
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -23,8 +23,8 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
     _attr_has_entity_name = True
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     
-    # [해결] 백엔드는 무조건 m/s 기준. 화면 표시는 사용자가 UI에서 선택.
-    _attr_native_speed_unit = UnitOfSpeed.METERS_PER_SECOND 
+    # [수정] 단위를 상수가 아닌 문자열 "m/s"로 지정하여 HA의 강제 변환(km/h 등) 차단
+    _attr_native_speed_unit = "m/s" 
     
     _attr_native_pressure_unit = "hPa"
     _attr_native_precipitation_unit = "mm"
@@ -46,17 +46,18 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
     @property
     def native_temperature(self):
         try: return int(float(self.coordinator.data.get("weather", {}).get("TMP", 0)))
-        except: return None
+        except Exception: return None
 
     @property
     def native_humidity(self):
         try: return int(float(self.coordinator.data.get("weather", {}).get("REH", 0)))
-        except: return None
+        except Exception: return None
 
     @property
     def native_wind_speed(self):
+        # 기상청 원본 m/s 데이터를 그대로 반환
         try: return float(self.coordinator.data.get("weather", {}).get("WSD", 0))
-        except: return None
+        except Exception: return None
 
     @property
     def wind_bearing(self):
