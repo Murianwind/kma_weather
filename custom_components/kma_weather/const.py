@@ -4,12 +4,7 @@ from typing import Final
 DOMAIN: Final = "kma_weather"
 
 CONF_API_KEY: Final = "api_key"
-CONF_LOCATION_TYPE: Final = "location_type"
-CONF_ZONE_ID: Final = "zone_id"
-CONF_MOBILE_DEVICE_ID: Final = "mobile_device_id"
-
-LOCATION_TYPE_ZONE: Final = "zone"
-LOCATION_TYPE_MOBILE: Final = "mobile"
+CONF_LOCATION_ENTITY: Final = "location_entity" # 모든 위치 엔티티 통합
 
 # 기상청 LCC 격자 변환 상수
 RE = 6371.00877
