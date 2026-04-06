@@ -21,7 +21,7 @@ class KMAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_LOCATION_ENTITY): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["zone", "device_tracker"])
                 ),
-                # 기본값으로 home을 제공하여 사용자의 입력을 유도
-                vol.Required(CONF_PREFIX, default="home"): str,
+                # 기본값(default)을 제거하여 완전한 빈칸으로 시작되도록 수정
+                vol.Required(CONF_PREFIX): str,
             })
         )
