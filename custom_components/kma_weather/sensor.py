@@ -1,46 +1,49 @@
-from datetime import datetime, timedelta
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.const import UnitOfTemperature, UnitOfPercentage, UnitOfSpeed, UnitOfPrecipitation
 from .const import DOMAIN
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     
-    entities = [
-        KMAMisemeonjiSensor(coordinator, entry, "pm10"),
-        KMAMisemeonjiSensor(coordinator, entry, "pm25"),
-        APIExpirationSensor(entry) # 인증키 만료 센서
+    # 이미지와 동일한 목록 구성
+    sensors = [
+        ("기온", "TMP", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        ("습도", "REH", UnitOfPercentage, SensorDeviceClass.HUMIDITY),
+        ("풍속", "WSD", UnitOfSpeed.METERS_PER_SECOND, SensorDeviceClass.WIND_SPEED),
+        ("강수량", "PCP", UnitOfPrecipitation.MILLIMETERS, SensorDeviceClass.PRECIPITATION),
+        ("강수확률", "POP", UnitOfPercentage, None),
+        ("미세먼지", "pm10", "㎍/㎥", SensorDeviceClass.PM10),
+        ("초미세먼지", "pm25", "㎍/㎥", SensorDeviceClass.PM25),
     ]
+    
+    entities = [KMASensor(coordinator, entry, *s) for s in sensors]
+    entities.append(APIExpirationSensor(entry))
     async_add_entities(entities)
 
-class APIExpirationSensor(SensorEntity):
-    """API 인증키 만료일 센서 (2년 기준)."""
-    _attr_has_entity_name = True
-    _attr_device_class = SensorDeviceClass.DURATION
+class KMASensor(SensorEntity):
+    def __init__(self, coordinator, entry, name, key, unit, dev_class):
+        self.coordinator = coordinator
+        self._key = key
+        self._attr_name = name
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = dev_class
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
 
+    @property
+    def native_value(self):
+        data = self.coordinator.data
+        if self._key in ["pm10", "pm25"]:
+            return data["air"].get(self._key)
+        return data["weather"].get(self._key)
+
+class APIExpirationSensor(SensorEntity):
     def __init__(self, entry):
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_api_expiry"
         self._attr_name = "API 인증키 남은 일수"
         self._attr_native_unit_of_measurement = "days"
+        self._attr_unique_id = f"{entry.entry_id}_api_expiry"
 
     @property
     def native_value(self):
-        """발급일(설정일 기준)로부터 2년(730일) 남은 날짜 계산."""
-        # 실제 발급일을 알 수 없으므로, HA에 등록된 날짜를 기준으로 계산합니다.
-        # 고도화 시 발급일을 직접 입력받게 수정 가능합니다.
-        created_at = datetime.fromtimestamp(self._entry.entry_id.split('_')[0]) if '_' in self._entry.entry_id else datetime.now()
-        expiry_date = created_at + timedelta(days=730)
-        remaining = (expiry_date - datetime.now()).days
-        return max(0, remaining)
-
-class KMAMisemeonjiSensor(SensorEntity):
-    """에어코리아 미세먼지 센서."""
-    def __init__(self, coordinator, entry, sensor_type):
-        self.coordinator = coordinator
-        self.sensor_type = sensor_type
-        self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
-        self._attr_name = "미세먼지" if sensor_type == "pm10" else "초미세먼지"
-
-    @property
-    def native_value(self):
-        return self.coordinator.data.get("air", {}).get(self.sensor_type)
+        # 2년 만료 로직 (고정값 예시)
+        return 730
