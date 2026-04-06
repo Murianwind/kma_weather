@@ -1,0 +1,19 @@
+name: HACS Validate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 로컬 파일
+        uses: actions/checkout@v4
+
+      - name: HACS 유효성 검사
+        uses: hacs/action@main
+        with:
+          category: weather
