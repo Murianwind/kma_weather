@@ -2,13 +2,22 @@
   "config": {
     "step": {
       "user": {
-        "title": "기상청 날씨 설정",
-        "description": "공공데이터포털 마이페이지의 **일반 인증키(Encoding)**를 복사하여 입력해주세요.\n\n### API 신청 안내 (아래 3개 모두 신청 필수)\n1. [기상청 단기예보](https://www.data.go.kr/data/15084084/openapi.do)\n2. [기상청 중기예보](https://www.data.go.kr/data/15059468/openapi.do)\n3. [에어코리아 대기오염](https://www.data.go.kr/data/15073861/openapi.do)\n\n등록할 위치(고정 지역 또는 이동 기기)를 선택해주세요.",
+        "title": "기상청 스마트 날씨 설정",
+        "description": "### API 신청 안내 (아래 3개 모두 신청 필수)\n1. [기상청 단기예보](https://www.data.go.kr/data/15084084/openapi.do)\n2. [기상청 중기예보](https://www.data.go.kr/data/15059468/openapi.do)\n3. [에어코리아 대기오염](https://www.data.go.kr/data/15073861/openapi.do)",
         "data": {
-          "api_key": "개인 API 인증키 (Encoding)",
-          "location_entity": "날씨를 측정할 위치 (Zone 또는 이동 기기)"
+          "api_key": "공공데이터포털 마이페이지의 일반 인증키(Encoding)를 복사하여 입력해주세요.",
+          "location_entity": "등록할 위치(고정 지역 또는 이동 기기)를 선택해주세요.",
+          "prefix": "엔티티 접두사 (영문 소문자 입력, 예: home)"
+        },
+        "data_description": {
+          "prefix": "입력한 영문이 센서 고유 ID의 앞부분이 됩니다. (예: home 입력 시 sensor.home_today_high_temperature 로 생성됨)"
         }
       }
+    },
+    "error": {
+      "cannot_connect": "연결에 실패했습니다.",
+      "invalid_auth": "API 키가 유효하지 않습니다.",
+      "unknown": "알 수 없는 오류가 발생했습니다."
     }
   }
 }
