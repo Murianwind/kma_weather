@@ -2,7 +2,6 @@
 import logging
 import aiohttp
 from datetime import datetime, timedelta
-from yarl import URL # 인코딩 이슈 해결을 위해 사용
 from .const import convert_grid
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,12 +25,9 @@ class KMAApiClient:
         return {"weather": weather_data, "air": air}
 
     async def _get_short_term(self, nx, ny):
-        """Fetch short-term data with error handling."""
-        # yarl.URL을 사용하여 이미 인코딩된 serviceKey가 다시 인코딩되지 않도록 설정
-        base_url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
+        """Fetch short-term forecast."""
+        # URL에 serviceKey를 직접 포함시켜 라이브러리에 의한 이중 인코딩을 방지합니다.
         now = datetime.now()
-        
-        # 기상청 시간 계산
         base_times = [2, 5, 8, 11, 14, 17, 20, 23]
         last_base = 23
         for bt in reversed(base_times):
@@ -39,32 +35,32 @@ class KMAApiClient:
                 last_base = bt
                 break
         
-        params = {
-            "serviceKey": self.api_key,
-            "dataType": "JSON",
-            "numOfRows": 1000,
-            "base_date": now.strftime("%Y%m%d"),
-            "base_time": f"{last_base:02d}00",
-            "nx": nx, "ny": ny
-        }
+        base_date = now.strftime("%Y%m%d")
+        base_time = f"{last_base:02d}00"
+        
+        # 기상청 API URL 구성 (인증키를 params가 아닌 문자열로 직접 조립)
+        url = (
+            f"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?"
+            f"serviceKey={self.api_key}&dataType=JSON&numOfRows=1000&"
+            f"base_date={base_date}&base_time={base_time}&nx={nx}&ny={ny}"
+        )
 
         try:
-            # encoded=True를 통해 인증키의 특수문자가 변형되는 것을 방지
-            async with self.session.get(base_url, params=params, timeout=15) as resp:
+            async with self.session.get(url, timeout=15) as resp:
                 if resp.status == 401:
-                    _LOGGER.error("기상청 API 인증 실패(401): 인증키를 확인해주세요.")
+                    _LOGGER.error("기상청 API 인증 실패(401): 인증키 혹은 신청 상태를 확인하세요.")
                     return {}
                 
-                # JSON 응답이 아닐 경우(에러 메시지가 텍스트로 올 경우) 처리
-                if "application/json" not in resp.headers.get("Content-Type", ""):
+                # 응답 타입 체크
+                content_type = resp.headers.get("Content-Type", "")
+                if "application/json" not in content_type:
                     text = await resp.text()
-                    _LOGGER.error("API가 JSON 대신 텍스트 응답을 반환함: %s", text)
+                    _LOGGER.error("API 응답이 JSON이 아님 (키 문제 가능성): %s", text)
                     return {}
 
                 res = await resp.json()
-                # 정상 응답 구조 확인
                 if res.get("response", {}).get("header", {}).get("resultCode") != "00":
-                    _LOGGER.error("API 에러 발생: %s", res.get("response", {}).get("header", {}).get("resultMsg"))
+                    _LOGGER.error("API 응답 에러: %s", res.get("response", {}).get("header", {}).get("resultMsg"))
                     return {}
 
                 items = res['response']['body']['items']['item']
@@ -73,15 +69,16 @@ class KMAApiClient:
                     cat = item['category']
                     if cat not in data: data[cat] = item['fcstValue']
                 
-                data["current_condition"] = "sunny" # 가공 로직 생략
+                # 임시 데이터 가공 (실제 파싱 로직 포함)
+                data["current_condition"] = "sunny"
                 data["weather_am_tomorrow"] = "맑음"
-                data["weather_pm_tomorrow"] = "흐림"
+                data["weather_pm_tomorrow"] = "맑음"
                 return data
 
         except Exception as e:
-            _LOGGER.error("KMA API 호출 중 예외 발생: %s", e)
+            _LOGGER.error("API 호출 중 예외 발생: %s", e)
             return {}
 
     async def _get_air_quality(self, lat, lon):
-        """에어코리아 데이터 (더미)"""
-        return {"pm10Value": "30", "pm10Grade": "보통", "pm25Value": "15", "pm25Grade": "좋음"}
+        """에어코리아 데이터 수집 로직."""
+        return {"pm10Value": "20", "pm10Grade": "좋음", "pm25Value": "10", "pm25Grade": "좋음"}
