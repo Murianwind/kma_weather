@@ -278,6 +278,33 @@ class KMAWeatherAPI:
         weather_data["current_condition"] = self._get_condition(
             weather_data.get("SKY"), weather_data.get("PTY")
         )
+
+        # ── 오늘/내일 최고·최저기온, 오전·오후날씨 ──────────────────────────
+        today_str = now.strftime("%Y%m%d")
+        tom_str = (now + timedelta(days=1)).strftime("%Y%m%d")
+
+        for d_str, prefix in [(today_str, "today"), (tom_str, "tomorrow")]:
+            if d_str in forecast_map:
+                day = forecast_map[d_str]
+                # TMX(일 최고기온)는 1500시, TMN(일 최저기온)은 0600시에 제공됨
+                tmx = next((day[t]["TMX"] for t in day if "TMX" in day[t]), None)
+                tmn = next((day[t]["TMN"] for t in day if "TMN" in day[t]), None)
+                # 해당 날짜 전체 TMP 목록으로 폴백
+                all_tmps = [float(day[t]["TMP"]) for t in day if "TMP" in day[t]]
+                weather_data[f"TMX_{prefix}"] = int(float(tmx)) if tmx is not None else (int(max(all_tmps)) if all_tmps else None)
+                weather_data[f"TMN_{prefix}"] = int(float(tmn)) if tmn is not None else (int(min(all_tmps)) if all_tmps else None)
+                # 오전(0900)·오후(1500) 날씨 — 내일만 의미 있음
+                am = day.get("0900", {})
+                pm = day.get("1500", {})
+                weather_data[f"weather_am_{prefix}"] = self._get_sky_kor(am.get("SKY"), am.get("PTY"))
+                weather_data[f"weather_pm_{prefix}"] = self._get_sky_kor(pm.get("SKY"), pm.get("PTY"))
+
+        # ── 체감온도 ───────────────────────────────────────────────────────────
+        apparent = self._calculate_apparent_temp(
+            weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD")
+        )
+        weather_data["apparent_temp"] = int(float(apparent)) if apparent is not None else None
+
         return {"weather": weather_data, "air": air_data or {}}
 
     def _get_condition(self, s, p):
@@ -319,3 +346,27 @@ class KMAWeatherAPI:
         if 247.5 <= v < 292.5: return "서"
         if 292.5 <= v < 337.5: return "북서"
         return "북"
+
+    def _calculate_apparent_temp(self, temp, reh, wsd):
+        """체감온도 계산 (기상청 공식):
+        - 10°C 이하 + 풍속 1.3m/s 이상: 윈드칠 지수 (체감온도)
+        - 18°C 이상: 열체감지수 (불쾌지수 기반)
+        - 그 외: 기온 그대로
+        """
+        try:
+            t, rh = float(temp), float(reh)
+            v = float(wsd) * 3.6  # m/s → km/h
+            if t <= 10 and v >= 4.68:  # 1.3 m/s = 4.68 km/h
+                return 13.12 + 0.6215 * t - 11.37 * (v ** 0.16) + 0.3965 * t * (v ** 0.16)
+            if t >= 18:
+                tw = (
+                    t * math.atan(0.151977 * (rh + 8.313595) ** 0.5)
+                    + math.atan(t + rh)
+                    - math.atan(rh - 1.676331)
+                    + 0.00391838 * (rh ** 1.5) * math.atan(0.023101 * rh)
+                    - 4.686035
+                )
+                return -0.25 + 1.04 * tw + 0.65
+            return t
+        except Exception:
+            return temp
