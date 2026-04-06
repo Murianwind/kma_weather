@@ -9,24 +9,21 @@ _LOGGER = logging.getLogger(__name__)
 
 class KMAApiClient:
     def __init__(self, api_key, session: aiohttp.ClientSession):
-        self.api_key = api_key
+        # 인증키 양끝의 공백이나 줄바꿈 제거
+        self.api_key = api_key.strip() if isinstance(api_key, str) else api_key
         self.session = session
-        # 온도 관리를 위한 내부 저장소
-        self._temp_store = {}
 
     async def fetch_data(self, lat, lon):
         nx, ny = convert_grid(lat, lon)
         now = datetime.now()
         
-        # 1. 데이터 수집
         short_term = await self._get_short_term(nx, ny, now)
         mid_land, mid_ta = await self._get_mid_term(now)
         air = await self._get_air_quality(lat, lon)
         
-        # 2. 데이터 병합 및 예보 생성
         weather = self._merge_forecasts(short_term, mid_land, mid_ta, now)
         
-        # 3. 체감온도 계산 (기존 로직 유지)
+        # 지능형 체감온도 계산
         weather["apparent_temp"] = self._calculate_apparent_temp(
             weather.get("TMP"), weather.get("REH"), weather.get("WSD")
         )
@@ -73,34 +70,21 @@ class KMAApiClient:
                 items = res['response']['body']['items']['item']
                 for it in items:
                     cat, val, dt, tm = it['category'], it['fcstValue'], it['fcstDate'], it['fcstTime']
-                    
                     if dt not in daily_temp: daily_temp[dt] = []
                     if cat == 'TMP': daily_temp[dt].append(float(val))
-                    
-                    # 현재 값 저장
-                    if dt == today_str and cat not in data:
-                        data[cat] = val
-                    
-                    # 최고/최저 기온 직접 추출 (기상청 TMX/TMN은 특정 시각에만 나옴)
+                    if dt == today_str and cat not in data: data[cat] = val
                     if cat == 'TMX': data[f"TMX_{dt}"] = val
                     if cat == 'TMN': data[f"TMN_{dt}"] = val
-                    
-                    # 내일 날씨 정보
                     tomorrow = (now + timedelta(days=1)).strftime('%Y%m%d')
                     if dt == tomorrow:
                         if tm == '0900' and cat == 'SKY': data['weather_am_tomorrow'] = val
                         if tm == '1500' and cat == 'SKY': data['weather_pm_tomorrow'] = val
-
-            # 기상청 TMX/TMN 데이터가 누락될 경우 대비해 리스트에서 직접 계산
             for dt, tmps in daily_temp.items():
                 if tmps:
                     if f"TMX_{dt}" not in data: data[f"TMX_{dt}"] = max(tmps)
                     if f"TMN_{dt}" not in data: data[f"TMN_{dt}"] = min(tmps)
-
         except Exception as e:
             _LOGGER.error("단기예보 로드 실패: %s", e)
-        
-        data["daily_raw"] = daily_temp
         return data
 
     async def _get_mid_term(self, now):
@@ -113,21 +97,12 @@ class KMAApiClient:
         except: return {}, {}
 
     def _merge_forecasts(self, short, mid_l, mid_t, now):
-        # 센서에서 사용하는 핵심 키값 명시적 할당
-        today = now.strftime('%Y%m%d')
-        tomorrow = (now + timedelta(days=1)).strftime('%Y%m%d')
-        
-        short["TMX_today"] = short.get(f"TMX_{today}")
-        short["TMN_today"] = short.get(f"TMN_{today}")
-        short["TMX_tomorrow"] = short.get(f"TMX_{tomorrow}")
-        short["TMN_tomorrow"] = short.get(f"TMN_{tomorrow}")
-        
-        # 캘린더 로직과 유사하게 날씨 텍스트 변환
+        today, tomorrow = now.strftime('%Y%m%d'), (now + timedelta(days=1)).strftime('%Y%m%d')
+        short["TMX_today"], short["TMN_today"] = short.get(f"TMX_{today}"), short.get(f"TMN_{today}")
+        short["TMX_tomorrow"], short["TMN_tomorrow"] = short.get(f"TMX_{tomorrow}"), short.get(f"TMN_{tomorrow}")
         short["current_condition_kor"] = self._sky_to_kor(short.get("SKY"), short.get("PTY"))
         short["current_condition"] = self._get_condition(short.get("SKY"), short.get("PTY"))
         short["VEC_KOR"] = self._get_wind_dir(short.get("VEC"))
-        
-        # 예보 리스트 생성 (기존 로직)
         daily = []
         for i in range(3):
             dt = (now + timedelta(days=i)).strftime('%Y%m%d')
@@ -156,4 +131,5 @@ class KMAApiClient:
         except: return "정보없음"
 
     async def _get_air_quality(self, lat, lon):
-        return {"pm10Value":"보통","pm10Grade":"2","pm25Value":"좋음","pm25Grade":"1"}
+        # [수정] 농도(Value)에는 반드시 숫자 문자열을, 등급(Grade)에는 글자를 넣어야 합니다.
+        return {"pm10Value":"35","pm10Grade":"보통","pm25Value":"18","pm25Grade":"좋음"}
