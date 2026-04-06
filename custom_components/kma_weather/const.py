@@ -7,6 +7,7 @@ CONF_API_KEY: Final = "api_key"
 CONF_LOCATION_ENTITY: Final = "location_entity"
 CONF_REG_ID_TEMP: Final = "reg_id_temp"
 CONF_REG_ID_LAND: Final = "reg_id_land"
+CONF_PREFIX: Final = "prefix"
 
 def convert_grid(lat, lon):
     """위경도 -> 기상청 격자(nx, ny) 변환"""
