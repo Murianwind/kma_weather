@@ -1,27 +1,27 @@
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, EntityCategory
+from homeassistant.helpers.entity import DeviceInfo
 from datetime import date
 import logging
 from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# [이름, 단위, 아이콘, DeviceClass, ID명, EntityCategory]
 SENSOR_TYPES = {
-    "TMP":                  ["기온",         UnitOfTemperature.CELSIUS,          "mdi:thermometer",        None,                          "temperature",      None],
-    "REH":                  ["습도",         PERCENTAGE,                          "mdi:water-percent",      None,                          "humidity",         None],
-    "WSD":                  ["풍속",         UnitOfSpeed.METERS_PER_SECOND,       "mdi:weather-windy",      None,                          "wind_speed",       None],
-    "VEC_KOR":              ["풍향",         None,                                "mdi:compass-outline",    None,                          "wind_direction",   None],
-    "POP":                  ["강수확률",     PERCENTAGE,                          "mdi:umbrella-outline",   None,                          "precipitation_prob", None],
-    "rain_start_time":      ["강수 시작 시각", None,                              "mdi:clock-outline",      None,                          "rain_start",       None],
-    "current_condition_kor":["현재 날씨",    None,                                "mdi:weather-cloudy",     None,                          "condition",        None],
-    "pm10Value":            ["미세먼지 농도", "㎍/㎥",                            "mdi:blur",               None,                          "pm10",             None],
-    "pm10Grade":            ["미세먼지 등급", None,                               "mdi:check-circle-outline", None,                        "pm10_grade",       None],
-    "pm25Value":            ["초미세먼지 농도", "㎍/㎥",                          "mdi:blur-linear",        None,                          "pm25",             None],
-    "pm25Grade":            ["초미세먼지 등급", None,                             "mdi:check-circle-outline", None,                        "pm25_grade",       None],
-    "last_updated":         ["업데이트 시간", None,                               "mdi:update",             SensorDeviceClass.TIMESTAMP,   "last_updated",     EntityCategory.DIAGNOSTIC],
-    "api_expire":           ["API 잔여일수",  "일",                               "mdi:key-alert",          None,                          "api_expire",       EntityCategory.DIAGNOSTIC],
+    "TMP": ["기온", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
+    "REH": ["습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
+    "WSD": ["풍속", UnitOfSpeed.METERS_PER_SECOND, "mdi:weather-windy", None, "wind_speed", None],
+    "VEC_KOR": ["풍향", None, "mdi:compass-outline", None, "wind_direction", None],
+    "POP": ["강수확률", PERCENTAGE, "mdi:umbrella-outline", None, "precipitation_prob", None],
+    "rain_start_time": ["강수 시작 시각", None, "mdi:clock-outline", None, "rain_start", None],
+    "current_condition_kor": ["현재 날씨", None, "mdi:weather-cloudy", None, "condition", None],
+    "pm10Value": ["미세먼지 농도", "㎍/㎥", "mdi:blur", None, "pm10", None],
+    "pm10Grade": ["미세먼지 등급", None, "mdi:check-circle-outline", None, "pm10_grade", None],
+    "pm25Value": ["초미세먼지 농도", "㎍/㎥", "mdi:blur-linear", None, "pm25", None],
+    "pm25Grade": ["초미세먼지 등급", None, "mdi:check-circle-outline", None, "pm25_grade", None],
+    "last_updated": ["업데이트 시간", None, "mdi:update", SensorDeviceClass.TIMESTAMP, "last_updated", EntityCategory.DIAGNOSTIC],
+    "api_expire": ["API 잔여일수", "일", "mdi:key-alert", None, "api_expire", EntityCategory.DIAGNOSTIC],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -35,32 +35,33 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._type = sensor_type
         self._entry = entry
-        prefix = entry.data.get(CONF_PREFIX, "kma")
+        prefix = entry.data.get(CONF_PREFIX, "kma").lower()
         details = SENSOR_TYPES[sensor_type]
 
-        id_name = details[4]
-        self.entity_id = f"sensor.{prefix}_{id_name}"
+        self.entity_id = f"sensor.{prefix}_{details[4]}"
         self._attr_name = f"{entry.title} {details[0]}"
         self._attr_native_unit_of_measurement = details[1]
         self._attr_icon = details[2]
         self._attr_device_class = details[3]
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
         self._attr_entity_category = details[5]
+        
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Murianwind",
+            model="integration",
+        )
 
     @property
     def native_value(self):
-        # [수정] api_expire 계산 로직 보강
         if self._type == "api_expire":
-            # options 우선 참조, 없을 시 data 참조
             expire_str = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
-            if not expire_str:
-                return None
+            if not expire_str: return None
             try:
                 expire = date.fromisoformat(str(expire_str).strip())
-                days_left = (expire - date.today()).days
-                return days_left
-            except (ValueError, TypeError) as e:
-                _LOGGER.error("날짜 형식 오류 (%s): %s", expire_str, e)
+                return (expire - date.today()).days
+            except (ValueError, TypeError):
                 return None
 
         data = self.coordinator.data
@@ -69,10 +70,8 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if self._type in weather:
             val = weather[self._type]
             if self._type in ["TMP", "REH", "WSD", "POP"] and val is not None:
-                try:
-                    return float(val)
-                except ValueError:
-                    return val
+                try: return float(val)
+                except ValueError: return val
             return val
         return data.get("air", {}).get(self._type)
 
@@ -82,29 +81,30 @@ class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
-        prefix = entry.data.get(CONF_PREFIX, "kma")
+        prefix = entry.data.get(CONF_PREFIX, "kma").lower()
         self.entity_id = f"sensor.{prefix}_location"
         self._attr_name = f"{entry.title} 현재위치"
         self._attr_unique_id = f"{entry.entry_id}_location"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Murianwind",
+            model="integration",
+        )
 
     @property
     def native_value(self):
         if not self.coordinator.data: return None
         w = self.coordinator.data.get("weather", {})
-        lat = w.get("debug_lat")
-        lon = w.get("debug_lon")
-        if lat and lon:
-            return f"{lat}, {lon}"
-        return None
+        lat, lon = w.get("debug_lat"), w.get("debug_lon")
+        return f"{lat}, {lon}" if lat and lon else None
 
     @property
     def extra_state_attributes(self):
         if not self.coordinator.data: return {}
         w = self.coordinator.data.get("weather", {})
         return {
-            "nx": w.get("debug_nx"),
-            "ny": w.get("debug_ny"),
-            "reg_id_temp": w.get("debug_reg_id_temp"),
-            "reg_id_land": w.get("debug_reg_id_land"),
+            "nx": w.get("debug_nx"), "ny": w.get("debug_ny"),
+            "reg_id_temp": w.get("debug_reg_id_temp"), "reg_id_land": w.get("debug_reg_id_land"),
             "air_station": w.get("debug_station"),
         }
