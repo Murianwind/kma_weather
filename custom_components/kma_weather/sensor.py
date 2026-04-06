@@ -6,7 +6,6 @@ from .const import DOMAIN, CONF_PREFIX
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     
-    # (한글이름, API키, 단위, 디바이스클래스, 직관적 영문ID)
     sensor_map = [
         ("현재온도", "TMP", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "current_temperature"),
         ("현재습도", "REH", "%", SensorDeviceClass.HUMIDITY, "current_humidity"),
@@ -17,14 +16,15 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ("내일최저온도", "TMN_tomorrow", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "tomorrow_low_temperature"),
         ("최고온도", "TMX_today", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "today_high_temperature"),
         ("최저온도", "TMN_today", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "today_low_temperature"),
-        ("미세먼지", "pm10Value", "㎍/㎥", SensorDeviceClass.PM10, "pm10"),
+        # [해결] 미세먼지 단위를 HA 표준인 µg/m³ 로 변경
+        ("미세먼지", "pm10Value", "µg/m³", SensorDeviceClass.PM10, "pm10"),
         ("미세먼지등급", "pm10Grade", None, None, "pm10_grade"),
         ("비시작시간오늘내일", "rain_start_time", None, None, "rain_start_time"),
         ("현재위치", "location_weather", None, None, "current_location"),
-        ("초미세먼지", "pm25Value", "㎍/㎥", SensorDeviceClass.PM25, "pm25"),
+        ("초미세먼지", "pm25Value", "µg/m³", SensorDeviceClass.PM25, "pm25"),
         ("초미세먼지등급", "pm25Grade", None, None, "pm25_grade"),
         ("현재날씨", "current_condition_kor", None, None, "current_weather"),
-        ("현재풍속", "WSD", "m/s", None, "current_wind_speed"), 
+        ("현재풍속", "WSD", "m/s", SensorDeviceClass.WIND_SPEED, "current_wind_speed"), 
         ("현재풍향", "VEC_KOR", None, None, "current_wind_direction"),
     ]
     
@@ -41,11 +41,9 @@ class KMACustomSensor(SensorEntity):
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = dev_class
         
-        # [핵심] 사용자가 입력한 Prefix를 가져와 직관적인 entity_id를 강제 조립
         prefix = entry.data.get(CONF_PREFIX, "kma").lower()
         self.entity_id = f"sensor.{prefix}_{intuitive_id}"
         self._attr_unique_id = f"{entry.entry_id}_{intuitive_id}"
-        
         self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
         
         if dev_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
@@ -61,11 +59,19 @@ class KMACustomSensor(SensorEntity):
         else:
             val = d.get("weather", {}).get(self._key)
         
-        if self._attr_device_class == SensorDeviceClass.TEMPERATURE and val is not None:
+        # [해결] 데이터가 없으면 "데이터 대기중" 문자열 대신 반드시 None을 반환해야 에러가 나지 않음
+        if val is None or val == "" or val == "-":
+            return None
+            
+        if self._attr_device_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
             try: return int(float(val))
-            except: pass
+            except: return None
+            
+        if self._attr_device_class in [SensorDeviceClass.PM10, SensorDeviceClass.PM25, SensorDeviceClass.WIND_SPEED]:
+            try: return float(val)
+            except: return None
 
-        return val if val is not None else "데이터 대기중"
+        return val
 
     @property
     def extra_state_attributes(self):
