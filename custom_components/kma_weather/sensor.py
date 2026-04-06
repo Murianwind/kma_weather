@@ -1,82 +1,46 @@
-"""Sensor platform for KMA Weather."""
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
-from homeassistant.const import UnitOfTemperature
-from datetime import datetime
-from .const import DOMAIN, CONF_PREFIX
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass # 피드백 2번 반영
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed
+from .const import DOMAIN
+
+SENSOR_TYPES = {
+    "TMP": ["기온", UnitOfTemperature.CELSIUS, "mdi:thermometer", None],
+    "REH": ["습도", PERCENTAGE, "mdi:water-percent", None],
+    "WSD": ["풍속", UnitOfSpeed.METERS_PER_SECOND, "mdi:weather-windy", None],
+    "VEC_KOR": ["풍향", None, "mdi:compass-outline", None],
+    "POP": ["강수확률", PERCENTAGE, "mdi:umbrella-outline", None],
+    "rain_start_time": ["강수 시작 시각", None, "mdi:clock-outline", None],
+    "current_condition_kor": ["현재 날씨", None, "mdi:weather-cloudy", None],
+    "pm10Value": ["미세먼지 농도", "㎍/㎥", "mdi:blur", None],
+    "pm10Grade": ["미세먼지 등급", None, "mdi:check-circle-outline", None],
+    "pm25Value": ["초미세먼지 농도", "㎍/㎥", "mdi:blur-linear", None],
+    "pm25Grade": ["초미세먼지 등급", None, "mdi:check-circle-outline", None],
+    "last_updated": ["업데이트 시간", None, "mdi:update", SensorDeviceClass.TIMESTAMP], # 피드백 2번 반영
+}
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    
-    sensor_map = [
-        ("현재온도", "TMP", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "current_temperature"),
-        ("현재체감온도", "apparent_temp", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "apparent_temperature"),
-        ("현재습도", "REH", "%", SensorDeviceClass.HUMIDITY, "current_humidity"),
-        ("강수확률", "POP", "%", None, "precipitation_probability"),
-        ("내일오전날씨", "weather_am_tomorrow", None, None, "tomorrow_am_weather"),
-        ("내일오후날씨", "weather_pm_tomorrow", None, None, "tomorrow_pm_weather"),
-        ("내일최고온도", "TMX_tomorrow", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "tomorrow_high_temperature"),
-        ("내일최저온도", "TMN_tomorrow", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "tomorrow_low_temperature"),
-        ("최고온도", "TMX_today", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "today_high_temperature"),
-        ("최저온도", "TMN_today", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "today_low_temperature"),
-        ("미세먼지", "pm10Value", "µg/m³", SensorDeviceClass.PM10, "pm10"),
-        ("미세먼지등급", "pm10Grade", None, None, "pm10_grade"),
-        ("비시작시간오늘내일", "rain_start_time", None, None, "rain_start_time"),
-        ("현재위치", "location_weather", None, None, "current_location"),
-        ("초미세먼지", "pm25Value", "µg/m³", SensorDeviceClass.PM25, "pm25"),
-        ("초미세먼지등급", "pm25Grade", None, None, "pm25_grade"),
-        ("현재날씨", "current_condition_kor", None, None, "current_weather"),
-        ("현재풍속", "WSD", "m/s", None, "current_wind_speed"), 
-        ("현재풍향", "VEC_KOR", None, None, "current_wind_direction"),
-        ("업데이트 시간", "updated_at", None, SensorDeviceClass.TIMESTAMP, "last_updated"),
-    ]
-    
-    entities = [KMACustomSensor(coordinator, entry, *s) for s in sensor_map]
-    entities.append(APIExpirationSensor(entry))
-    async_add_entities(entities)
+    async_add_entities([KMACustomSensor(coordinator, s_type, entry) for s_type in SENSOR_TYPES])
 
-class KMACustomSensor(SensorEntity):
-    _attr_has_entity_name = True
-    def __init__(self, coordinator, entry, name, key, unit, dev_class, intuitive_id):
-        self.coordinator = coordinator
-        self._key = key
-        self._attr_name = name
-        self._attr_native_unit_of_measurement = unit
-        self._attr_device_class = dev_class
-        prefix = entry.data.get(CONF_PREFIX, "kma").lower()
-        self.entity_id = f"sensor.{prefix}_{intuitive_id}"
-        self._attr_unique_id = f"{entry.entry_id}_{intuitive_id}"
-        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title, "manufacturer": "Murianwind", "model": "integration"}
-        
-        # [수정] 모든 숫자형 센서의 출력 정밀도를 0(정수)으로 고정
-        if dev_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY, SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
-            self._attr_suggested_display_precision = 0
+class KMACustomSensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator, sensor_type, entry):
+        super().__init__(coordinator)
+        self._type = sensor_type
+        self._attr_name = f"{entry.title} {SENSOR_TYPES[sensor_type][0]}"
+        self._attr_native_unit_of_measurement = SENSOR_TYPES[sensor_type][1]
+        self._attr_icon = SENSOR_TYPES[sensor_type][2]
+        self._attr_device_class = SENSOR_TYPES[sensor_type][3] # DeviceClass 할당
+        self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
 
     @property
     def native_value(self):
-        d = self.coordinator.data
-        if not d: return None
-        val = d.get("air", {}).get(self._key) if self._key.startswith("pm") else d.get("weather", {}).get(self._key)
-        if val is None or str(val).strip() in ["", "-"]: return None
-        
-        if self._attr_device_class == SensorDeviceClass.TIMESTAMP:
-            try: return datetime.fromisoformat(str(val))
-            except: return val
-        
-        # [보강] 온도 센서인 경우 한 번 더 정수로 확실히 변환
-        if self._attr_device_class == SensorDeviceClass.TEMPERATURE:
-            try: return int(float(val))
-            except: return val
-            
-        return val
-
-class APIExpirationSensor(SensorEntity):
-    _attr_has_entity_name = True
-    _attr_native_unit_of_measurement = "일"
-    def __init__(self, entry):
-        prefix = entry.data.get(CONF_PREFIX, "kma").lower()
-        self.entity_id = f"sensor.{prefix}_api_expiration_days"
-        self._attr_name = "API 인증키 남은 일수"
-        self._attr_unique_id = f"{entry.entry_id}_api_expiry"
-        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title, "manufacturer": "Murianwind", "model": "integration"}
-    @property
-    def native_value(self): return 730
+        data = self.coordinator.data
+        if not data: return None
+        weather = data.get("weather", {})
+        if self._type in weather:
+            val = weather[self._type]
+            # 수치형 데이터 형변환
+            if self._type in ["TMP", "REH", "WSD", "POP"] and val is not None:
+                return float(val)
+            return val
+        return data.get("air", {}).get(self._type)
