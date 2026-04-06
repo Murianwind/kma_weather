@@ -8,8 +8,5 @@
   "codeowners": ["@Murianwind"],
   "config_flow": true,
   "iot_class": "cloud_polling",
-  "requirements": [
-    "aiohttp>=3.9.0",
-    "pytz>=2023.3"
-  ]
+  "requirements": ["aiohttp>=3.9.0"]
 }
