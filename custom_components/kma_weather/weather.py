@@ -1,14 +1,19 @@
 """Weather platform for KMA Weather."""
+from __future__ import annotations
+
 from homeassistant.components.weather import (
     WeatherEntity,
     WeatherEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature, UnitOfSpeed, UnitOfPrecipitation
+from homeassistant.const import UnitOfTemperature, UnitOfSpeed
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
+
+# UnitOfPrecipitation 대신 직접 문자열 "mm" 사용
+UNIT_PRECIPITATION = "mm"
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -22,7 +27,7 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
     _attr_has_entity_name = True
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_native_speed_unit = UnitOfSpeed.METERS_PER_SECOND
-    _attr_native_precipitation_unit = UnitOfPrecipitation.MILLIMETERS
+    _attr_native_precipitation_unit = UNIT_PRECIPITATION
     _attr_supported_features = WeatherEntityFeature.FORECAST_DAILY
 
     def __init__(self, coordinator, entry):
