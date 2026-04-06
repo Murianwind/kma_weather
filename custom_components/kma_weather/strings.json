@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "기상청 스마트 날씨 설정",
-        "description": "마이페이지의 **개인 API인증키**에서 **인증키 복사(Encoding)**를 선택해 복사한 API키를 아래에 입력해주세요.\n\n### API 키 신청 안내 (아래 API를 모두 신청하셔야 데이터가 출력됩니다)\n1. [기상청_단기예보 조회서비스](https://www.data.go.kr/data/15084084/openapi.do)\n2. [기상청_중기예보 조회서비스](https://www.data.go.kr/data/15059468/openapi.do)\n3. [한국환경공단_에어코리아_대기오염정보](https://www.data.go.kr/data/15073861/openapi.do)\n\n날씨를 측정할 위치(Zone 또는 이동 기기)를 선택해주세요.",
+        "description": "공공데이터포털 마이페이지의 **일반 인증키(Encoding)**를 복사하여 입력해주세요.\n\n### API 신청 안내 (아래 3개 모두 신청 필수)\n1. [기상청 단기예보](https://www.data.go.kr/data/15084084/openapi.do)\n2. [기상청 중기예보](https://www.data.go.kr/data/15059468/openapi.do)\n3. [에어코리아 대기오염](https://www.data.go.kr/data/15073861/openapi.do)\n\n등록할 위치(고정 지역 또는 이동 기기)를 선택해주세요.",
         "data": {
-          "api_key": "개인 API 인증키 (Encoding)",
-          "location_entity": "날씨 측정 위치 엔티티"
+          "api_key": "개인 인증키 (Encoding)",
+          "location_entity": "위치 엔티티",
+          "prefix": "엔티티 접두사 (영문 소문자, 예: home)"
         }
       }
     },
