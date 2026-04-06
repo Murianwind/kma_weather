@@ -23,8 +23,7 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
     _attr_has_entity_name = True
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     
-    # [해결] 백엔드에서 규격에 맞는 m/s 단위를 선언.
-    # 만약 HA UI에서 여전히 km/h로 나온다면, 날씨 카드의 톱니바퀴를 눌러 직접 m/s로 변경해야 합니다.
+    # [해결] 백엔드는 무조건 m/s 기준. 화면 표시는 사용자가 UI에서 선택.
     _attr_native_speed_unit = UnitOfSpeed.METERS_PER_SECOND 
     
     _attr_native_pressure_unit = "hPa"
