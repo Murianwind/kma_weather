@@ -4,7 +4,7 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .coordinator import KMAWeatherUpdateCoordinator
 
-# [수정] "button" 플랫폼 추가
+# [수정] 모바일 기기용 수동 업데이트 버튼을 위해 "button" 플랫폼 추가
 PLATFORMS = ["sensor", "weather", "button"]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
