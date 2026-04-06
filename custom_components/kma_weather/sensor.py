@@ -1,8 +1,12 @@
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, EntityCategory
+from homeassistant.helpers.entity import DeviceInfo
 from datetime import date
+import logging
 from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
+
+_LOGGER = logging.getLogger(__name__)
 
 # [이름, 단위, 아이콘, DeviceClass, ID명, EntityCategory]
 SENSOR_TYPES = {
@@ -17,7 +21,6 @@ SENSOR_TYPES = {
     "pm10Grade":            ["미세먼지 등급", None,                               "mdi:check-circle-outline", None,                        "pm10_grade",       None],
     "pm25Value":            ["초미세먼지 농도", "㎍/㎥",                          "mdi:blur-linear",        None,                          "pm25",             None],
     "pm25Grade":            ["초미세먼지 등급", None,                             "mdi:check-circle-outline", None,                        "pm25_grade",       None],
-    # [3번] DIAGNOSTIC 센서
     "last_updated":         ["업데이트 시간", None,                               "mdi:update",             SensorDeviceClass.TIMESTAMP,   "last_updated",     EntityCategory.DIAGNOSTIC],
     "api_expire":           ["API 잔여일수",  "일",                               "mdi:key-alert",          None,                          "api_expire",       EntityCategory.DIAGNOSTIC],
 }
@@ -25,7 +28,6 @@ SENSOR_TYPES = {
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     entities = [KMACustomSensor(coordinator, s_type, entry) for s_type in SENSOR_TYPES]
-    # [5번] 현재위치 디버그 센서 (별도 클래스)
     entities.append(KMALocationDebugSensor(coordinator, entry))
     async_add_entities(entities)
 
@@ -37,51 +39,54 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         prefix = entry.data.get(CONF_PREFIX, "kma")
         details = SENSOR_TYPES[sensor_type]
 
-        id_name = details[4]
-        self.entity_id = f"sensor.{prefix}_{id_name}"
+        self.entity_id = f"sensor.{prefix}_{details[4]}"
         self._attr_name = f"{entry.title} {details[0]}"
         self._attr_native_unit_of_measurement = details[1]
         self._attr_icon = details[2]
         self._attr_device_class = details[3]
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
-        # [3번] EntityCategory 설정
         self._attr_entity_category = details[5]
 
-        # [추가] 기기 정보 연결 (기존 weather/button과 동일하게 설정)
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.title,
-            "manufacturer": "Murianwind",
-            "model": "integration"
-        }
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Murianwind",
+            model="integration"
+        )
 
     @property
     def native_value(self):
-        # [7번] api_expire는 만료일로부터 실시간 계산
+        # API 만료일 실시간 계산
         if self._type == "api_expire":
             expire_str = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
-            if not expire_str:
-                return None
+            if not expire_str: return None
             try:
-                expire = date.fromisoformat(expire_str)
+                expire = date.fromisoformat(str(expire_str).strip())
                 return (expire - date.today()).days
-            except Exception:
-                return None
+            except Exception: return None
 
-        data = self.coordinator.data
-        if not data: return None
-        weather = data.get("weather", {})
+        if not self.coordinator.data: return None
+        
+        # 날씨 데이터 확인
+        weather = self.coordinator.data.get("weather", {})
         if self._type in weather:
             val = weather[self._type]
             if self._type in ["TMP", "REH", "WSD", "POP"] and val is not None:
-                return float(val)
+                try: return float(val)
+                except ValueError: return val
             return val
-        return data.get("air", {}).get(self._type)
+            
+        # 대기질(에어코리아) 데이터 확인
+        air = self.coordinator.data.get("air", {})
+        if self._type in air:
+            return air.get(self._type)
+            
+        # 기타 데이터 (업데이트 시간 등)
+        return self.coordinator.data.get(self._type)
 
-# [5번] 현재위치 + 디버그 정보 센서
 class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
     _attr_icon = "mdi:map-marker"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC  # [3번]
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
@@ -90,33 +95,36 @@ class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = f"{entry.title} 현재위치"
         self._attr_unique_id = f"{entry.entry_id}_location"
 
-        # [추가] 기기 정보 연결
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.title,
-            "manufacturer": "Murianwind",
-            "model": "integration"
-        }
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Murianwind",
+            model="integration"
+        )
 
     @property
     def native_value(self):
+        """좌표 대신 주소 정보를 우선 출력하도록 수정"""
         if not self.coordinator.data: return None
         w = self.coordinator.data.get("weather", {})
-        # 좌표를 현재위치 값으로 표시
+        # 주소 정보(동네 이름)가 있다면 이를 반환
+        address = w.get("address")
+        if address:
+            return address
+        # 주소가 없는 경우 기존처럼 좌표 출력
         lat = w.get("debug_lat")
         lon = w.get("debug_lon")
-        if lat and lon:
-            return f"{lat}, {lon}"
-        return None
+        return f"{lat}, {lon}" if lat and lon else None
 
     @property
     def extra_state_attributes(self):
         if not self.coordinator.data: return {}
         w = self.coordinator.data.get("weather", {})
+        air = self.coordinator.data.get("air", {})
         return {
             "nx": w.get("debug_nx"),
             "ny": w.get("debug_ny"),
             "reg_id_temp": w.get("debug_reg_id_temp"),
             "reg_id_land": w.get("debug_reg_id_land"),
-            "air_station": w.get("debug_station"),
+            "air_station": air.get("station"), # 에어 스테이션 정보 보강
         }
