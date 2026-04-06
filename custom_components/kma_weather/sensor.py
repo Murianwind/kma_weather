@@ -9,7 +9,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     sensor_map = [
         ("현재온도", "TMP", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "current_temperature"),
-        # [추가] 체감온도 센서
         ("현재체감온도", "apparent_temp", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "apparent_temperature"),
         ("현재습도", "REH", "%", SensorDeviceClass.HUMIDITY, "current_humidity"),
         ("강수확률", "POP", "%", None, "precipitation_probability"),
@@ -47,8 +46,10 @@ class KMACustomSensor(SensorEntity):
         self.entity_id = f"sensor.{prefix}_{intuitive_id}"
         self._attr_unique_id = f"{entry.entry_id}_{intuitive_id}"
         self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title, "manufacturer": "Murianwind", "model": "integration"}
-        if dev_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
-            self._attr_suggested_display_precision = 1 if key == "apparent_temp" else 0
+        
+        # [수정] 모든 숫자형 센서의 출력 정밀도를 0(정수)으로 고정
+        if dev_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY, SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
+            self._attr_suggested_display_precision = 0
 
     @property
     def native_value(self):
@@ -56,12 +57,16 @@ class KMACustomSensor(SensorEntity):
         if not d: return None
         val = d.get("air", {}).get(self._key) if self._key.startswith("pm") else d.get("weather", {}).get(self._key)
         if val is None or str(val).strip() in ["", "-"]: return None
+        
         if self._attr_device_class == SensorDeviceClass.TIMESTAMP:
             try: return datetime.fromisoformat(str(val))
             except: return val
+        
+        # [보강] 온도 센서인 경우 한 번 더 정수로 확실히 변환
         if self._attr_device_class == SensorDeviceClass.TEMPERATURE:
-            try: return float(val) if self._key == "apparent_temp" else int(float(val))
-            except: return None
+            try: return int(float(val))
+            except: return val
+            
         return val
 
 class APIExpirationSensor(SensorEntity):
