@@ -48,9 +48,9 @@ class KMAWeatherAPI:
     async def fetch_data(self, lat, lon, nx, ny):
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
-        tasks = [self._get_short_term(now), self._get_mid_term(now), self._get_air_quality()]
-        short_res, mid_res, air_data = await asyncio.gather(*tasks)
-        return self._merge_all(now, short_res, mid_res, air_data)
+        tasks = [self._get_short_term(now), self._get_mid_term(now), self._get_air_quality(), self._get_address(lat, lon)]
+        short_res, mid_res, air_data, address = await asyncio.gather(*tasks)
+        return self._merge_all(now, short_res, mid_res, air_data, address)
 
     async def _get_air_quality(self):
         """에어코리아 근접 측정소 조회 → 실시간 대기질 조회."""
@@ -116,6 +116,24 @@ class KMAWeatherAPI:
     def _translate_grade(self, g):
         return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
 
+    async def _get_address(self, lat, lon):
+        """Nominatim 역지오코딩으로 좌표 → 한국어 주소 변환."""
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=16"
+        headers = {"User-Agent": "HA-KMA", "Accept-Language": "ko-KR"}
+        try:
+            async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                d = await resp.json(content_type=None)
+                a = d.get("address", {})
+                parts = [
+                    a.get("province", a.get("city", "")),
+                    a.get("borough", a.get("county", "")),
+                    a.get("suburb", ""),
+                ]
+                return " ".join([i for i in parts if i]).strip()
+        except Exception as e:
+            _LOGGER.warning("주소 변환 실패: %s", e)
+            return f"{lat:.4f}, {lon:.4f}"
+
     async def _get_short_term(self, now):
         adj = now - timedelta(minutes=10)
         base_d = adj.strftime("%Y%m%d")
@@ -159,8 +177,10 @@ class KMAWeatherAPI:
         ]
         return await asyncio.gather(*(fetch(u) for u in urls))
 
-    def _merge_all(self, now, short_res, mid_res, air_data):
+    def _merge_all(self, now, short_res, mid_res, air_data, address=None):
         weather_data = {"forecast_daily": [], "forecast_twice_daily": []}
+        if address:
+            weather_data["address"] = address
         forecast_map, rain_start, last_past = {}, "강수없음", None
 
         if short_res and "response" in short_res:
