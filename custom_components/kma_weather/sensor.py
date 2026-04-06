@@ -24,7 +24,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ("초미세먼지", "pm25Value", "µg/m³", SensorDeviceClass.PM25, "pm25"),
         ("초미세먼지등급", "pm25Grade", None, None, "pm25_grade"),
         ("현재날씨", "current_condition_kor", None, None, "current_weather"),
-        # [수정] 풍속 자동 변환을 막기 위해 DeviceClass를 제거하고 순수 m/s 문자열 사용
         ("현재풍속", "WSD", "m/s", None, "current_wind_speed"), 
         ("현재풍향", "VEC_KOR", None, None, "current_wind_direction"),
         ("업데이트 시간", "updated_at", None, SensorDeviceClass.TIMESTAMP, "last_updated"),
@@ -46,7 +45,14 @@ class KMACustomSensor(SensorEntity):
         prefix = entry.data.get(CONF_PREFIX, "kma").lower()
         self.entity_id = f"sensor.{prefix}_{intuitive_id}"
         self._attr_unique_id = f"{entry.entry_id}_{intuitive_id}"
-        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
+        
+        # [수정] 기기 정보에 제조사와 모델명 추가
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": entry.title,
+            "manufacturer": "Murianwind",
+            "model": "integration"
+        }
         
         if dev_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
             self._attr_suggested_display_precision = 0
@@ -96,6 +102,13 @@ class APIExpirationSensor(SensorEntity):
         self.entity_id = f"sensor.{prefix}_api_expiration_days"
         self._attr_name = "API 인증키 남은 일수"
         self._attr_unique_id = f"{entry.entry_id}_api_expiry"
-        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
+        
+        # [수정] 기기 정보에 제조사와 모델명 추가
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": entry.title,
+            "manufacturer": "Murianwind",
+            "model": "integration"
+        }
     @property
     def native_value(self): return 730
