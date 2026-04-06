@@ -74,12 +74,17 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @property
     def extra_state_attributes(self):
+        """기상청 및 대기질 추가 속성 노출"""
+        if not self.coordinator.data:
+            return None
+            
         w = self.coordinator.data.get("weather", {})
+        air = self.coordinator.data.get("air", {})
+        
         return {
-            "today_max": w.get("TMX_today"),
-            "today_min": w.get("TMN_today"),
-            "tomorrow_am": w.get("weather_am_tomorrow"),
-            "tomorrow_pm": w.get("weather_pm_tomorrow"),
-            "location": w.get("location_weather"),
+            "rain_start_time": w.get("rain_start_time"),
+            "pm10": air.get("pm10Value"),
+            "pm25": air.get("pm25Value"),
+            "station": air.get("station"),
             "attribution": "기상청 및 에어코리아 API",
         }
