@@ -11,7 +11,20 @@
 * **수동 업데이트 버튼**: 이동 기기 등록 시 즉시 데이터를 갱신할 수 있는 리프레시 버튼 제공.
 * **고해상도 날씨 요약**: 10일간의 일별 예보 및 하루 2회(오전/오후) 상세 예보 카드 지원.
 
-## ⚙️ 설치 및 설정
+## 🚀 설치 방법
+
+### 방법 1: HACS (권장)
+1. **HACS > Integrations > 우측 상단 메뉴 > Custom repositories** 선택.
+2. 본 저장소 URL(`https://github.com/murianwind/kma_weather`)을 입력하고 Category를 **Integration**으로 선택하여 추가합니다.
+3. 목록에서 **기상청 스마트 날씨 (KMA Weather Smart)**를 찾아 설치합니다.
+4. Home Assistant를 **재시작**합니다.
+
+### 방법 2: 수동 설치
+1. 본 저장소의 `custom_components/kma_weather` 폴더를 다운로드합니다.
+2. Home Assistant 설정 폴더(config) 내의 `custom_components` 폴더에 붙여넣습니다.
+3. Home Assistant를 **재시작**합니다.
+
+## ⚙️ 설정 가이드
 
 ### 1. API 키 신청 (필수)
 아래 3개 항목을 [공공데이터포털](https://www.data.go.kr/)에서 신청하고 **일반 인증키(Encoding)**를 준비하세요.
@@ -19,14 +32,11 @@
 2. [기상청 중기예보](https://www.data.go.kr/data/15059468/openapi.do)
 3. [에어코리아 대기오염](https://www.data.go.kr/data/15073861/openapi.do)
 
-### 2. 설치
-`custom_components/kma_weather/` 폴더에 모든 파일을 복사한 후 Home Assistant를 재시작하세요.
-
-### 3. 통합구성요소 추가
+### 2. 통합구성요소 추가
 1. **설정 > 기기 및 서비스 > 통합구성요소 추가**에서 `기상청 스마트 날씨`를 검색합니다.
 2. **인증키**: 복사한 Encoding 키를 입력합니다.
 3. **위치 선택**: 고정된 `Zone` 또는 이동 중인 `device_tracker`를 선택합니다.
-4. **Prefix**: 센서 ID 앞에 붙을 영문(예: `home`, `car`)을 입력합니다.
+4. **Prefix**: 센서 ID 앞에 붙을 영문(예: `home`, `car`)을 입력합니다. (비워둘 시 기본값 사용)
 
 ## 📊 제공 엔티티 (Prefix: home 기준 예시)
 
