@@ -1,189 +1,228 @@
-"""API client for KMA Weather."""
 import logging
+import asyncio
 import aiohttp
 import math
-from datetime import datetime, timedelta, timezone
-from .const import convert_grid
+from datetime import datetime, timedelta
+from urllib.parse import quote
+import pytz
 
 _LOGGER = logging.getLogger(__name__)
 
-class KMAApiClient:
-    def __init__(self, api_key, session: aiohttp.ClientSession):
-        self.api_key = api_key.strip() if isinstance(api_key, str) else api_key
+class KMAWeatherAPI:
+    """기상청 및 에어코리아 API 통합 관리 클래스 (최종 안정화 버전)"""
+
+    def __init__(self, session, api_key, air_key, nx, ny, reg_id_temp, reg_id_land, lat, lon):
         self.session = session
+        self.api_key = api_key
+        self.air_key = air_key
+        self.nx = nx
+        self.ny = ny
+        self.reg_id_temp = reg_id_temp
+        self.reg_id_land = reg_id_land
+        self.lat = lat
+        self.lon = lon
+        self.tz = pytz.timezone("Asia/Seoul")
 
-    async def fetch_data(self, lat, lon):
-        nx, ny = convert_grid(lat, lon)
-        now = datetime.now()
+    def _wgs84_to_tm(self, lat, lon):
+        """EPSG:5181 (GRS80 중부원점) 정밀 가우스-크뤼거 변환 (타원체 보정 적용)"""
+        a, f = 6378137.0, 1 / 298.257222101
+        e2 = 2*f - f**2
+        lat0, lon0 = math.radians(38.0), math.radians(127.0)
+        k0, x0, y0 = 1.0, 200000.0, 500000.0
+        phi, lam = math.radians(lat), math.radians(lon)
         
-        short_term = await self._get_short_term(nx, ny, now)
-        mid_land, mid_ta = await self._get_mid_term(now)
-        air = await self._get_air_quality(lat, lon)
+        N = a / math.sqrt(1 - e2 * math.sin(phi)**2)
+        T, C, A = math.tan(phi)**2, e2 / (1 - e2) * math.cos(phi)**2, math.cos(phi) * (lam - lon0)
         
-        weather = self._merge_forecasts(short_term, mid_land, mid_ta, now)
+        def M(p):
+            return a * ((1 - e2/4 - 3*e2**2/64 - 5*e2**3/256) * p - 
+                        (3*e2/8 + 3*e2**2/32 + 45*e2**3/1024) * math.sin(2*p) + 
+                        (15*e2**2/256 + 45*e2**3/1024) * math.sin(4*p) - 
+                        (35*e2**3/3072) * math.sin(6*p))
         
-        apparent = self._calculate_apparent_temp(
-            weather.get("TMP"), weather.get("REH"), weather.get("WSD")
-        )
-        weather["apparent_temp"] = int(float(apparent)) if apparent is not None else None
-        
-        weather["location_weather"] = await self._get_address(lat, lon)
-        weather["updated_at"] = datetime.now(timezone.utc).isoformat()
-        
-        return {"weather": weather, "air": air}
+        tm_x = x0 + k0 * N * (A + (1 - T + C) * A**3 / 6 + (5 - 18 * T + T**2 + 72 * C - 58 * (e2 / (1 - e2))) * A**5 / 120)
+        tm_y = y0 + k0 * (M(phi) - M(lat0) + N * math.tan(phi) * (A**2 / 2 + (5 - T + 9 * C + 4 * C**2) * A**4 / 24 + (61 - 58 * T + T**2 + 600 * C - 330 * (e2 / (1 - e2))) * A**6 / 720))
+        return tm_x, tm_y
 
-    def _calculate_apparent_temp(self, temp, reh, wsd):
+    async def fetch_data(self):
+        """메인 데이터 수집 메서드"""
+        now = datetime.now(self.tz)
+        tasks = [self._get_short_term(now), self._get_mid_term(now), self._get_air_quality()]
+        short_res, mid_res, air_data = await asyncio.gather(*tasks)
+        return self._merge_all(now, short_res, mid_res, air_data)
+
+    async def _get_air_quality(self):
+        """위치 기반 대기질 수집 (측정소 근접 조회 -> 데이터 조회)"""
+        if not self.air_key: return {}
         try:
-            t, rh = float(temp), float(reh)
-            v = float(wsd) * 3.6
-            if t <= 10 and v >= 4.68:
-                return 13.12 + 0.6215 * t - 11.37 * (v**0.16) + 0.3965 * t * (v**0.16)
-            if t >= 18:
-                tw = t * math.atan(0.151977 * (rh + 8.313595)**0.5) + math.atan(t + rh) - math.atan(rh - 1.676331) + 0.00391838 * (rh**1.5) * math.atan(0.023101 * rh) - 4.686035
-                return -0.25 + 1.04 * tw + 0.65
-            return t
-        except: return temp
+            tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
+            timeout = aiohttp.ClientTimeout(total=15)
+            
+            st_url = f"http://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList?serviceKey={self.air_key}&returnType=json&tmX={tm_x}&tmY={tm_y}&ver=1.0"
+            async with self.session.get(st_url, timeout=timeout) as resp:
+                if resp.status != 200: return {}
+                st_json = await resp.json()
+                station_name = st_json['response']['body']['items'][0]['stationName']
 
-    async def _get_short_term(self, nx, ny, now):
-        today_str = now.strftime('%Y%m%d')
-        base_h = max([h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= now.hour], default=2)
-        url = f"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?serviceKey={self.api_key}&dataType=JSON&numOfRows=1000&base_date={today_str}&base_time={base_h:02d}00&nx={nx}&ny={ny}"
+            data_url = f"http://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty?serviceKey={self.air_key}&returnType=json&stationName={quote(station_name)}&dataTerm=daily&ver=1.0"
+            async with self.session.get(data_url, timeout=timeout) as resp:
+                if resp.status != 200: return {}
+                item = (await resp.json())['response']['body']['items'][0]
+                return {
+                    "pm10Value": item.get("pm10Value"),
+                    "pm10Grade": self._translate_grade(item.get("pm10Grade")),
+                    "pm25Value": item.get("pm25Value"),
+                    "pm25Grade": self._translate_grade(item.get("pm25Grade")),
+                    "station": station_name
+                }
+        except Exception as e:
+            _LOGGER.warning("에어코리아 수집 실패: %s", e)
+        return {}
+
+    def _translate_grade(self, g):
+        return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
+
+    async def _get_short_term(self, now):
+        """단기 예보 API 호출 (자정 경계 처리 포함)"""
+        adj = now - timedelta(minutes=10)
+        base_d = adj.strftime("%Y%m%d")
         
-        data, daily_raw = {"rain_start_time": "비안옴"}, {}
+        valid_hours = [h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= adj.hour]
+        if valid_hours:
+            base_h = max(valid_hours)
+        else:
+            adj_prev = adj - timedelta(days=1)
+            base_d = adj_prev.strftime("%Y%m%d")
+            base_h = 23
+            
+        url = f"https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getVilageFcst?dataType=JSON&base_date={base_d}&base_time={base_h:02d}00&nx={self.nx}&ny={self.ny}&numOfRows=1500&authKey={self.api_key}"
         try:
-            async with self.session.get(url, timeout=15) as resp:
-                res = await resp.json()
-                items = res['response']['body']['items']['item']
-                for it in items:
-                    cat, val, dt, tm = it['category'], it['fcstValue'], it['fcstDate'], it['fcstTime']
-                    if dt not in daily_raw: daily_raw[dt] = {'am': {}, 'pm': {}, 'tmps': [], 'pops': []}
-                    if cat == 'TMP': daily_raw[dt]['tmps'].append(float(val))
-                    if cat == 'POP': daily_raw[dt]['pops'].append(int(val))
-                    if tm == '0900': daily_raw[dt]['am'][cat] = val
-                    if tm == '1500': daily_raw[dt]['pm'][cat] = val
-                    if dt == today_str and cat not in data: data[cat] = val
-                    if cat == 'TMX': data[f"TMX_{dt}"] = val
-                    if cat == 'TMN': data[f"TMN_{dt}"] = val
-        except Exception as e: _LOGGER.error("단기예보 로드 실패: %s", e)
-        data["daily_raw"] = daily_raw
-        return data
+            async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                return await r.json() if r.status == 200 else None
+        except Exception as e:
+            _LOGGER.error("단기예보 API 에러: %s", e)
+            return None
 
     async def _get_mid_term(self, now):
-        try:
-            base = (now if now.hour >= 6 else now - timedelta(days=1)).strftime("%Y%m%d") + ("1800" if now.hour < 6 or now.hour >= 18 else "0600")
-            l_url = f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst?serviceKey={self.api_key}&dataType=JSON&regId=11B00000&tmFc={base}"
-            t_url = f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa?serviceKey={self.api_key}&dataType=JSON&regId=11B10101&tmFc={base}"
-            async with self.session.get(l_url) as r1, self.session.get(t_url) as r2:
-                l_res = await r1.json()
-                t_res = await r2.json()
-                return l_res['response']['body']['items']['item'][0], t_res['response']['body']['items']['item'][0]
-        except: return {}, {}
+        """중기 예보 병렬 호출"""
+        if now.hour < 6:
+            base_tm = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
+        elif now.hour < 18:
+            base_tm = now.strftime("%Y%m%d") + "0600"
+        else:
+            base_tm = now.strftime("%Y%m%d") + "1800"
 
-    def _merge_forecasts(self, short, mid_l, mid_t, now):
-        daily_raw = short.pop("daily_raw", {})
-        today_str = now.strftime('%Y%m%d')
-        
-        # 내일 데이터 보정
-        tom_str = (now + timedelta(days=1)).strftime('%Y%m%d')
-        if tom_str in daily_raw:
-            short["TMX_tomorrow"] = int(float(short.get(f"TMX_{tom_str}", max(daily_raw[tom_str]['tmps']))))
-            short["TMN_tomorrow"] = int(float(short.get(f"TMN_{tom_str}", min(daily_raw[tom_str]['tmps']))))
-            short["weather_am_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['am'].get('SKY'), daily_raw[tom_str]['am'].get('PTY'))
-            short["weather_pm_tomorrow"] = self._sky_to_kor(daily_raw[tom_str]['pm'].get('SKY'), daily_raw[tom_str]['pm'].get('PTY'))
+        async def fetch(u):
+            try:
+                async with self.session.get(u, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    return await r.json() if r.status == 200 else None
+            except Exception as e:
+                _LOGGER.warning("중기 API 호출 실패: %s", e)
+                return None
 
-        if today_str in daily_raw:
-            short["TMX_today"] = int(float(short.get(f"TMX_{today_str}", max(daily_raw[today_str]['tmps']))))
-            short["TMN_today"] = int(float(short.get(f"TMN_{today_str}", min(daily_raw[today_str]['tmps']))))
-        
-        short["current_condition_kor"] = self._sky_to_kor(short.get("SKY"), short.get("PTY"))
-        short["current_condition"] = self._get_condition(short.get("SKY"), short.get("PTY"))
-        short["VEC_KOR"] = self._get_wind_dir(short.get("VEC"))
-        
-        daily, twice = [], []
+        urls = [
+            f"https://apihub.kma.go.kr/api/typ02/openApi/MidFcstInfoService/getMidTa?dataType=JSON&regId={self.reg_id_temp}&tmFc={base_tm}&authKey={self.api_key}",
+            f"https://apihub.kma.go.kr/api/typ02/openApi/MidFcstInfoService/getMidLandFcst?dataType=JSON&regId={self.reg_id_land}&tmFc={base_tm}&authKey={self.api_key}"
+        ]
+        return await asyncio.gather(*(fetch(u) for u in urls))
 
-        for i in range(11):
-            dt_obj = now + timedelta(days=i)
-            dt_str = dt_obj.strftime('%Y%m%d')
+    def _merge_all(self, now, short_res, mid_res, air_data):
+        """데이터 병합 및 HA 규격 최적화"""
+        weather_data = {"forecast_daily": [], "forecast_twice_daily": []}
+        forecast_map, rain_start, last_past_slot = {}, "강수없음", None
+        
+        if short_res and 'response' in short_res:
+            items = short_res['response']['body']['items']['item']
+            for it in items:
+                d, t, cat, val = it['fcstDate'], it['fcstTime'], it['category'], it['fcstValue']
+                if d not in forecast_map: forecast_map[d] = {}
+                if t not in forecast_map[d]: forecast_map[d][t] = {}
+                forecast_map[d][t][cat] = val
+
+            # 현재 상태 추출 및 강수 감지 (눈 포함)
+            for d in sorted(forecast_map.keys()):
+                for t in sorted(forecast_map[d].keys()):
+                    f_dt = datetime.strptime(f"{d}{t}", "%Y%m%d%H%M").replace(tzinfo=self.tz)
+                    if f_dt <= now: last_past_slot = forecast_map[d][t]
+                    if rain_start == "강수없음" and forecast_map[d][t].get("PTY") in ["1", "2", "3", "4", "7"]:
+                        if f_dt >= now:
+                            rain_start = f"{t[:2]}:{t[2:]}" if d == now.strftime("%Y%m%d") else f"{int(d[6:8])}일 {t[:2]}:{t[2:]}"
             
-            # [수정] datetime 생성 시 주간(09:00), 야간(21:00)을 명시하여 정렬 꼬임 방지
-            dt_am = dt_obj.replace(hour=9, minute=0, second=0, microsecond=0)
-            dt_pm = dt_obj.replace(hour=21, minute=0, second=0, microsecond=0)
+            if last_past_slot:
+                for cat, val in last_past_slot.items(): weather_data[cat] = val
 
-            if i <= 3 and dt_str in daily_raw:
-                d = daily_raw[dt_str]
-                daily.append({
-                    "datetime": dt_obj.replace(hour=12).isoformat(), # 일별 예보는 낮 12시 기준
-                    "native_temperature": int(max(d['tmps'])),
-                    "native_templow": int(min(d['tmps'])),
-                    "condition": self._get_condition(d['pm'].get('SKY','1'), d['pm'].get('PTY','0')),
-                    "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
-                })
-                # [수정] 주간(am)을 무조건 먼저 넣고 야간(pm)을 넣음
-                # 현재 시간이 오후여도 '주간' 데이터를 리스트에 포함시켜야 카드 정렬이 유지됨
-                for p in ["am", "pm"]:
-                    p_dt = dt_am if p == "am" else dt_pm
-                    twice.append({
-                        "datetime": p_dt.isoformat(),
-                        "is_daytime": (p == "am"), # 주간이 True
-                        "condition": self._get_condition(d[p].get('SKY','1'), d[p].get('PTY','0')),
-                        "native_temperature": int(max(d['tmps'])) if p == "pm" else int(min(d['tmps'])),
-                        "precipitation_probability": int(max(d['pops'])) if d['pops'] else 0
+        # 예보 리스트 생성 (오늘 이후 날짜 필터링)
+        today_str = now.strftime("%Y%m%d")
+        valid_days = [d for d in sorted(forecast_map.keys()) if d >= today_str]
+        
+        for d_str in valid_days[:3]:
+            day_items = forecast_map[d_str]
+            tmps = [float(v["TMP"]) for v in day_items.values() if "TMP" in v]
+            base_dt = datetime.strptime(d_str, "%Y%m%d").replace(tzinfo=self.tz)
+            
+            # Condition Fallback (12시 -> 15시 -> 18시 -> 첫 번째 슬롯)
+            rep_slot = day_items.get("1200") or day_items.get("1500") or day_items.get("1800") or next(iter(day_items.values()), {})
+            
+            weather_data["forecast_daily"].append({
+                "datetime": base_dt.isoformat(),
+                "native_temperature": max(tmps) if tmps else 20.0,
+                "native_templow": min(tmps) if tmps else 10.0,
+                "condition": self._get_condition(rep_slot.get("SKY"), rep_slot.get("PTY"))
+            })
+            
+            for h, is_day in [(9, True), (21, False)]:
+                t_key = f"{h:02d}00"
+                if t_key in day_items:
+                    weather_data["forecast_twice_daily"].append({
+                        "datetime": base_dt.replace(hour=h).isoformat(),
+                        "daytime": is_day,
+                        "native_temperature": float(day_items[t_key].get("TMP", 20.0)),
+                        "condition": self._get_condition(day_items[t_key].get("SKY"), day_items[t_key].get("PTY"))
                     })
-            elif mid_l.get(f"wf{i}") or mid_l.get(f"wf{i}Am"):
-                wf_am, wf_pm = mid_l.get(f"wf{i}Am", mid_l.get(f"wf{i}")), mid_l.get(f"wf{i}Pm", mid_l.get(f"wf{i}"))
-                t_max, t_min = int(float(mid_t.get(f"taMax{i}", 0))), int(float(mid_t.get(f"taMin{i}", 0)))
-                
-                daily.append({
-                    "datetime": dt_obj.replace(hour=12).isoformat(),
-                    "native_temperature": t_max, "native_templow": t_min,
-                    "condition": self._mid_wf_to_condition(wf_pm),
-                    "precipitation_probability": int(mid_l.get(f"rnSt{i}Pm", 0))
-                })
-                # 중기 예보도 주간(09시), 야간(21시)으로 타임스탬프 고정
-                twice.append({
-                    "datetime": dt_am.isoformat(), "is_daytime": True,
-                    "condition": self._mid_wf_to_condition(wf_am),
-                    "native_temperature": t_min, "precipitation_probability": int(mid_l.get(f"rnSt{i}Am", 0))
-                })
-                twice.append({
-                    "datetime": dt_pm.isoformat(), "is_daytime": False,
-                    "condition": self._mid_wf_to_condition(wf_pm),
-                    "native_temperature": t_max, "precipitation_probability": int(mid_l.get(f"rnSt{i}Pm", 0))
-                })
 
-        short["forecast_daily"], short["forecast_twice_daily"] = daily, twice
-        return short
+        # 중기 예보 병합 (4~10일)
+        mid_t, mid_l = mid_res if mid_res else (None, None)
+        if mid_t and mid_l:
+            try:
+                mt, ml = mid_t['response']['body']['items']['item'][0], mid_l['response']['body']['items']['item'][0]
+                for i in range(4, 11):
+                    target_dt = (now + timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    t_min, t_max = float(mt.get(f"taMin{i}", 15.0)), float(mt.get(f"taMax{i}", 25.0))
+                    
+                    weather_data["forecast_daily"].append({
+                        "datetime": target_dt.isoformat(),
+                        "native_temperature": t_max, "native_templow": t_min,
+                        "condition": self._get_mid_condition(ml.get(f"wf{i}"))
+                    })
+                    
+                    # Am/Pm 필드 매핑 (3~7일차 구분 및 8~10일차 통합 대응)
+                    am_wf, pm_wf = (ml.get(f"wf{i}Am"), ml.get(f"wf{i}Pm")) if i <= 7 else (ml.get(f"wf{i}"), ml.get(f"wf{i}"))
+                    
+                    weather_data["forecast_twice_daily"].append({
+                        "datetime": target_dt.replace(hour=9).isoformat(),
+                        "daytime": True, "native_temperature": t_min,
+                        "condition": self._get_mid_condition(am_wf)
+                    })
+                    weather_data["forecast_twice_daily"].append({
+                        "datetime": target_dt.replace(hour=21).isoformat(),
+                        "daytime": False, "native_temperature": t_max,
+                        "condition": self._get_mid_condition(pm_wf)
+                    })
+            except Exception as e:
+                _LOGGER.warning("중기 예보 병합 오류: %s", e)
 
-    def _sky_to_kor(self, s, p):
-        pty_map = {"1":"비", "2":"비/눈", "3":"눈", "4":"소나기", "5":"빗방울", "6":"진눈깨비", "7":"눈날림"}
-        if str(p) in pty_map: return pty_map[str(p)]
-        return {"1":"맑음", "3":"구름많음", "4":"흐림"}.get(str(s), "맑음")
+        weather_data["rain_start_time"] = rain_start
+        return {"weather": weather_data, "air": air_data or {}}
 
     def _get_condition(self, s, p):
-        if str(p) in "12456": return "rainy"
-        if str(p) in "37": return "snowy"
-        return "sunny" if str(s) == "1" else "cloudy"
+        p, s = str(p or "0"), str(s or "1")
+        if p in ["1", "2", "4", "5", "6"]: return "rainy"
+        if p in ["3", "7"]: return "snowy"
+        return {"1": "sunny", "3": "partlycloudy", "4": "cloudy"}.get(s, "sunny")
 
-    def _mid_wf_to_condition(self, wf):
-        if "비" in wf: return "rainy"
+    def _get_mid_condition(self, wf):
+        if not wf: return "sunny"
+        if any(x in wf for x in ["비", "소나기"]): return "rainy"
         if "눈" in wf: return "snowy"
-        if "구름많음" in wf or "흐림" in wf: return "cloudy"
-        return "sunny"
-
-    def _get_wind_dir(self, v):
-        try: return ["북","북동","동","남동","남","남서","서","북서"][int((float(v)+22.5)//45)%8]+"풍"
-        except: return "정보없음"
-
-    async def _get_air_quality(self, lat, lon):
-        return {"pm10Value": "35", "pm10Grade": "보통", "pm25Value": "18", "pm25Grade": "좋음"}
-
-    async def _get_address(self, lat, lon):
-        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=16"
-        headers = {"User-Agent": "HA-KMA", "Accept-Language": "ko-KR"}
-        try:
-            async with self.session.get(url, headers=headers, timeout=5) as resp:
-                d = await resp.json()
-                a = d.get("address", {})
-                parts = [a.get("province", a.get("city", "")), a.get("borough", a.get("county", "")), a.get("suburb", "")]
-                return " ".join([i for i in parts if i]).strip()
-        except: return f"{lat:.4f}, {lon:.4f}"
+        if "구름많음" in wf: return "partlycloudy"
+        return "cloudy" if "흐림" in wf else "sunny"
