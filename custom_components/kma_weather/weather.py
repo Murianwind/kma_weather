@@ -9,7 +9,7 @@ from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from .const import DOMAIN
+from .const import DOMAIN, CONF_PREFIX
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -22,7 +22,6 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
     """Representation of KMA Weather."""
     _attr_has_entity_name = True
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
-    # [해결] HA 상수(UnitOfSpeed)를 버리고 텍스트 "m/s" 지정하여 km/h 강제 변환 방지
     _attr_native_speed_unit = "m/s" 
     _attr_native_pressure_unit = "hPa"
     _attr_native_precipitation_unit = "mm"
@@ -31,7 +30,12 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
+        
+        # [핵심] Weather 엔티티도 Prefix를 사용하여 ID 강제
+        prefix = entry.data.get(CONF_PREFIX, "kma").lower()
+        self.entity_id = f"weather.{prefix}_weather_summary"
         self._attr_unique_id = f"{entry.entry_id}_weather"
+        
         self._attr_name = "날씨 요약"
         self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
 
@@ -41,7 +45,6 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @property
     def native_temperature(self):
-        # [해결] 온도를 소수점 없는 정수(int)로 반환
         try: return int(float(self.coordinator.data.get("weather", {}).get("TMP", 0)))
         except: return None
 
