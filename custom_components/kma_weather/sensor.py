@@ -17,7 +17,7 @@ async def async_setup_entry(
     """Set up KMA Weather sensors."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # 요구하신 16개 센서 리스트 (이름, 데이터키, 단위, 클래스)
+    # 이미지와 100% 일치하는 16개 센서 목록
     sensors = [
         ("강수확률", "POP", UnitOfPercentage, None),
         ("내일오전날씨", "weather_am_tomorrow", None, None),
@@ -38,15 +38,17 @@ async def async_setup_entry(
     ]
 
     entities = [KMACustomSensor(coordinator, entry, *s) for s in sensors]
+    
+    # API 만료 안내 센서 추가 (기기가 만들어질 때 자동으로 생성됨)
     entities.append(APIExpirationSensor(entry))
+    
     async_add_entities(entities)
 
 class KMACustomSensor(CoordinatorEntity, SensorEntity):
-    """Representation of a KMA Sensor."""
+    """기상청 및 에어코리아 데이터를 표시하는 센서."""
     _attr_has_entity_name = True
 
     def __init__(self, coordinator, entry, name, key, unit, dev_class):
-        """Initialize the sensor."""
         super().__init__(coordinator)
         self._key = key
         self._attr_name = name
@@ -61,20 +63,28 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        """Return the state of the sensor."""
         data = self.coordinator.data
         if not data: return None
+        # 미세먼지 관련 키는 air에서, 나머지는 weather에서 가져옴
         if "pm" in self._key:
             return data.get("air", {}).get(self._key)
         return data.get("weather", {}).get(self._key)
 
 class APIExpirationSensor(SensorEntity):
-    """Sensor for API Key expiration."""
+    """API 인증키 만료 안내 센서."""
     _attr_has_entity_name = True
-    _attr_native_unit_of_measurement = "days"
+    _attr_native_unit_of_measurement = "일"
+
     def __init__(self, entry):
         self._attr_name = "API 인증키 남은 일수"
         self._attr_unique_id = f"{entry.entry_id}_api_expiry"
-        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": entry.title,
+        }
+
     @property
-    def native_value(self): return 730
+    def native_value(self):
+        # 공공데이터포털 API는 보통 2년(730일) 단위로 갱신이 필요합니다.
+        # 실제 발급일을 알 수 없으므로 우선 고정값을 보여주며, 필요 시 계산 로직 추가가 가능합니다.
+        return 730
