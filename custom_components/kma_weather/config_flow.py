@@ -2,7 +2,7 @@
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers import selector
-from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY
+from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX
 
 class KMAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
@@ -21,5 +21,7 @@ class KMAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_LOCATION_ENTITY): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["zone", "device_tracker"])
                 ),
+                # 기본값으로 home을 제공하여 사용자의 입력을 유도
+                vol.Required(CONF_PREFIX, default="home"): str,
             })
         )
