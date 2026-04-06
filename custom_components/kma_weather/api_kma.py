@@ -10,7 +10,6 @@ class KMAApiClient:
     def __init__(self, api_key, session: aiohttp.ClientSession):
         self.api_key = api_key
         self.session = session
-        # 기상청 누락 대비 메모리(캐시)
         self._cache = {
             "date": None, 
             "TMX_today": None, "TMN_today": None,
@@ -27,15 +26,46 @@ class KMAApiClient:
         air = await self._get_air_quality(lat, lon)
         
         weather = self._merge_forecasts(short_term, mid_term_land, mid_term_ta, now)
-        weather["location_weather"] = f"{lat:.4f}, {lon:.4f}"
+        
+        # [수정] 위경도를 기반으로 주소를 가져오고, 원본 위경도도 함께 저장
+        weather["location_weather"] = await self._get_address(lat, lon)
+        weather["latitude"] = lat
+        weather["longitude"] = lon
         
         return {"weather": weather, "air": air}
+
+    async def _get_address(self, lat, lon):
+        """OpenStreetMap을 이용해 위경도를 한국어 주소로 변환"""
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=16"
+        headers = {
+            "User-Agent": "HomeAssistant-KMA-Weather",
+            "Accept-Language": "ko-KR,ko;q=0.9" # 한국어 응답 요청
+        }
+        try:
+            async with self.session.get(url, headers=headers, timeout=5) as resp:
+                data = await resp.json()
+                addr = data.get("address", {})
+                
+                # 한국 주소 체계 파싱 (시/도 + 시/군/구 + 동/읍/면)
+                do_si = addr.get("province", addr.get("city", addr.get("state", "")))
+                si_gun_gu = addr.get("borough", addr.get("county", addr.get("town", "")))
+                dong_eup_myeon = addr.get("suburb", addr.get("village", addr.get("quarter", "")))
+                
+                parts = []
+                for p in [do_si, si_gun_gu, dong_eup_myeon]:
+                    if p and p not in parts:
+                        parts.append(p)
+                
+                res = " ".join(parts).strip()
+                return res if res else f"{lat:.4f}, {lon:.4f}"
+        except Exception as e:
+            _LOGGER.warning("주소 변환 실패(API 오류): %s", e)
+            return f"{lat:.4f}, {lon:.4f}"
 
     async def _get_short_term(self, nx, ny, now):
         today_str = now.strftime('%Y%m%d')
         tomorrow_str = (now + timedelta(days=1)).strftime('%Y%m%d')
 
-        # 자정이 지나면 캐시 초기화
         if self._cache["date"] != today_str:
             self._cache = {k: None for k in self._cache}
             self._cache["date"] = today_str
@@ -74,7 +104,6 @@ class KMAApiClient:
 
                     if cat not in data: data[cat] = val
 
-                    # 공식 TMX, TMN 및 내일 날씨 추출
                     if cat == "TMX" and f_date == today_str: data["TMX_today"] = val
                     if cat == "TMN" and f_date == today_str: data["TMN_today"] = val
                     if cat == "TMX" and f_date == tomorrow_str: data["TMX_tomorrow"] = val
@@ -87,13 +116,11 @@ class KMAApiClient:
         except Exception as e:
             _LOGGER.error("단기예보 API 호출 실패: %s", e)
 
-        # 1. API 데이터가 있으면 캐시 업데이트, 없으면 캐시에서 복구
         keys_to_cache = ["TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow", "weather_am_tomorrow", "weather_pm_tomorrow"]
         for k in keys_to_cache:
             if k in data: self._cache[k] = data[k]
             elif self._cache[k] is not None: data[k] = self._cache[k]
 
-        # 2. 정수 처리
         for k in ["TMP", "REH", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"]:
             if data.get(k) is not None: data[k] = int(data[k])
 
@@ -106,7 +133,6 @@ class KMAApiClient:
         return data
 
     async def _get_mid_term(self, now):
-        """중기예보 (3~10일) 호출"""
         try:
             if now.hour < 6: mid_base = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
             elif now.hour < 18: mid_base = now.strftime("%Y%m%d") + "0600"
@@ -130,14 +156,12 @@ class KMAApiClient:
         daily, twice = [], []
         daily_data = short_term.pop("daily_data", {})
         
-        # 단기예보 (0~2일차) 병합
         for i in range(3):
             d_str = (now + timedelta(days=i)).strftime("%Y%m%d")
             dt_str = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]}"
             d_info = daily_data.get(d_str)
             if not d_info or not d_info['tmps']: continue
 
-            # 센서값과 예보값을 강제 일치
             if i == 0:
                 t_max = short_term.get("TMX_today", max(d_info['tmps']))
                 t_min = short_term.get("TMN_today", min(d_info['tmps']))
@@ -160,7 +184,6 @@ class KMAApiClient:
             if d_info['pm']:
                 twice.append({"datetime": f"{dt_str}T15:00:00+09:00", "is_daytime": False, "condition": self._get_condition(d_info['pm'].get('SKY', '1'), d_info['pm'].get('PTY', '0')), "native_temperature": int(float(d_info['pm'].get('TMP', 0))), "native_precipitation_probability": int(d_info['pm'].get('POP', 0))})
 
-        # 중기예보 (3~10일차) 병합
         if mid_land and mid_ta:
             for i in range(3, 11):
                 d_str = (now + timedelta(days=i)).strftime("%Y%m%d")
