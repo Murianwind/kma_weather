@@ -1,0 +1,11 @@
+{
+  "domain": "kma_weather",
+  "name": "기상청 스마트 날씨",
+  "documentation": "https://github.com/사용자계정/kma_weather",
+  "dependencies": [],
+  "codeowners": ["@YourGitHubID"],
+  "config_flow": true,
+  "iot_class": "cloud_polling",
+  "version": "1.0.0",
+  "requirements": ["aiohttp>=3.9.0"]
+}
