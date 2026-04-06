@@ -1,12 +1,15 @@
 {
   "domain": "kma_weather",
   "name": "기상청 스마트 날씨",
+  "version": "1.1.0",
   "documentation": "https://github.com/Murianwind/kma_weather",
   "issue_tracker": "https://github.com/Murianwind/kma_weather/issues",
   "dependencies": [],
   "codeowners": ["@Murianwind"],
   "config_flow": true,
   "iot_class": "cloud_polling",
-  "version": "1.0.0",
-  "requirements": ["aiohttp>=3.9.0"]
+  "requirements": [
+    "aiohttp>=3.9.0",
+    "pytz>=2023.3"
+  ]
 }
