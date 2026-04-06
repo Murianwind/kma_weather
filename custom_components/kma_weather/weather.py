@@ -5,7 +5,7 @@ from homeassistant.components.weather import (
     Forecast,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature, UnitOfSpeed
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -22,11 +22,7 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
     """Representation of KMA Weather."""
     _attr_has_entity_name = True
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
-    
-    # [해결] 오타 수정: _attr_native_wind_speed_unit 이 올바른 속성입니다.
-    # 기상청 원본 그대로 m/s임을 명확히 선언합니다.
-    _attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND 
-    
+    _attr_native_wind_speed_unit = "m/s" 
     _attr_native_pressure_unit = "hPa"
     _attr_native_precipitation_unit = "mm"
     
@@ -38,7 +34,14 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
         self.entity_id = f"weather.{prefix}_weather_summary"
         self._attr_unique_id = f"{entry.entry_id}_weather"
         self._attr_name = "날씨 요약"
-        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}, "name": entry.title}
+        
+        # [수정] 기기 정보에 제조사와 모델명 추가
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": entry.title,
+            "manufacturer": "Murianwind",
+            "model": "integration"
+        }
 
     @property
     def condition(self):
@@ -56,7 +59,6 @@ class KMAWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @property
     def native_wind_speed(self):
-        # 기상청 원본 m/s 데이터를 그대로 반환 (예: 3.1)
         try: return float(self.coordinator.data.get("weather", {}).get("WSD", 0))
         except Exception: return None
 
