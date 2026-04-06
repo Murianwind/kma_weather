@@ -30,7 +30,6 @@ class KMAApiClient:
         weather["location_weather"] = await self._get_address(lat, lon)
         weather["latitude"] = lat
         weather["longitude"] = lon
-        # [해결] 데이터가 성공적으로 갱신된 현재 시간을 ISO 표준 형식으로 저장
         weather["updated_at"] = datetime.now(timezone.utc).isoformat()
         
         return {"weather": weather, "air": air}
@@ -48,7 +47,7 @@ class KMAApiClient:
                 parts = [p for p in [do_si, si_gun_gu, dong_eup_myeon] if p]
                 res = " ".join(parts).strip()
                 return res if res else f"{lat:.4f}, {lon:.4f}"
-        except Exception as e:
+        except Exception:
             return f"{lat:.4f}, {lon:.4f}"
 
     async def _get_short_term(self, nx, ny, now):
@@ -81,7 +80,7 @@ class KMAApiClient:
                 for item in items:
                     cat, val, f_date, f_time = item['category'], item['fcstValue'], item['fcstDate'], item['fcstTime']
                     try: val = float(val) if '.' in val else int(val)
-                    except: pass
+                    except Exception: pass
 
                     if f_date not in daily_data:
                         daily_data[f_date] = {'am': {}, 'pm': {}, 'tmps': [], 'pops': []}
@@ -125,7 +124,9 @@ class KMAApiClient:
         data["current_condition"] = self._get_condition(data.get("SKY"), data.get("PTY"))
         data["current_condition_kor"] = self._get_condition_kor(data.get("SKY"), data.get("PTY"))
         data["VEC_KOR"] = self._get_wind_dir(data.get("VEC"))
-        data["rain_start_time"] = "강수 정보 없음"
+        
+        # [수정] 강수 정보 없을 때 상태값을 "비안옴"으로 변경
+        data["rain_start_time"] = "비안옴"
         
         return data
 
@@ -145,7 +146,7 @@ class KMAApiClient:
                 ta_data = (await resp.json())['response']['body']['items']['item'][0]
 
             return land_data, ta_data
-        except Exception as e:
+        except Exception:
             return {}, {}
 
     def _merge_forecasts(self, short_term, mid_land, mid_ta, now):
@@ -184,24 +185,19 @@ class KMAApiClient:
             for i in range(3, 11):
                 d_str = (now + timedelta(days=i)).strftime("%Y%m%d")
                 dt_str = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]}"
-                
                 t_max = mid_ta.get(f"taMax{i}")
                 t_min = mid_ta.get(f"taMin{i}")
-                
                 if t_max is None or str(t_max).strip() == "": t_max = mid_ta.get(f"taMax{i+1}", 20)
                 if t_min is None or str(t_min).strip() == "": t_min = mid_ta.get(f"taMin{i+1}", 10)
-                
                 try:
                     t_max_val = int(float(t_max))
                     t_min_val = int(float(t_min))
-                except:
+                except Exception:
                     t_max_val, t_min_val = 20, 10
-                
                 wf_pm = mid_land.get(f"wf{i}Pm", mid_land.get(f"wf{i}", "맑음"))
                 pop_pm = mid_land.get(f"rnSt{i}Pm", mid_land.get(f"rnSt{i}", 0))
                 wf_am = mid_land.get(f"wf{i}Am", mid_land.get(f"wf{i}", "맑음"))
                 pop_am = mid_land.get(f"rnSt{i}Am", mid_land.get(f"rnSt{i}", 0))
-
                 daily.append({
                     "datetime": f"{dt_str}T12:00:00+09:00",
                     "condition": self._map_mid_sky(str(wf_pm)),
@@ -209,7 +205,6 @@ class KMAApiClient:
                     "native_templow": t_min_val,
                     "native_precipitation_probability": int(pop_pm) if pop_pm else 0,
                 })
-
                 twice.append({
                     "datetime": f"{dt_str}T09:00:00+09:00",
                     "is_daytime": True,
@@ -246,7 +241,7 @@ class KMAApiClient:
     def _get_wind_dir(self, vec):
         if not vec: return "알수없음"
         try: return ["북", "북동", "동", "남동", "남", "남서", "서", "북서"][int((float(vec) + 22.5) // 45) % 8] + "풍"
-        except: return "알수없음"
+        except Exception: return "알수없음"
 
     async def _get_air_quality(self, lat, lon):
         return {"pm10Value": "30", "pm10Grade": "보통", "pm25Value": "15", "pm25Grade": "좋음"}
