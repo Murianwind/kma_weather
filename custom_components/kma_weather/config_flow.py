@@ -2,7 +2,15 @@
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers import selector
-from .const import *
+from .const import (
+    DOMAIN,
+    CONF_API_KEY,
+    CONF_LOCATION_TYPE,
+    CONF_ZONE_ID,
+    CONF_MOBILE_DEVICE_ID,
+    LOCATION_TYPE_ZONE,
+    LOCATION_TYPE_MOBILE,
+)
 
 class KMAWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for KMA Weather."""
