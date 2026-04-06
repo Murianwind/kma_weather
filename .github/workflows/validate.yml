@@ -16,7 +16,7 @@ jobs:
       - name: HACS Action
         uses: hacs/action@main
         with:
-          category: weather
+          category: integration
         env:
           # Node.js 24 환경 강제 사용 (2026년 가이드 반영)
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
