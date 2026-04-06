@@ -103,11 +103,22 @@ class KMAApiClient:
         except Exception as e:
             _LOGGER.error("단기예보 API 호출 실패: %s", e)
 
+        # 1. 캐시 병합
         keys_to_cache = ["TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow", "weather_am_tomorrow", "weather_pm_tomorrow"]
         for k in keys_to_cache:
             if k in data: self._cache[k] = data[k]
             elif self._cache[k] is not None: data[k] = self._cache[k]
 
+        # 2. [핵심 해결] 캐시에도 데이터가 없을 경우 시간별 기온에서 강제로 최대/최소 추출
+        today_info = daily_data.get(today_str, {})
+        if "TMX_today" not in data and today_info.get('tmps'): data["TMX_today"] = max(today_info['tmps'])
+        if "TMN_today" not in data and today_info.get('tmps'): data["TMN_today"] = min(today_info['tmps'])
+        
+        tomorrow_info = daily_data.get(tomorrow_str, {})
+        if "TMX_tomorrow" not in data and tomorrow_info.get('tmps'): data["TMX_tomorrow"] = max(tomorrow_info['tmps'])
+        if "TMN_tomorrow" not in data and tomorrow_info.get('tmps'): data["TMN_tomorrow"] = min(tomorrow_info['tmps'])
+
+        # 3. 정수 변환
         for k in ["TMP", "REH", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"]:
             if data.get(k) is not None: data[k] = int(data[k])
 
@@ -178,7 +189,6 @@ class KMAApiClient:
                 t_max = mid_ta.get(f"taMax{i}")
                 t_min = mid_ta.get(f"taMin{i}")
                 
-                # [해결] 기상청에서 해당일(예: 목요일) 데이터를 비웠을 경우 강제로 다음날 온도 빌려오기 (건너뜀 방지)
                 if t_max is None or str(t_max).strip() == "": t_max = mid_ta.get(f"taMax{i+1}", 20)
                 if t_min is None or str(t_min).strip() == "": t_min = mid_ta.get(f"taMin{i+1}", 10)
                 
