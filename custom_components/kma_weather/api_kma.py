@@ -10,6 +10,8 @@ class KMAApiClient:
     def __init__(self, api_key, session: aiohttp.ClientSession):
         self.api_key = api_key
         self.session = session
+        # [수정] 최고/최저 기온 저장을 위한 내부 기억장소(캐시)
+        self._cache = {"date": None, "TMX_today": None, "TMN_today": None}
 
     async def fetch_data(self, lat, lon):
         nx, ny = convert_grid(lat, lon)
@@ -22,6 +24,13 @@ class KMAApiClient:
 
     async def _get_short_term(self, nx, ny):
         now = datetime.now()
+        today_str = now.strftime('%Y%m%d')
+        tomorrow_str = (now + timedelta(days=1)).strftime('%Y%m%d')
+
+        # [수정] 자정이 지나 날짜가 바뀌면 기존 기억을 모두 초기화
+        if self._cache["date"] != today_str:
+            self._cache = {"date": today_str, "TMX_today": None, "TMN_today": None}
+
         base_times = [2, 5, 8, 11, 14, 17, 20, 23]
         last_base = 23
         for bt in reversed(base_times):
@@ -32,7 +41,7 @@ class KMAApiClient:
         url = (
             f"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?"
             f"serviceKey={self.api_key}&dataType=JSON&numOfRows=1000&"
-            f"base_date={now.strftime('%Y%m%d')}&base_time={last_base:02d}00&nx={nx}&ny={ny}"
+            f"base_date={today_str}&base_time={last_base:02d}00&nx={nx}&ny={ny}"
         )
 
         try:
@@ -42,8 +51,6 @@ class KMAApiClient:
                 
                 data = {}
                 daily_data = {}
-                today_str = now.strftime("%Y%m%d")
-                tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
                 
                 for item in items:
                     cat = item['category']
@@ -51,11 +58,11 @@ class KMAApiClient:
                     f_date = item['fcstDate']
                     f_time = item['fcstTime']
 
-                    # 정수/소수 변환 가능 시 처리
+                    # 정수/소수 변환
                     try: val = float(val) if '.' in val else int(val)
                     except: pass
 
-                    # 날짜별 데이터 수집 (예보 생성 및 최저/최고 계산용)
+                    # 일별 데이터 수집
                     if f_date not in daily_data:
                         daily_data[f_date] = {'am': {}, 'pm': {}, 'tmps': [], 'pops': []}
                     
@@ -64,21 +71,32 @@ class KMAApiClient:
                     if f_time == '0900': daily_data[f_date]['am'][cat] = val
                     if f_time == '1500': daily_data[f_date]['pm'][cat] = val
 
-                    # 현재 데이터 (가장 빠른 예보) 저장
+                    # 현재 데이터 저장
                     if cat not in data: data[cat] = val
 
-                    # 기상청 공식 TMX/TMN 저장
-                    if cat == "TMX" and f_date == today_str: data["TMX_today"] = val
-                    if cat == "TMN" and f_date == today_str: data["TMN_today"] = val
+                    # [수정] 1순위: 기상청 공식 데이터가 응답에 있으면 업데이트하고 '기억'해둠
+                    if cat == "TMX" and f_date == today_str:
+                        data["TMX_today"] = val
+                        self._cache["TMX_today"] = val
+                    if cat == "TMN" and f_date == today_str:
+                        data["TMN_today"] = val
+                        self._cache["TMN_today"] = val
+                        
                     if cat == "TMX" and f_date == tomorrow_str: data["TMX_tomorrow"] = val
                     if cat == "TMN" and f_date == tomorrow_str: data["TMN_tomorrow"] = val
 
-                # [해결 1] 기상청이 TMX/TMN을 누락했을 경우, 시간별 기온(TMP)으로 직접 계산 (대체 로직)
+                # [수정] 2순위: 기상청 공식 데이터가 없으면, 기억(캐시)해둔 과거 데이터를 우선 사용
+                if "TMX_today" not in data and self._cache["TMX_today"] is not None:
+                    data["TMX_today"] = self._cache["TMX_today"]
+                if "TMN_today" not in data and self._cache["TMN_today"] is not None:
+                    data["TMN_today"] = self._cache["TMN_today"]
+
+                # [수정] 3순위: 캐시도 없는 경우 (예: 밤늦게 처음 HA를 켰을 때) 어쩔 수 없이 남은 시간대 기온 중 최대/최소 계산
                 today_info = daily_data.get(today_str, {})
                 if "TMX_today" not in data and today_info.get('tmps'): data["TMX_today"] = max(today_info['tmps'])
                 if "TMN_today" not in data and today_info.get('tmps'): data["TMN_today"] = min(today_info['tmps'])
 
-                # [해결 3] 날씨 요약 (매일 / 매일 2회) 예보 리스트 생성
+                # 날씨 요약(forecast) 생성 로직
                 forecast_daily = []
                 forecast_twice_daily = []
 
@@ -86,7 +104,6 @@ class KMAApiClient:
                     if not d_info['tmps']: continue
                     dt_str = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]}"
                     
-                    # 매일 예보 (Daily)
                     forecast_daily.append({
                         "datetime": f"{dt_str}T12:00:00+09:00",
                         "condition": self._get_condition(d_info['pm'].get('SKY', d_info['am'].get('SKY', '1')), 
@@ -96,7 +113,6 @@ class KMAApiClient:
                         "native_precipitation_probability": max(d_info['pops']) if d_info['pops'] else 0,
                     })
 
-                    # 매일 2회 예보 (AM)
                     if d_info['am']:
                         forecast_twice_daily.append({
                             "datetime": f"{dt_str}T09:00:00+09:00",
@@ -105,7 +121,6 @@ class KMAApiClient:
                             "native_temperature": float(d_info['am'].get('TMP', 0)),
                             "native_precipitation_probability": int(d_info['am'].get('POP', 0)),
                         })
-                    # 매일 2회 예보 (PM)
                     if d_info['pm']:
                         forecast_twice_daily.append({
                             "datetime": f"{dt_str}T15:00:00+09:00",
@@ -118,7 +133,6 @@ class KMAApiClient:
                 data["forecast_daily"] = forecast_daily
                 data["forecast_twice_daily"] = forecast_twice_daily
 
-                # 기타 현재 상태 가공
                 data["current_condition"] = self._get_condition(data.get("SKY"), data.get("PTY"))
                 data["current_condition_kor"] = self._get_condition_kor(data.get("SKY"), data.get("PTY"))
                 data["VEC_KOR"] = self._get_wind_dir(data.get("VEC"))
