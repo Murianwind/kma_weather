@@ -16,7 +16,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ("내일최저온도", "TMN_tomorrow", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "tomorrow_low_temperature"),
         ("최고온도", "TMX_today", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "today_high_temperature"),
         ("최저온도", "TMN_today", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "today_low_temperature"),
-        # [해결] 미세먼지 단위를 HA 표준인 µg/m³ 로 변경
         ("미세먼지", "pm10Value", "µg/m³", SensorDeviceClass.PM10, "pm10"),
         ("미세먼지등급", "pm10Grade", None, None, "pm10_grade"),
         ("비시작시간오늘내일", "rain_start_time", None, None, "rain_start_time"),
@@ -24,7 +23,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ("초미세먼지", "pm25Value", "µg/m³", SensorDeviceClass.PM25, "pm25"),
         ("초미세먼지등급", "pm25Grade", None, None, "pm25_grade"),
         ("현재날씨", "current_condition_kor", None, None, "current_weather"),
-        ("현재풍속", "WSD", "m/s", SensorDeviceClass.WIND_SPEED, "current_wind_speed"), 
+        ("현재풍속", "WSD", "m/s", None, "current_wind_speed"), 
         ("현재풍향", "VEC_KOR", None, None, "current_wind_direction"),
     ]
     
@@ -58,9 +57,9 @@ class KMACustomSensor(SensorEntity):
             val = d.get("air", {}).get(self._key)
         else:
             val = d.get("weather", {}).get(self._key)
-        
-        # [해결] 데이터가 없으면 "데이터 대기중" 문자열 대신 반드시 None을 반환해야 에러가 나지 않음
-        if val is None or val == "" or val == "-":
+            
+        # [핵심 방어] 데이터가 비어있으면 문자열 대신 무조건 None 반환 (Crash 방지)
+        if val is None or str(val).strip() == "" or str(val).strip() == "-":
             return None
             
         if self._attr_device_class in [SensorDeviceClass.TEMPERATURE, SensorDeviceClass.HUMIDITY]:
