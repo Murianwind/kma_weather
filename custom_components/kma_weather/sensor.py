@@ -23,7 +23,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         ("초미세먼지", "pm25Value", "㎍/㎥", SensorDeviceClass.PM25),
         ("초미세먼지등급", "pm25Grade", None, None),
         ("현재날씨", "current_condition_kor", None, None),
-        ("현재풍속", "WSD", "m/s", None), # HA 강제 변환을 피하기 위해 None으로 설정
+        ("현재풍속", "WSD", "m/s", None), 
         ("현재풍향", "VEC_KOR", None, None),
     ]
     
@@ -48,12 +48,22 @@ class KMACustomSensor(SensorEntity):
         if not d: return None
         val = d.get("air", {}).get(self._key) if "pm" in self._key else d.get("weather", {}).get(self._key)
         
-        # [해결] 온도는 반드시 정수(int)로 리턴하여 소수점 노출 억제
         if self._attr_device_class == SensorDeviceClass.TEMPERATURE and val is not None:
             try: return int(float(val))
             except: pass
 
         return val if val is not None else "데이터 대기중"
+
+    @property
+    def extra_state_attributes(self):
+        """[수정] 현재위치 센서의 경우 Latitude와 Longitude를 속성으로 추가"""
+        attrs = {}
+        if self._key == "location_weather":
+            data = self.coordinator.data
+            if data and "weather" in data:
+                attrs["Latitude"] = data["weather"].get("latitude")
+                attrs["Longitude"] = data["weather"].get("longitude")
+        return attrs
 
 class APIExpirationSensor(SensorEntity):
     _attr_has_entity_name = True
