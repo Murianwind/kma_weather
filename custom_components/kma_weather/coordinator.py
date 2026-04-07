@@ -35,16 +35,15 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     lat, lon = self._last_lat, self._last_lon
                 else:
                     if self._cached_data: return self._cached_data
-                    raise UpdateFailed("위치 정보를 가져올 수 없습니다.")
+                    raise UpdateFailed("위치 정보 없음")
 
                 new_data = await self.api.fetch_data(lat, lon, self._last_nx, self._last_ny)
                 
-                # ★ Fail-Safe: API 실패 시 캐시 반환
+                # ★ 리스크 봉쇄: 딕셔너리 구조 강제 보장 및 Fail-safe 캐시 반환
                 if new_data is None:
                     if self._cached_data: return self._cached_data
-                    raise UpdateFailed("기상청 API 응답 부재")
+                    raise UpdateFailed("API 호출 실패")
 
-                # ★ 리스크 봉쇄: new_data 및 weather 키 구조 안전성 강제 보장
                 if not isinstance(new_data, dict): new_data = {}
                 if "weather" not in new_data or not isinstance(new_data["weather"], dict):
                     new_data["weather"] = {}
