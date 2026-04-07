@@ -96,6 +96,17 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
         return None
 
+    @property
+    def suggested_display_precision(self):
+        """기온, 습도, 강수확률 등의 센서 화면 출력 시 소수점을 제거(0)하고 정수로 표시합니다."""
+        # 뭉뚱그려 정수 표현이 필요한 센서 목록
+        int_sensors = [
+            "TMP", "REH", "POP", "apparent_temp", 
+            "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"
+        ]
+        if self._type in int_sensors:
+            return 0
+        return None
 
 class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
     _attr_icon = "mdi:map-marker"
