@@ -78,7 +78,8 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
         return (self.coordinator.data or {}).get("weather", {}).get("forecast_twice_daily", [])
 
 class KMAWeatherSummary(CoordinatorEntity, WeatherEntity):
-    _attr_has_entity_name = True
+    # [수정] _attr_has_entity_name을 False로 하여 기기 이름 상속 방지
+    _attr_has_entity_name = False
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     
     def __init__(self, coordinator, entry):
@@ -87,9 +88,10 @@ class KMAWeatherSummary(CoordinatorEntity, WeatherEntity):
         prefix = slugify(entry.data.get(CONF_PREFIX, "kma"))
         self.entity_id = f"weather.{prefix}_weather_summary"
         
-        # [수정] 이름을 "날씨 요약"으로 변경
+        # [수정] 이름을 "날씨 요약"으로 고정 (기기 이름 접두사 제거됨)
         self._attr_name = "날씨 요약"
         
+        # unique_id는 유지하여 중복 생성 방지
         self._attr_unique_id = f"{entry.entry_id}_summary"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
