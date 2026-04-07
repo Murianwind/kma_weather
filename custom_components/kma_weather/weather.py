@@ -23,7 +23,6 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
 
     @property
     def native_temperature(self):
-        # ★ 가용성 강화: (data or {}).get() 체인 적용
         return (self.coordinator.data or {}).get("weather", {}).get("TMP")
 
     @property
