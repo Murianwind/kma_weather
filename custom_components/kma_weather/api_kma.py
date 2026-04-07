@@ -83,6 +83,7 @@ class KMAWeatherAPI:
                 f"&returnType=json"
                 f"&stationName={quote(station_name)}"
                 f"&dataTerm=daily"
+                f"&ver=1.3"
             )
             async with self.session.get(data_url, timeout=timeout) as resp:
                 if resp.status != 200:
