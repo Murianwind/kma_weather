@@ -58,7 +58,6 @@ class KMAWeatherAPI:
             tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
             timeout = aiohttp.ClientTimeout(total=15)
 
-            # 인증키는 이미 URL 인코딩된 상태로 입력되므로 그대로 사용 (추가 인코딩 금지)
             # ① 근접 측정소 조회
             st_url = (
                 f"http://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
@@ -141,10 +140,12 @@ class KMAWeatherAPI:
         if base_h is None:
             adj_p = adj - timedelta(days=1)
             base_d, base_h = adj_p.strftime("%Y%m%d"), 23
+        
+        # [수정됨] 기상청 단기예보 API를 1.0.3 시절의 공공데이터포털(apis.data.go.kr) 엔드포인트로 롤백
         url = (
-            f"https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getVilageFcst"
-            f"?dataType=JSON&base_date={base_d}&base_time={base_h:02d}00"
-            f"&nx={self.nx}&ny={self.ny}&numOfRows=1500&authKey={self.api_key}"
+            f"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
+            f"?serviceKey={self.api_key}&dataType=JSON&base_date={base_d}&base_time={base_h:02d}00"
+            f"&nx={self.nx}&ny={self.ny}&numOfRows=1500"
         )
         try:
             async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
@@ -173,11 +174,12 @@ class KMAWeatherAPI:
                 _LOGGER.warning("중기 API 호출 실패: %s", e)
                 return None
 
+        # [수정됨] 기상청 중기예보 API를 1.0.3 시절의 공공데이터포털(apis.data.go.kr) 엔드포인트로 롤백
         urls = [
-            f"https://apihub.kma.go.kr/api/typ02/openApi/MidFcstInfoService/getMidTa"
-            f"?dataType=JSON&regId={self.reg_id_temp}&tmFc={base}&authKey={self.api_key}",
-            f"https://apihub.kma.go.kr/api/typ02/openApi/MidFcstInfoService/getMidLandFcst"
-            f"?dataType=JSON&regId={self.reg_id_land}&tmFc={base}&authKey={self.api_key}",
+            f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
+            f"?serviceKey={self.api_key}&dataType=JSON&regId={self.reg_id_temp}&tmFc={base}",
+            f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
+            f"?serviceKey={self.api_key}&dataType=JSON&regId={self.reg_id_land}&tmFc={base}",
         ]
         return await asyncio.gather(*(fetch(u) for u in urls))
 
@@ -188,14 +190,17 @@ class KMAWeatherAPI:
         forecast_map, rain_start, last_past = {}, "강수없음", None
 
         if short_res and "response" in short_res:
-            items = short_res["response"]["body"]["items"]["item"]
-            for it in items:
-                d, t, cat, val = it["fcstDate"], it["fcstTime"], it["category"], it["fcstValue"]
-                if d not in forecast_map:
-                    forecast_map[d] = {}
-                if t not in forecast_map[d]:
-                    forecast_map[d][t] = {}
-                forecast_map[d][t][cat] = val
+            try:
+                items = short_res["response"]["body"]["items"]["item"]
+                for it in items:
+                    d, t, cat, val = it["fcstDate"], it["fcstTime"], it["category"], it["fcstValue"]
+                    if d not in forecast_map:
+                        forecast_map[d] = {}
+                    if t not in forecast_map[d]:
+                        forecast_map[d][t] = {}
+                    forecast_map[d][t][cat] = val
+            except (KeyError, TypeError):
+                pass
 
             for d in sorted(forecast_map.keys()):
                 for t in sorted(forecast_map[d].keys()):
@@ -290,14 +295,11 @@ class KMAWeatherAPI:
         for d_str, prefix in [(today_str, "today"), (tom_str, "tomorrow")]:
             if d_str in forecast_map:
                 day = forecast_map[d_str]
-                # TMX(일 최고기온)는 1500시, TMN(일 최저기온)은 0600시에 제공됨
                 tmx = next((day[t]["TMX"] for t in day if "TMX" in day[t]), None)
                 tmn = next((day[t]["TMN"] for t in day if "TMN" in day[t]), None)
-                # 해당 날짜 전체 TMP 목록으로 폴백
                 all_tmps = [float(day[t]["TMP"]) for t in day if "TMP" in day[t]]
                 weather_data[f"TMX_{prefix}"] = int(float(tmx)) if tmx is not None else (int(max(all_tmps)) if all_tmps else None)
                 weather_data[f"TMN_{prefix}"] = int(float(tmn)) if tmn is not None else (int(min(all_tmps)) if all_tmps else None)
-                # 오전(0900)·오후(1500) 날씨 — 내일만 의미 있음
                 am = day.get("0900", {})
                 pm = day.get("1500", {})
                 weather_data[f"weather_am_{prefix}"] = self._get_sky_kor(am.get("SKY"), am.get("PTY"))
@@ -352,15 +354,10 @@ class KMAWeatherAPI:
         return "북"
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
-        """체감온도 계산 (기상청 공식):
-        - 10°C 이하 + 풍속 1.3m/s 이상: 윈드칠 지수 (체감온도)
-        - 18°C 이상: 열체감지수 (불쾌지수 기반)
-        - 그 외: 기온 그대로
-        """
         try:
             t, rh = float(temp), float(reh)
             v = float(wsd) * 3.6  # m/s → km/h
-            if t <= 10 and v >= 4.68:  # 1.3 m/s = 4.68 km/h
+            if t <= 10 and v >= 4.68:  
                 return 13.12 + 0.6215 * t - 11.37 * (v ** 0.16) + 0.3965 * t * (v ** 0.16)
             if t >= 18:
                 tw = (
