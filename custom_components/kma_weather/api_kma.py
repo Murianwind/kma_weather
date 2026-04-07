@@ -1,6 +1,5 @@
 import logging
 import asyncio
-import aiohttp
 import math
 import json
 from datetime import datetime, timedelta
@@ -20,7 +19,6 @@ class KMAWeatherAPI:
     def __init__(self, session, api_key, reg_id_temp, reg_id_land):
         self.session = session
         self.api_key = unquote(api_key)
-        self.air_key = self.api_key
         self.reg_id_temp = reg_id_temp
         self.reg_id_land = reg_id_land
         self.tz = ZoneInfo("Asia/Seoul")
@@ -54,24 +52,18 @@ class KMAWeatherAPI:
         try:
             tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
             url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
-            params_st = {"serviceKey": self.air_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
+            params_st = {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
             async with self.session.get(url_st, params=params_st, timeout=10) as resp:
                 st_json = json.loads(await resp.text())
             items = st_json.get("response", {}).get("body", {}).get("items", [])
             if not items: return {}
             sn = items[0]["stationName"]
             url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
-            params_data = {"serviceKey": self.air_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
+            params_data = {"serviceKey": self.api_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
             async with self.session.get(url_data, params=params_data, timeout=10) as resp:
                 air_json = json.loads(await resp.text())
             ai = air_json.get("response", {}).get("body", {}).get("items", [])[0]
-            return {
-                "pm10Value": ai.get("pm10Value"),
-                "pm10Grade": self._translate_grade(ai.get("pm10Grade")),
-                "pm25Value": ai.get("pm25Value"),
-                "pm25Grade": self._translate_grade(ai.get("pm25Grade")),
-                "station": sn
-            }
+            return {"pm10Value": ai.get("pm10Value"), "pm10Grade": self._translate_grade(ai.get("pm10Grade")), "pm25Value": ai.get("pm25Value"), "pm25Grade": self._translate_grade(ai.get("pm25Grade")), "station": sn}
         except: return {}
 
     def _translate_grade(self, g):
@@ -88,34 +80,27 @@ class KMAWeatherAPI:
         except: return None
 
     async def _get_mid_term(self, now):
-        # 06시, 18시 기준 데이터 호출
-        base_time = "0600" if 6 <= now.hour < 18 else "1800"
-        base_date = now.strftime("%Y%m%d") if now.hour >= 6 else (now - timedelta(days=1)).strftime("%Y%m%d")
-        tm_fc = base_date + base_time
-        
+        base = (now if now.hour >= 18 else (now if now.hour >= 6 else now - timedelta(days=1))).strftime("%Y%m%d") + ("0600" if 6 <= now.hour < 18 else "1800")
         async def fetch(u, p):
             try:
                 async with self.session.get(u, params=p, timeout=15) as r: return json.loads(await r.text())
             except: return None
-            
         url_ta = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
         url_land = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
-        return await asyncio.gather(
-            fetch(url_ta, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": tm_fc}),
-            fetch(url_land, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": tm_fc})
-        )
+        return await asyncio.gather(fetch(url_ta, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}), fetch(url_land, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base}))
 
     def _merge_all(self, now, short_res, mid_res, air_data, address=None):
         weather_data = {
             "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None, "PTY": None, "SKY": None,
             "TMX_today": None, "TMN_today": None, "TMX_tomorrow": None, "TMN_tomorrow": None,
             "wf_am_tomorrow": None, "wf_pm_tomorrow": None,
-            "rain_start_time": "강수없음", "address": address, "station": air_data.get("station") if air_data else "정보없음",
-            "forecast_twice_daily": []
+            "rain_start_time": "강수없음", "현재 위치": address, "station": air_data.get("station") if air_data else "정보없음",
+            "forecast_twice_daily": [],
+            "debug_nx": self.nx, "debug_ny": self.ny, "debug_lat": self.lat, "debug_lon": self.lon,
+            "debug_reg_id_temp": self.reg_id_temp, "debug_reg_id_land": self.reg_id_land
         }
         
         forecast_map = {}
-        # 1. 단기 예보 가공
         if short_res and "response" in short_res:
             items = short_res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
             for it in items:
@@ -127,14 +112,38 @@ class KMAWeatherAPI:
             if today_str in forecast_map and curr_h in forecast_map[today_str]:
                 weather_data.update(forecast_map[today_str][curr_h])
 
-            # 오늘/내일 최고최저 센서 데이터
-            for day_offset, key_max, key_min in [(0, "TMX_today", "TMN_today"), (1, "TMX_tomorrow", "TMN_tomorrow")]:
-                d_str = (now + timedelta(days=day_offset)).strftime("%Y%m%d")
-                if d_str in forecast_map:
-                    tmps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
-                    if tmps: weather_data[key_max], weather_data[key_min] = max(tmps), min(tmps)
+            # 1. 강수 시작 시간 탐색 및 포맷팅 (4월 9일 목요일 12시 30분)
+            days_ko = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+            found_rain = False
+            for d_str in sorted(forecast_map.keys()):
+                for t_str in sorted(forecast_map[d_str].keys()):
+                    if d_str == today_str and t_str <= curr_h:
+                        continue
+                    
+                    pty = forecast_map[d_str][t_str].get("PTY", "0")
+                    if pty != "0" and not found_rain:
+                        dt = datetime.strptime(d_str + t_str, "%Y%m%d%H%M")
+                        # 요일 계산
+                        weekday = days_ko[dt.weekday()]
+                        # 시간/분 포맷
+                        time_str = f"{dt.hour}시"
+                        if dt.minute > 0:
+                            time_str += f" {dt.minute}분"
+                        
+                        weather_data["rain_start_time"] = dt.strftime(f"%m월 %d일 {weekday} {time_str}").replace(" 0", " ")
+                        found_rain = True
+                        break
+                if found_rain: break
 
-        # 2. 중기 예보 가공 및 병합 (10일치)
+            # 2. 내일 오전/오후 날씨 정보
+            tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
+            if tomorrow_str in forecast_map:
+                am = forecast_map[tomorrow_str].get("0900", {})
+                pm = forecast_map[tomorrow_str].get("1500", {})
+                weather_data["wf_am_tomorrow"] = self._get_sky_kor(am.get("SKY"), am.get("PTY"))
+                weather_data["wf_pm_tomorrow"] = self._get_sky_kor(pm.get("SKY"), pm.get("PTY"))
+
+        # 10일치 하이브리드 예보 병합 (단기 1~3일 + 중기 2~10일)
         twice_daily = []
         mid_ta = mid_res[0].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[0] else {}
         mid_land = mid_res[1].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[1] else {}
@@ -142,37 +151,30 @@ class KMAWeatherAPI:
         for i in range(10):
             target_date = now + timedelta(days=i)
             d_str = target_date.strftime("%Y%m%d")
-            
             for is_am in [True, False]:
                 hour = 9 if is_am else 15
                 dt_iso = target_date.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
-                
-                # 단기 데이터 우선 확인 (1~3일차)
                 short_day = forecast_map.get(d_str, {})
                 short_hour = short_day.get(f"{hour:02d}00", {})
                 
                 if short_hour:
                     tmps = [_safe_float(v.get("TMP")) for v in short_day.values() if "TMP" in v]
                     twice_daily.append({
-                        "datetime": dt_iso,
-                        "is_daytime": is_am,
+                        "datetime": dt_iso, "is_daytime": is_am,
                         "native_temperature": max(tmps) if tmps else None,
                         "native_templow": min(tmps) if tmps else None,
                         "native_precipitation_probability": _safe_float(short_hour.get("POP")),
                         "condition": self._get_condition(short_hour.get("SKY"), short_hour.get("PTY"))
                     })
-                # 단기 데이터 없으면 중기 데이터 사용 (2~10일차)
                 elif i >= 2:
-                    idx = i # 중기예보는 3일째부터 데이터가 명시적이나 2일째 누락 방지용 매핑
+                    idx = i
                     ta_min = mid_ta.get(f"taMin{idx}")
                     ta_max = mid_ta.get(f"taMax{idx}")
                     wf = mid_land.get(f"wf{idx}{'Am' if is_am else 'Pm'}") or mid_land.get(f"wf{idx}")
                     pop = mid_land.get(f"rnSt{idx}{'Am' if is_am else 'Pm'}") or mid_land.get(f"rnSt{idx}")
-                    
-                    if wf: # 중기 데이터가 존재할 때만 추가
+                    if wf:
                         twice_daily.append({
-                            "datetime": dt_iso,
-                            "is_daytime": is_am,
+                            "datetime": dt_iso, "is_daytime": is_am,
                             "native_temperature": _safe_float(ta_max),
                             "native_templow": _safe_float(ta_min),
                             "native_precipitation_probability": _safe_float(pop),
@@ -180,9 +182,7 @@ class KMAWeatherAPI:
                         })
 
         weather_data["forecast_twice_daily"] = twice_daily
-        
-        # 기존 추가 기능 유지
-        if weather_data.get("VEC"): weather_data["VEC_KOR"] = self._get_vec_kor(weather_data["VEC"])
+        if weather_data.get("VEC"): weather_data["현재풍향"] = self._get_vec_kor(weather_data["VEC"])
         weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["apparent_temp"] = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
@@ -191,7 +191,7 @@ class KMAWeatherAPI:
 
     def _translate_mid_condition(self, wf):
         wf = str(wf)
-        if "비" in wf or "소나기" in wf: return "rainy"
+        if "비" in wf: return "rainy"
         if "눈" in wf: return "snowy"
         if "구름많음" in wf: return "partlycloudy"
         if "흐림" in wf: return "cloudy"
