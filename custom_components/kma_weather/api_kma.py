@@ -49,9 +49,9 @@ class KMAWeatherAPI:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
         
-        # 단기예보가 아예 없으면 coordinator가 캐시를 사용하도록 None 반환
+        # 단기예보가 응답 자체가 없으면(None) 코디네이터가 처리하도록 None 반환
         if not short_res or "response" not in short_res:
-            _LOGGER.warning("기상청 단기예보 데이터 부재.")
+            _LOGGER.warning("기상청 API 응답 부재.")
             return None
 
         return self._merge_all(now, short_res, mid_res, air_data, address)
@@ -110,11 +110,15 @@ class KMAWeatherAPI:
         weekday_ko = ["월", "화", "수", "목", "금", "토", "일"]
 
         items = short_res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
-        if not items: return None
+        
+        # ★ 핵심 수정: items가 비어있어도 None이 아닌 기본 구조 반환 (구조 깨짐 방지)
+        if not items:
+            _LOGGER.warning("기상청 응답은 정상이나 예보 데이터(items)가 비어있습니다.")
+            return {"weather": weather_data, "air": air_data or {}}
 
         for it in items:
-            d, t, cat, val = it["fcstDate"], it["fcstTime"], it["category"], it["fcstValue"]
-            forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
+            d, t, cat, val = it.get("fcstDate"), it.get("fcstTime"), it.get("category"), it.get("fcstValue")
+            if d and t: forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
 
         for d in sorted(forecast_map.keys()):
             for t in sorted(forecast_map[d].keys()):
@@ -170,8 +174,7 @@ class KMAWeatherAPI:
 
         weather_data["rain_start_time"], weather_data["current_condition_kor"] = rain_start, self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
-        app = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
-        weather_data["apparent_temp"] = app
+        weather_data["apparent_temp"] = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
         return {"weather": weather_data, "air": air_data or {}}
 
     def _get_condition(self, s, p):
