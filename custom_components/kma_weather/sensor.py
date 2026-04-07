@@ -8,7 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# ★ 원본 SENSOR_TYPES 구조 100% 유지
+# ★ 원본 SENSOR_TYPES 구조 100% 동일하게 유지
 SENSOR_TYPES = {
     "TMP": ["기온", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
     "REH": ["습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
@@ -34,7 +34,6 @@ SENSOR_TYPES = {
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    # 원본과 동일하게 SENSOR_TYPES를 순회하며 생성
     entities = [KMACustomSensor(coordinator, s_type, entry) for s_type in SENSOR_TYPES]
     entities.append(KMALocationDebugSensor(coordinator, entry))
     async_add_entities(entities)
@@ -47,7 +46,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         prefix = entry.data.get(CONF_PREFIX, "kma").lower()
         details = SENSOR_TYPES[sensor_type]
 
-        # ★ 원본 명명 규칙/ID 규칙 100% 유지
+        # ★ 기존 UI 정체성 유지를 위해 명명 규칙 복구
         self.entity_id = f"sensor.{prefix}_{details[4]}"
         self._attr_name = f"{entry.title} {details[0]}"
         self._attr_native_unit_of_measurement = details[1]
@@ -65,25 +64,22 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        # 1. API 만료일 계산 (원본 로직 유지)
+        # 1. API 만료일 (회원님 로직 유지)
         if self._type == "api_expire":
             expire_str = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
-            if not expire_str:
-                return None
+            if not expire_str: return None
             try:
                 expire = date.fromisoformat(str(expire_str).strip())
                 return (expire - date.today()).days
-            except Exception:
-                return None
+            except Exception: return None
 
-        # ★ 안정성 보강: 데이터 부재 시 Safe Return
-        if not self.coordinator.data:
-            return None
+        # 가용성 확보: 코디네이터 데이터 부재 시 Safe Return
+        if not self.coordinator.data: return None
 
         weather = self.coordinator.data.get("weather", {})
         air = self.coordinator.data.get("air", {})
 
-        # 2. weather 딕셔너리에서 조회 (Safe Access 보강)
+        # 2. weather 데이터 안전 조회
         if self._type in weather:
             val = weather.get(self._type)
             if self._type in ["TMP", "REH", "WSD", "POP"] and val is not None:
@@ -93,7 +89,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                     return val
             return val
 
-        # 3. 에어코리아 데이터 (Safe Access 보강)
+        # 3. air 데이터 안전 조회
         if self._type in air:
             return air.get(self._type)
 
@@ -101,13 +97,8 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def suggested_display_precision(self):
-        """기온, 습도, 강수확률 등의 센서 화면 출력 시 소수점을 제거(0)하고 정수로 표시합니다."""
-        int_sensors = [
-            "TMP", "REH", "POP", "apparent_temp", 
-            "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"
-        ]
-        if self._type in int_sensors:
-            return 0
+        int_sensors = ["TMP", "REH", "POP", "apparent_temp", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"]
+        if self._type in int_sensors: return 0
         return None
 
 class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
@@ -130,19 +121,15 @@ class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        if not self.coordinator.data:
-            return None
+        if not self.coordinator.data: return None
         w = self.coordinator.data.get("weather", {})
-        # 원본 로직 유지: 주소 우선, 없으면 좌표
         return w.get("address") or f"{w.get('debug_lat')}, {w.get('debug_lon')}"
 
     @property
     def extra_state_attributes(self):
-        if not self.coordinator.data:
-            return {}
+        if not self.coordinator.data: return {}
         w = self.coordinator.data.get("weather", {})
         air = self.coordinator.data.get("air", {})
-        # 원본의 모든 디버그 속성 유지
         return {
             "nx": w.get("debug_nx"),
             "ny": w.get("debug_ny"),
