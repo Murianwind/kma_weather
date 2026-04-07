@@ -94,7 +94,7 @@ class KMAWeatherAPI:
             "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None, "PTY": None, "SKY": None,
             "TMX_today": None, "TMN_today": None, "TMX_tomorrow": None, "TMN_tomorrow": None,
             "wf_am_today": None, "wf_pm_today": None, "wf_am_tomorrow": None, "wf_pm_tomorrow": None,
-            "rain_start_time": "강수없음", "address": address, "현재 위치": address,
+            "rain_start_time": "강수없음", "address": address,
             "forecast_twice_daily": [],
             "debug_nx": self.nx, "debug_ny": self.ny, "debug_lat": self.lat, "debug_lon": self.lon,
             "debug_reg_id_temp": self.reg_id_temp, "debug_reg_id_land": self.reg_id_land
@@ -110,27 +110,30 @@ class KMAWeatherAPI:
             today_str = now.strftime("%Y%m%d")
             tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
 
-            # [문제 해결] 1. 오늘/내일 최고/최저 온도 및 날씨 추출
+            # 1. 오늘/내일 최고/최저 기온 및 날씨 정보 추출
             for target_date, prefix in [(today_str, "today"), (tomorrow_str, "tomorrow")]:
                 if target_date in forecast_map:
-                    day_data = forecast_map[target_date]
-                    tmps = [_safe_float(v.get("TMP")) for v in day_data.values() if "TMP" in v]
+                    tmps = [_safe_float(v.get("TMP")) for v in forecast_map[target_date].values() if "TMP" in v]
                     if tmps:
                         weather_data[f"TMX_{prefix}"] = max(tmps)
                         weather_data[f"TMN_{prefix}"] = min(tmps)
                     
                     # 오전(09시)/오후(15시) 날씨 추출
-                    am_val = day_data.get("0900", {})
-                    pm_val = day_data.get("1500", {})
+                    am_val = forecast_map[target_date].get("0900", {})
+                    pm_val = forecast_map[target_date].get("1500", {})
                     weather_data[f"wf_am_{prefix}"] = self._get_sky_kor(am_val.get("SKY"), am_val.get("PTY"))
                     weather_data[f"wf_pm_{prefix}"] = self._get_sky_kor(pm_val.get("SKY"), pm_val.get("PTY"))
 
-            # 현재 시간 데이터 매핑
+            # 2. [수정] 현재 시각 기상 상태 업데이트 (없을 경우 가장 가까운 시간 탐색)
             curr_h = f"{now.hour:02d}00"
-            if today_str in forecast_map and curr_h in forecast_map[today_str]:
-                weather_data.update(forecast_map[today_str][curr_h])
+            if today_str in forecast_map:
+                available_times = sorted(forecast_map[today_str].keys())
+                # 현재 시간과 일치하거나, 가장 가까운 과거/미래 시간 데이터 선택
+                best_time = curr_h if curr_h in available_times else (available_times[0] if available_times else None)
+                if best_time:
+                    weather_data.update(forecast_map[today_str][best_time])
 
-            # 비 시작 시간 포맷팅 (기존 요청 반영)
+            # 3. 비 시작 시간 포맷팅
             days_ko = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
             found_rain = False
             for d_str in sorted(forecast_map.keys()):
@@ -144,7 +147,7 @@ class KMAWeatherAPI:
                         break
                 if found_rain: break
 
-        # 10일치 예보 병합 (단기 1~3일 + 중기 2~10일)
+        # 4. 10일치 하이브리드 예보 병합
         twice_daily = []
         mid_ta = mid_res[0].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[0] else {}
         mid_land = mid_res[1].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[1] else {}
@@ -178,11 +181,8 @@ class KMAWeatherAPI:
                         })
         weather_data["forecast_twice_daily"] = twice_daily
 
-        # [문제 해결] 2. 풍향 데이터 보강
         if weather_data.get("VEC"):
-            kor_vec = self._get_vec_kor(weather_data["VEC"])
-            weather_data["VEC_KOR"] = kor_vec
-            weather_data["현재 풍향"] = kor_vec
+            weather_data["VEC_KOR"] = self._get_vec_kor(weather_data["VEC"])
             
         weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
