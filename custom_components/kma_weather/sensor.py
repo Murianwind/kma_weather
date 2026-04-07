@@ -8,7 +8,6 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# ★ 원본 SENSOR_TYPES 100% 보존
 SENSOR_TYPES = {
     "TMP": ["기온", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
     "REH": ["습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
@@ -57,11 +56,10 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             try: return (date.fromisoformat(str(exp).strip()) - date.today()).days
             except: return None
         if not self.coordinator.data: return None
-        # ★ KeyError 방어 (.get() 사용)
         w, a = self.coordinator.data.get("weather", {}), self.coordinator.data.get("air", {})
         if self._type in w:
             val = w.get(self._type)
-            if self._type in ["TMP", "REH", "WSD", "POP"] and val is not None:
+            if self._type in ["TMP", "REH", "WSD", "POP", "apparent_temp", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"] and val is not None:
                 try: return float(val)
                 except: return val
             return val
