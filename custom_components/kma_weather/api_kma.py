@@ -4,7 +4,7 @@ import aiohttp
 import math
 import json
 from datetime import datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,11 +20,12 @@ def _safe_float(v):
 class KMAWeatherAPI:
     def __init__(self, session, api_key, reg_id_temp, reg_id_land):
         self.session = session
-        self.api_key = api_key
-        self.air_key = api_key
+        # 인코딩 키를 넣었을 때 aiohttp가 이중으로 인코딩하지 않도록 정규화만 수행합니다.
+        self.api_key = unquote(api_key)
+        self.air_key = self.api_key
+        
         self.reg_id_temp = reg_id_temp
         self.reg_id_land = reg_id_land
-        # Python 3.14 호환 표준 방식 (Blocking Call 방지)
         self.tz = ZoneInfo("Asia/Seoul")
         self.lat = self.lon = self.nx = self.ny = None
 
@@ -52,7 +53,7 @@ class KMAWeatherAPI:
         short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
         
         if not short_res or not isinstance(short_res, dict) or "response" not in short_res:
-            _LOGGER.warning("기상청 단기예보 데이터 수집 실패 (네트워크 연결 혹은 API 키 상태를 확인하세요)")
+            _LOGGER.warning("기상청 데이터 수집 실패. 인코딩 키와 HTTPS 통신 상태를 확인하세요.")
             return None
 
         return self._merge_all(now, short_res, mid_res, air_data, address)
@@ -60,8 +61,7 @@ class KMAWeatherAPI:
     async def _get_air_quality(self):
         try:
             tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
-            # 공공데이터포털은 다시 http로 원복 (안정성 우선)
-            url_st = "http://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
+            url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
             params_st = {"serviceKey": self.air_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
             
             async with self.session.get(url_st, params=params_st, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -69,14 +69,13 @@ class KMAWeatherAPI:
                 try:
                     st_json = json.loads(resp_text)
                 except json.JSONDecodeError:
-                    _LOGGER.debug("에어코리아(측정소) 비정상 응답: %s", resp_text[:100])
                     return {}
             
             items = st_json.get("response", {}).get("body", {}).get("items", [])
             if not items: return {}
             sn = items[0]["stationName"]
             
-            url_data = "http://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
+            url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
             params_data = {"serviceKey": self.air_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
             
             async with self.session.get(url_data, params=params_data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -89,8 +88,7 @@ class KMAWeatherAPI:
             ai = air_json.get("response", {}).get("body", {}).get("items", [])
             if not ai: return {}
             return {"pm10Value": ai[0].get("pm10Value"), "pm10Grade": self._translate_grade(ai[0].get("pm10Grade")), "pm25Value": ai[0].get("pm25Value"), "pm25Grade": self._translate_grade(ai[0].get("pm25Grade")), "station": sn}
-        except Exception as e:
-            _LOGGER.warning("대기질 정보 조회 중 예외 발생: %s", e)
+        except Exception:
             return {}
 
     def _translate_grade(self, g):
@@ -98,7 +96,6 @@ class KMAWeatherAPI:
 
     async def _get_address(self, lat, lon):
         try:
-            # Nominatim은 https 필수
             url = "https://nominatim.openstreetmap.org/reverse"
             params = {"format": "json", "lat": lat, "lon": lon, "zoom": 16}
             async with self.session.get(url, params=params, headers={"User-Agent": "HA-KMA"}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
@@ -116,8 +113,7 @@ class KMAWeatherAPI:
         if base_h is None: 
             adj_p = adj - timedelta(days=1); base_d, base_h = adj_p.strftime("%Y%m%d"), 23
         
-        # 기상청 주소 http로 원복
-        url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
+        url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
         params = {"serviceKey": self.api_key, "dataType": "JSON", "base_date": base_d, "base_time": f"{base_h:02d}00", "nx": self.nx, "ny": self.ny, "numOfRows": 1000}
         try:
             async with self.session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as r:
@@ -126,11 +122,8 @@ class KMAWeatherAPI:
                 try:
                     return json.loads(resp_text)
                 except json.JSONDecodeError:
-                    _LOGGER.debug("기상청 단기예보 비정상 응답: %s", resp_text[:100])
                     return None
-        except Exception as e:
-            _LOGGER.warning("단기예보 API 호출 실패: %s", e)
-            return None
+        except Exception: return None
 
     async def _get_mid_term(self, now):
         if 6 <= now.hour < 18: base = now.strftime("%Y%m%d") + "0600"
@@ -147,9 +140,8 @@ class KMAWeatherAPI:
                         return None
             except Exception: return None
         
-        # 중기예보 주소 http로 원복
-        url_ta = "http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
-        url_land = "http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
+        url_ta = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
+        url_land = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
         params_ta = {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}
         params_land = {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base}
         
@@ -220,7 +212,7 @@ class KMAWeatherAPI:
                             "native_templow": t_min, 
                             "condition": self._get_mid_condition(wf)
                         })
-            except Exception as e: _LOGGER.warning("중기예보 데이터 파싱 실패: %s", e)
+            except Exception as e: _LOGGER.warning("중기예보 파싱 실패: %s", e)
 
         today_str, tom_str = now.strftime("%Y%m%d"), (now + timedelta(days=1)).strftime("%Y%m%d")
         for d_str, prefix in [(today_str, "today"), (tom_str, "tomorrow")]:
