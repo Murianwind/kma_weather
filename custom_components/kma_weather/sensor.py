@@ -55,7 +55,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
             try: return (date.fromisoformat(str(exp).strip()) - date.today()).days
             except: return None
-        # ★ 가용성 강화: 모든 딕셔너리 접근에 .get() 및 None-check 적용
+        # ★ 가용성 강화: (data or {}).get() 체인 적용
         data = self.coordinator.data or {}
         w, a = data.get("weather", {}), data.get("air", {})
         if self._type in w:
