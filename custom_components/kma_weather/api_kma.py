@@ -11,7 +11,6 @@ _LOGGER = logging.getLogger(__name__)
 class KMAWeatherAPI:
     def __init__(self, session, api_key, reg_id_temp, reg_id_land):
         self.session = session
-        # 공공데이터포털(data.go.kr) 인증키 하나로 통합 사용
         self.api_key = api_key
         self.air_key = api_key
         
@@ -21,7 +20,6 @@ class KMAWeatherAPI:
         self.lat = self.lon = self.nx = self.ny = None
 
     def _wgs84_to_tm(self, lat, lon):
-        """EPSG:5181 정밀 가우스-크뤼거 변환"""
         a, f = 6378137.0, 1 / 298.257222101
         e2 = 2*f - f**2
         lat0, lon0 = math.radians(38.0), math.radians(127.0)
@@ -195,7 +193,6 @@ class KMAWeatherAPI:
             base_dt = datetime.strptime(d_str, "%Y%m%d").replace(tzinfo=self.tz)
             rep = day_items.get("1200") or day_items.get("1500") or day_items.get("1800") or next(iter(day_items.values()), {})
             
-            # ★ 일일 예보: 최고/최저 정상 작동 유지
             weather_data["forecast_daily"].append({
                 "datetime": base_dt.isoformat(),
                 "native_temperature": t_max,
@@ -203,14 +200,15 @@ class KMAWeatherAPI:
                 "condition": self._get_condition(rep.get("SKY"), rep.get("PTY")),
             })
             
-            # ★ 단기예보(매일 2회): 주간(is_day)에는 최저기온(t_min), 야간(not is_day)에는 최고기온(t_max)
+            # ★ 2번 솔루션 적용: 주/야간 상관없이 최고기온(t_max)과 최저기온(t_min)을 둘 다 넣어줍니다.
             for h, is_day in [(9, True), (21, False)]:
                 t_k = f"{h:02d}00"
                 if t_k in day_items:
                     weather_data["forecast_twice_daily"].append({
                         "datetime": base_dt.replace(hour=h).isoformat(),
                         "is_daytime": is_day,
-                        "native_temperature": t_min if is_day else t_max,
+                        "native_temperature": t_max,  # 상단에 표시될 최고온도
+                        "native_templow": t_min,      # 하단에 표시될 최저온도
                         "condition": self._get_condition(day_items[t_k].get("SKY"), day_items[t_k].get("PTY")),
                     })
 
@@ -224,7 +222,6 @@ class KMAWeatherAPI:
                     t_min = float(mt.get(f"taMin{i}", 15.0))
                     t_max = float(mt.get(f"taMax{i}", 25.0))
                     
-                    # ★ 일일 예보: 최고/최저 정상 작동 유지
                     weather_data["forecast_daily"].append({
                         "datetime": target_dt.isoformat(),
                         "native_temperature": t_max,
@@ -235,17 +232,19 @@ class KMAWeatherAPI:
                     am_wf = ml.get(f"wf{i}Am") if i <= 7 else ml.get(f"wf{i}")
                     pm_wf = ml.get(f"wf{i}Pm") if i <= 7 else ml.get(f"wf{i}")
                     
-                    # ★ 중기예보(매일 2회): 주간에는 최저기온(t_min), 야간에는 최고기온(t_max)
+                    # ★ 중기예보도 동일하게 최고/최저를 모두 제공
                     weather_data["forecast_twice_daily"].append({
                         "datetime": target_dt.replace(hour=9).isoformat(), 
                         "is_daytime": True,
-                        "native_temperature": t_min, 
+                        "native_temperature": t_max, 
+                        "native_templow": t_min,
                         "condition": self._get_mid_condition(am_wf),
                     })
                     weather_data["forecast_twice_daily"].append({
                         "datetime": target_dt.replace(hour=21).isoformat(), 
                         "is_daytime": False,
                         "native_temperature": t_max, 
+                        "native_templow": t_min,
                         "condition": self._get_mid_condition(pm_wf),
                     })
             except Exception as e:
