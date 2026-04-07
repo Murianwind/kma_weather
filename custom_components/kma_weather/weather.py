@@ -16,9 +16,11 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
-        prefix = entry.data.get(CONF_PREFIX, "kma").lower()
+        from homeassistant.util import slugify
+        prefix = slugify(entry.data.get(CONF_PREFIX, "kma"))
         self.entity_id = f"weather.{prefix}_weather"
-        self._attr_name, self._attr_unique_id = entry.title, f"{entry.entry_id}_weather"
+        self._attr_name = entry.title
+        self._attr_unique_id = f"{entry.entry_id}_weather"
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Murianwind", model="integration")
 
     @property
@@ -27,7 +29,8 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
 
     @property
     def native_pressure(self):
-        return (self.coordinator.data or {}).get("weather", {}).get("PCP")
+        # 기상청 단기예보에는 기압 데이터가 없으므로 None 반환 (PCP 매핑 제거)
+        return None
 
     @property
     def humidity(self):
@@ -46,7 +49,6 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
         return (self.coordinator.data or {}).get("weather", {}).get("current_condition")
 
     async def async_forecast_daily(self) -> list[Forecast]:
-        # ★ IndexError 방지: 항상 리스트 타입 반환 보장
         return (self.coordinator.data or {}).get("weather", {}).get("forecast_daily", [])
 
     async def async_forecast_twice_daily(self) -> list[Forecast]:
