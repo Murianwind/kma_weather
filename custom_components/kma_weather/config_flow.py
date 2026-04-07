@@ -32,7 +32,7 @@ class KMAWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_API_KEY): str,
                 vol.Required(CONF_PREFIX): str, # 접두사 기본값 삭제 완료
                 vol.Optional(CONF_LOCATION_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=["zone", "device_tracker", "person"])
+                    selector.EntitySelectorConfig(domain=["zone", "device_tracker"])
                 ),
                 vol.Optional(CONF_APPLY_DATE): cv.string,
                 vol.Optional(CONF_EXPIRE_DATE): cv.string,
@@ -56,7 +56,7 @@ class KMAWeatherOptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
-                vol.Optional(CONF_LOCATION_ENTITY, default=self._config_entry.options.get(CONF_LOCATION_ENTITY, self._config_entry.data.get(CONF_LOCATION_ENTITY, ""))): selector.EntitySelector(selector.EntitySelectorConfig(domain=["zone", "device_tracker", "person"])),
+                vol.Optional(CONF_LOCATION_ENTITY, default=self._config_entry.options.get(CONF_LOCATION_ENTITY, self._config_entry.data.get(CONF_LOCATION_ENTITY, ""))): selector.EntitySelector(selector.EntitySelectorConfig(domain=["zone", "device_tracker"])),
                 vol.Optional(CONF_APPLY_DATE, default=self._config_entry.options.get(CONF_APPLY_DATE, self._config_entry.data.get(CONF_APPLY_DATE, ""))): cv.string,
                 vol.Optional(CONF_EXPIRE_DATE, default=self._config_entry.options.get(CONF_EXPIRE_DATE, self._config_entry.data.get(CONF_EXPIRE_DATE, ""))): cv.string,
             })
