@@ -50,7 +50,7 @@ class KMAWeatherAPI:
         short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
         
         if not short_res or "response" not in short_res:
-            _LOGGER.warning("기상청 단기예보 응답 오류. 캐시 데이터 사용을 시도합니다.")
+            _LOGGER.warning("기상청 단기예보 데이터 부재. 캐시를 유지합니다.")
             return None
 
         return self._merge_all(now, short_res, mid_res, air_data, address)
@@ -121,14 +121,15 @@ class KMAWeatherAPI:
         if not items: return None
 
         for it in items:
-            d, t, cat, val = it["fcstDate"], it["fcstTime"], it["category"], it["fcstValue"]
-            forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
+            d, t, cat, val = it.get("fcstDate"), it.get("fcstTime"), it.get("category"), it.get("fcstValue")
+            if d and t: forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
 
         for d in sorted(forecast_map.keys()):
             for t in sorted(forecast_map[d].keys()):
                 f_dt = datetime.strptime(f"{d}{t}", "%Y%m%d%H%M").replace(tzinfo=self.tz)
                 if f_dt <= now: last_past = forecast_map[d][t]
-                if rain_start == "강수없음" and forecast_map[d][t].get("PTY") in ["1", "2", "3", "4", "7"]:
+                pty = str(forecast_map[d][t].get("PTY") or "0")
+                if rain_start == "강수없음" and pty in ["1", "2", "3", "4", "7"]:
                     if f_dt >= now:
                         h_str = f"{f_dt.hour}시" if f_dt.minute == 0 else f"{f_dt.hour}시 {f_dt.minute}분"
                         rain_start = f"{f_dt.month}월 {f_dt.day}일 {weekday_ko[f_dt.weekday()]}요일 {h_str}"
@@ -137,13 +138,12 @@ class KMAWeatherAPI:
             weather_data.update(last_past)
             if "VEC" in last_past: weather_data["VEC_KOR"] = self._get_vec_kor(last_past["VEC"])
 
-        # 예보 루프 및 0도 방어 (is not None 체크)
         v_days = [d for d in sorted(forecast_map.keys()) if d >= now.strftime("%Y%m%d")]
         for d_str in v_days[:3]:
-            base_dt = datetime.strptime(d_str, "%Y%m%d").replace(tzinfo=self.tz)
+            base_dt = datetime.strptime(d_str, "%Y%m%d").replace(hour=12, tzinfo=self.tz)
             day_items = forecast_map[d_str]
             tmps = [float(v["TMP"]) for v in day_items.values() if "TMP" in v]
-            t_max, t_min = max(tmps) if tmps else 20.0, min(tmps) if tmps else 10.0
+            t_max, t_min = (max(tmps) if tmps else 20.0), (min(tmps) if tmps else 10.0)
             rep = day_items.get("1200") or day_items.get("1500") or next(iter(day_items.values()), {})
             weather_data["forecast_daily"].append({"datetime": base_dt.isoformat(), "native_temperature": t_max, "native_templow": t_min, "condition": self._get_condition(rep.get("SKY"), rep.get("PTY"))})
             for h, is_day in [(9, True), (21, False)]:
@@ -151,11 +151,11 @@ class KMAWeatherAPI:
                 if t_k in day_items: weather_data["forecast_twice_daily"].append({"datetime": base_dt.replace(hour=h).isoformat(), "is_daytime": is_day, "native_temperature": t_max, "native_templow": t_min, "condition": self._get_condition(day_items[t_k].get("SKY"), day_items[t_k].get("PTY"))})
 
         mid_t_raw, mid_l_raw = mid_res if mid_res else (None, None)
-        if mid_t_raw and mid_l_raw:
+        if isinstance(mid_t_raw, dict) and isinstance(mid_l_raw, dict):
             try:
                 mt, ml = mid_t_raw["response"]["body"]["items"]["item"][0], mid_l_raw["response"]["body"]["items"]["item"][0]
                 for i in range(3, 11):
-                    target_dt = (now + timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    target_dt = (now + timedelta(days=i)).replace(hour=12, minute=0, second=0, microsecond=0)
                     t_min_val, t_max_val = _safe_float(mt.get(f"taMin{i}")), _safe_float(mt.get(f"taMax{i}"))
                     t_min, t_max = (t_min_val if t_min_val is not None else 15.0), (t_max_val if t_max_val is not None else 25.0)
                     weather_data["forecast_daily"].append({"datetime": target_dt.isoformat(), "native_temperature": t_max, "native_templow": t_min, "condition": self._get_mid_condition(ml.get(f"wf{i}"))})
@@ -179,7 +179,7 @@ class KMAWeatherAPI:
         weather_data["rain_start_time"], weather_data["current_condition_kor"] = rain_start, self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
         app = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
-        weather_data["apparent_temp"] = int(float(app)) if app is not None else None
+        weather_data["apparent_temp"] = app
         return {"weather": weather_data, "air": air_data or {}}
 
     def _get_condition(self, s, p):
