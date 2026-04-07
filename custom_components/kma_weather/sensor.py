@@ -82,12 +82,13 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self):
         if self._type == "address":
             w = self.coordinator.data.get("weather", {})
+            a = self.coordinator.data.get("air", {}) # 에어코리아 데이터를 가져옴
             return {
                 "short_term_nx": w.get('debug_nx'), 
                 "short_term_ny": w.get('debug_ny'),
                 "mid_term_temp_id": w.get("debug_reg_id_temp"),
                 "mid_term_land_id": w.get("debug_reg_id_land"),
-                "air_korea_station": w.get("station"),
+                "air_korea_station": a.get("station"), # air 데이터에서 스테이션 정보를 가져옴
                 "latitude": w.get("debug_lat"),
                 "longitude": w.get("debug_lon")
             }
