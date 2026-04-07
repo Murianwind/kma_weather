@@ -1,5 +1,6 @@
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.core import callback
 from homeassistant.helpers import selector
 from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX, CONF_APPLY_DATE, CONF_EXPIRE_DATE
 
@@ -27,14 +28,12 @@ class KMAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     @staticmethod
+    @callback
     def async_get_options_flow(config_entry):
         return KMAOptionsFlow(config_entry)
 
 
 class KMAOptionsFlow(config_entries.OptionsFlow):
-    """Options flow — HA 2024.x 이상 권장 방식."""
-
-    # ★ 500 에러 해결: __init__ 초기화 함수 추가
     def __init__(self, config_entry):
         """Initialize options flow."""
         self.config_entry = config_entry
@@ -43,15 +42,14 @@ class KMAOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        # options 우선, 없으면 data 폴백
-        current_apply = (
-            self.config_entry.options.get(CONF_APPLY_DATE)
-            or self.config_entry.data.get(CONF_APPLY_DATE, "")
-        )
-        current_expire = (
-            self.config_entry.options.get(CONF_EXPIRE_DATE)
-            or self.config_entry.data.get(CONF_EXPIRE_DATE, "")
-        )
+        # 500 에러 해결 핵심 방어 로직: None 값이 들어오면 빈 문자열("")로 강제 치환
+        current_apply = self.config_entry.options.get(CONF_APPLY_DATE, self.config_entry.data.get(CONF_APPLY_DATE, ""))
+        if current_apply is None:
+            current_apply = ""
+            
+        current_expire = self.config_entry.options.get(CONF_EXPIRE_DATE, self.config_entry.data.get(CONF_EXPIRE_DATE, ""))
+        if current_expire is None:
+            current_expire = ""
 
         return self.async_show_form(
             step_id="init",
