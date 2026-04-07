@@ -49,8 +49,9 @@ class KMAWeatherAPI:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
         
+        # 1. 단기예보 실패 시 즉시 None 반환 (Fail-safe)
         if not short_res or "response" not in short_res:
-            _LOGGER.warning("기상청 단기예보 데이터 부재. 캐시를 유지합니다.")
+            _LOGGER.warning("기상청 단기예보 데이터 수집 실패. 기존 데이터를 유지합니다.")
             return None
 
         return self._merge_all(now, short_res, mid_res, air_data, address)
@@ -58,32 +59,26 @@ class KMAWeatherAPI:
     async def _get_air_quality(self):
         try:
             tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
-            st_url = f"http://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList?serviceKey={self.air_key}&returnType=json&tmX={tm_x:.2f}&tmY={tm_y:.2f}"
-            async with self.session.get(st_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with self.session.get(f"http://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList?serviceKey={self.air_key}&returnType=json&tmX={tm_x:.2f}&tmY={tm_y:.2f}", timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200: return {}
                 st_json = await resp.json(content_type=None)
             items = st_json.get("response", {}).get("body", {}).get("items", [])
             if not items: return {}
-            station_name = items[0]["stationName"]
-            data_url = f"http://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty?serviceKey={self.air_key}&returnType=json&stationName={quote(station_name)}&dataTerm=daily&ver=1.3"
-            async with self.session.get(data_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            sn = items[0]["stationName"]
+            async with self.session.get(f"http://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty?serviceKey={self.air_key}&returnType=json&stationName={quote(sn)}&dataTerm=daily&ver=1.3", timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200: return {}
                 air_json = await resp.json(content_type=None)
-            air_items = air_json.get("response", {}).get("body", {}).get("items", [])
-            if not air_items: return {}
-            item = air_items[0]
-            return {"pm10Value": item.get("pm10Value"), "pm10Grade": self._translate_grade(item.get("pm10Grade")), "pm25Value": item.get("pm25Value"), "pm25Grade": self._translate_grade(item.get("pm25Grade")), "station": station_name}
-        except Exception as e:
-            _LOGGER.warning("대기질 조회 실패: %s", e)
-            return {}
+            ai = air_json.get("response", {}).get("body", {}).get("items", [])
+            if not ai: return {}
+            return {"pm10Value": ai[0].get("pm10Value"), "pm10Grade": self._translate_grade(ai[0].get("pm10Grade")), "pm25Value": ai[0].get("pm25Value"), "pm25Grade": self._translate_grade(ai[0].get("pm25Grade")), "station": sn}
+        except Exception: return {}
 
     def _translate_grade(self, g):
         return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
 
     async def _get_address(self, lat, lon):
-        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=16"
         try:
-            async with self.session.get(url, headers={"User-Agent": "HA-KMA"}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            async with self.session.get(f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=16", headers={"User-Agent": "HA-KMA"}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 d = await resp.json(content_type=None)
                 a = d.get("address", {})
                 parts = [a.get("province", a.get("city", "")), a.get("borough", a.get("county", "")), a.get("suburb", "")]
@@ -94,9 +89,8 @@ class KMAWeatherAPI:
         adj = now - timedelta(minutes=10)
         base_d, base_h = adj.strftime("%Y%m%d"), max([h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= adj.hour], default=None)
         if base_h is None: adj_p = adj - timedelta(days=1); base_d, base_h = adj_p.strftime("%Y%m%d"), 23
-        url = f"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?serviceKey={self.api_key}&dataType=JSON&base_date={base_d}&base_time={base_h:02d}00&nx={self.nx}&ny={self.ny}&numOfRows=1000"
         try:
-            async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+            async with self.session.get(f"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?serviceKey={self.api_key}&dataType=JSON&base_date={base_d}&base_time={base_h:02d}00&nx={self.nx}&ny={self.ny}&numOfRows=1000", timeout=aiohttp.ClientTimeout(total=15)) as r:
                 return await r.json(content_type=None) if r.status == 200 else None
         except: return None
 
@@ -107,9 +101,7 @@ class KMAWeatherAPI:
                 async with self.session.get(u, timeout=aiohttp.ClientTimeout(total=15)) as r:
                     return await r.json(content_type=None) if r.status == 200 else None
             except: return None
-        urls = [f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa?serviceKey={self.api_key}&dataType=JSON&regId={self.reg_id_temp}&tmFc={base}",
-                f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst?serviceKey={self.api_key}&dataType=JSON&regId={self.reg_id_land}&tmFc={base}"]
-        return await asyncio.gather(*(fetch(u) for u in urls))
+        return await asyncio.gather(fetch(f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa?serviceKey={self.api_key}&dataType=JSON&regId={self.reg_id_temp}&tmFc={base}"), fetch(f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst?serviceKey={self.api_key}&dataType=JSON&regId={self.reg_id_land}&tmFc={base}"))
 
     def _merge_all(self, now, short_res, mid_res, air_data, address=None):
         weather_data = {"forecast_daily": [], "forecast_twice_daily": []}
@@ -121,8 +113,8 @@ class KMAWeatherAPI:
         if not items: return None
 
         for it in items:
-            d, t, cat, val = it.get("fcstDate"), it.get("fcstTime"), it.get("category"), it.get("fcstValue")
-            if d and t: forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
+            d, t, cat, val = it["fcstDate"], it["fcstTime"], it["category"], it["fcstValue"]
+            forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
 
         for d in sorted(forecast_map.keys()):
             for t in sorted(forecast_map[d].keys()):
@@ -156,8 +148,8 @@ class KMAWeatherAPI:
                 mt, ml = mid_t_raw["response"]["body"]["items"]["item"][0], mid_l_raw["response"]["body"]["items"]["item"][0]
                 for i in range(3, 11):
                     target_dt = (now + timedelta(days=i)).replace(hour=12, minute=0, second=0, microsecond=0)
-                    t_min_val, t_max_val = _safe_float(mt.get(f"taMin{i}")), _safe_float(mt.get(f"taMax{i}"))
-                    t_min, t_max = (t_min_val if t_min_val is not None else 15.0), (t_max_val if t_max_val is not None else 25.0)
+                    tmin_v, tmax_v = _safe_float(mt.get(f"taMin{i}")), _safe_float(mt.get(f"taMax{i}"))
+                    t_min, t_max = (tmin_v if tmin_v is not None else 15.0), (tmax_v if tmax_v is not None else 25.0)
                     weather_data["forecast_daily"].append({"datetime": target_dt.isoformat(), "native_temperature": t_max, "native_templow": t_min, "condition": self._get_mid_condition(ml.get(f"wf{i}"))})
                     for h, is_day, sfx in [(9, True, "Am"), (21, False, "Pm")]:
                         wf = ml.get(f"wf{i}{sfx}") if i <= 7 else ml.get(f"wf{i}")
