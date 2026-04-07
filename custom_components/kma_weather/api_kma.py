@@ -12,16 +12,13 @@ _LOGGER = logging.getLogger(__name__)
 def _safe_float(v):
     try:
         if v == "" or v is None: return None
-        if isinstance(v, str) and not v.strip(): return None
         return float(v)
-    except (TypeError, ValueError):
-        return None
+    except: return None
 
 class KMAWeatherAPI:
     def __init__(self, session, api_key, reg_id_temp, reg_id_land):
         self.session = session
-        # 인코딩 키를 넣어도 자동으로 디코딩하여 HTTPS에서 이중 인코딩 방지
-        self.api_key = unquote(api_key)
+        self.api_key = unquote(api_key) # 인코딩 키 처리
         self.air_key = self.api_key
         self.reg_id_temp = reg_id_temp
         self.reg_id_land = reg_id_land
@@ -34,8 +31,6 @@ class KMAWeatherAPI:
         tasks = [self._get_short_term(now), self._get_mid_term(now), self._get_air_quality(), self._get_address(lat, lon)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
-        
-        # 기상청 단기예보가 아예 없으면 기본 구조라도 생성하여 센서 유실 방지
         return self._merge_all(now, short_res, mid_res, air_data, address)
 
     async def _get_air_quality(self):
@@ -45,17 +40,15 @@ class KMAWeatherAPI:
             params_st = {"serviceKey": self.air_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
             async with self.session.get(url_st, params=params_st, timeout=10) as resp:
                 st_json = json.loads(await resp.text())
-            items = st_json.get("response", {}).get("body", {}).get("items", [])
-            if not items: return {}
-            sn = items[0]["stationName"]
+            sn = st_json["response"]["body"]["items"][0]["stationName"]
+            
             url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
             params_data = {"serviceKey": self.air_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
             async with self.session.get(url_data, params=params_data, timeout=10) as resp:
                 air_json = json.loads(await resp.text())
-            ai = air_json.get("response", {}).get("body", {}).get("items", [])
-            if not ai: return {}
-            return {"pm10Value": ai[0].get("pm10Value"), "pm10Grade": self._translate_grade(ai[0].get("pm10Grade")), "pm25Value": ai[0].get("pm25Value"), "pm25Grade": self._translate_grade(ai[0].get("pm25Grade")), "station": sn}
-        except Exception: return {}
+            ai = air_json["response"]["body"]["items"][0]
+            return {"pm10Value": ai.get("pm10Value"), "pm10Grade": self._translate_grade(ai.get("pm10Grade")), "pm25Value": ai.get("pm25Value"), "station": sn}
+        except: return {}
 
     def _translate_grade(self, g):
         return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
@@ -67,8 +60,8 @@ class KMAWeatherAPI:
             async with self.session.get(url, params=params, headers={"User-Agent": "HA-KMA"}, timeout=5) as resp:
                 d = await resp.json()
                 a = d.get("address", {})
-                return f"{a.get('city', '')} {a.get('borough', '')} {a.get('suburb', '')}".strip()
-        except Exception: return f"{lat:.4f}, {lon:.4f}"
+                return f"{a.get('city', a.get('province',''))} {a.get('borough', a.get('county',''))}".strip()
+        except: return f"{lat:.4f}, {lon:.4f}"
 
     async def _get_short_term(self, now):
         adj = now - timedelta(minutes=10)
@@ -79,56 +72,53 @@ class KMAWeatherAPI:
         try:
             async with self.session.get(url, params=params, timeout=15) as r:
                 return json.loads(await r.text())
-        except Exception: return None
+        except: return None
 
     async def _get_mid_term(self, now):
         if 6 <= now.hour < 18: base = now.strftime("%Y%m%d") + "0600"
-        elif now.hour < 6: base = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
-        else: base = now.strftime("%Y%m%d") + "1800"
+        else: base = (now if now.hour >= 18 else now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
         async def fetch(u, p):
             try:
                 async with self.session.get(u, params=p, timeout=15) as r:
                     return json.loads(await r.text())
-            except Exception: return None
+            except: return None
         url_ta = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
         url_land = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
         return await asyncio.gather(fetch(url_ta, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}), fetch(url_land, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base}))
 
     def _merge_all(self, now, short_res, mid_res, air_data, address=None):
-        weather_data = {"forecast_daily": [], "forecast_twice_daily": []}
+        # 센서 유실을 막기 위한 초기 구조 (더미 값이 아닌 None으로 초기화)
+        weather_data = {
+            "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None, "PTY": None, "SKY": None,
+            "TMX_today": None, "TMN_today": None, "weather_am_today": None, "weather_pm_today": None,
+            "rain_start_time": "강수없음", "forecast_daily": [], "forecast_twice_daily": []
+        }
         if address: weather_data["address"] = address
-        forecast_map, rain_start, last_past = {}, "강수없음", None
 
-        # 4. 센서 사라짐 방지: short_res가 실패해도 빈 딕셔너리 구조 반환
-        if not short_res or "response" not in short_res:
-            return {"weather": weather_data, "air": air_data or {}}
+        if short_res and "response" in short_res:
+            items = short_res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
+            forecast_map = {}
+            for it in items:
+                d, t, cat, val = it["fcstDate"], it["fcstTime"], it["category"], it["fcstValue"]
+                forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
+            
+            today_str = now.strftime("%Y%m%d")
+            curr_h = f"{now.hour:02d}00"
+            # 실제 데이터 매핑
+            if today_str in forecast_map and curr_h in forecast_map[today_str]:
+                weather_data.update(forecast_map[today_str][curr_h])
+            
+            if today_str in forecast_map:
+                day_data = forecast_map[today_str]
+                tmps = [float(v["TMP"]) for v in day_data.values() if "TMP" in v]
+                if tmps:
+                    weather_data["TMX_today"], weather_data["TMN_today"] = max(tmps), min(tmps)
+                weather_data["weather_am_today"] = self._get_sky_kor(day_data.get("0900",{}).get("SKY"), day_data.get("0900",{}).get("PTY"))
+                weather_data["weather_pm_today"] = self._get_sky_kor(day_data.get("1500",{}).get("SKY"), day_data.get("1500",{}).get("PTY"))
+            
+            if "VEC" in weather_data:
+                weather_data["VEC_KOR"] = self._get_vec_kor(weather_data["VEC"])
 
-        items = short_res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
-        for it in items:
-            d, t, cat, val = it["fcstDate"], it["fcstTime"], it["category"], it["fcstValue"]
-            forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
-
-        for d in sorted(forecast_map.keys()):
-            for t in sorted(forecast_map[d].keys()):
-                f_dt = datetime.strptime(f"{d}{t}", "%Y%m%d%H%M").replace(tzinfo=self.tz)
-                if f_dt <= now: last_past = forecast_map[d][t]
-                pty = str(forecast_map[d][t].get("PTY") or "0")
-                if rain_start == "강수없음" and pty in ["1", "2", "3", "4", "7"]:
-                    if f_dt >= now: rain_start = f_dt.strftime("%m월 %d일 %H시 %M분")
-
-        if last_past: weather_data.update(last_past)
-        
-        # 오늘 최고/최저 기온 및 오전/오후 날씨
-        today_str = now.strftime("%Y%m%d")
-        if today_str in forecast_map:
-            day = forecast_map[today_str]
-            tmps = [float(day[t]["TMP"]) for t in day if "TMP" in day[t]]
-            weather_data["TMX_today"] = max(tmps) if tmps else 20
-            weather_data["TMN_today"] = min(tmps) if tmps else 10
-            weather_data["weather_am_today"] = self._get_sky_kor(day.get("0900", {}).get("SKY"), day.get("0900", {}).get("PTY"))
-            weather_data["weather_pm_today"] = self._get_sky_kor(day.get("1500", {}).get("SKY"), day.get("1500", {}).get("PTY"))
-
-        weather_data["rain_start_time"] = rain_start
         weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["apparent_temp"] = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
@@ -146,6 +136,19 @@ class KMAWeatherAPI:
         if p in ["1", "2", "3", "4"]: return "비"
         return "맑음" if s == "1" else "흐림"
 
+    def _get_vec_kor(self, vec):
+        try:
+            v = float(vec)
+            if 22.5 <= v < 67.5: return "북동"
+            if 67.5 <= v < 112.5: return "동"
+            if 112.5 <= v < 157.5: return "남동"
+            if 157.5 <= v < 202.5: return "남"
+            if 202.5 <= v < 247.5: return "남서"
+            if 247.5 <= v < 292.5: return "서"
+            if 292.5 <= v < 337.5: return "북서"
+            return "북"
+        except: return None
+
     def _calculate_apparent_temp(self, temp, reh, wsd):
         try:
             t, rh, v = float(temp), float(reh), float(wsd) * 3.6
@@ -161,10 +164,7 @@ class KMAWeatherAPI:
         N = a / math.sqrt(1 - e2 * math.sin(phi)**2)
         T, C, A = math.tan(phi)**2, e2 / (1 - e2) * math.cos(phi)**2, math.cos(phi) * (lam - lon0)
         def M(p):
-            return a * ((1 - e2/4 - 3*e2**2/64 - 5*e2**3/256) * p
-                        - (3*e2/8 + 3*e2**2/32 + 45*e2**3/1024) * math.sin(2*p)
-                        + (15*e2**2/256 + 45*e2**3/1024) * math.sin(4*p)
-                        - (35*e2**3/3072) * math.sin(6*p))
+            return a * ((1 - e2/4 - 3*e2**2/64 - 5*e2**3/256) * p - (3*e2/8 + 3*e2**2/32 + 45*e2**3/1024) * math.sin(2*p) + (15*e2**2/256 + 45*e2**3/1024) * math.sin(4*p) - (35*e2**3/3072) * math.sin(6*p))
         tm_x = 200000.0 + 1.0 * N * (A + (1-T+C)*A**3/6 + (5-18*T+T**2+72*C-58*(e2/(1-e2)))*A**5/120)
         tm_y = 500000.0 + 1.0 * (M(phi) - M(lat0) + N*math.tan(phi)*(A**2/2 + (5-T+9*C+4*C**2)*A**4/24 + (61-58*T+T**2+600*C-330*(e2/(1-e2)))*A**6/720))
         return tm_x, tm_y
