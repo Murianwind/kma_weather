@@ -171,7 +171,6 @@ class KMAWeatherAPI:
                     if f_dt <= now:
                         last_past = forecast_map[d][t]
                     
-                    # ★ 수정 2: 강수 시작 시간을 "월 일 요일 시간" 포맷으로 변경
                     if rain_start == "강수없음" and forecast_map[d][t].get("PTY") in ["1", "2", "3", "4", "7"]:
                         if f_dt >= now:
                             wd = weekday_ko[f_dt.weekday()]
@@ -183,26 +182,25 @@ class KMAWeatherAPI:
                 first_t = sorted(forecast_map[first_d].keys())[0]
                 last_past = forecast_map[first_d][first_t]
 
-            # ★ 수정 1: 현재 온도, 습도, 강수확률을 정수(int)로 변환하여 할당
+            # ★ 요건 1: 정수 강제 변환 로직 삭제. 원본 상태로 넘김
             if last_past:
                 for cat, val in last_past.items():
-                    if cat in ["TMP", "REH", "POP"]:
-                        try:
-                            weather_data[cat] = int(float(val))
-                        except Exception:
-                            weather_data[cat] = val
-                    else:
-                        weather_data[cat] = val
+                    weather_data[cat] = val
                 if "VEC" in last_past:
                     weather_data["VEC_KOR"] = self._get_vec_kor(last_past["VEC"])
 
         v_days = [d for d in sorted(forecast_map.keys()) if d >= now.strftime("%Y%m%d")]
         for d_str in v_days[:3]:
+            # ★ 요건 3: 기준 시간을 12시로 고정하고, 오늘 이전 날짜는 철저히 배제
+            base_dt = datetime.strptime(d_str, "%Y%m%d").replace(hour=12, tzinfo=self.tz)
+            if base_dt.date() < now.date():
+                continue
+                
             day_items = forecast_map[d_str]
             tmps = [float(v["TMP"]) for v in day_items.values() if "TMP" in v]
             t_max = max(tmps) if tmps else 20.0
             t_min = min(tmps) if tmps else 10.0
-            base_dt = datetime.strptime(d_str, "%Y%m%d").replace(tzinfo=self.tz)
+            
             rep = day_items.get("1200") or day_items.get("1500") or day_items.get("1800") or next(iter(day_items.values()), {})
             
             weather_data["forecast_daily"].append({
@@ -212,7 +210,6 @@ class KMAWeatherAPI:
                 "condition": self._get_condition(rep.get("SKY"), rep.get("PTY")),
             })
             
-            # 이전 솔루션 2번 (완벽 호환 유지)
             for h, is_day in [(9, True), (21, False)]:
                 t_k = f"{h:02d}00"
                 if t_k in day_items:
@@ -230,7 +227,12 @@ class KMAWeatherAPI:
                 mt = mid_t["response"]["body"]["items"]["item"][0]
                 ml = mid_l["response"]["body"]["items"]["item"][0]
                 for i in range(3, 11):
-                    target_dt = (now + timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    target_dt = (now + timedelta(days=i)).replace(hour=12, minute=0, second=0, microsecond=0)
+                    
+                    # 중기 예보 역시 오늘 이전 날짜 필터링
+                    if target_dt.date() < now.date():
+                        continue
+                        
                     t_min = float(mt.get(f"taMin{i}", 15.0))
                     t_max = float(mt.get(f"taMax{i}", 25.0))
                     
