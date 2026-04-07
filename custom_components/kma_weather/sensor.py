@@ -8,7 +8,6 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# ★ 원본 SENSOR_TYPES 구조 100% 동일하게 유지
 SENSOR_TYPES = {
     "TMP": ["기온", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
     "REH": ["습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
@@ -41,101 +40,50 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class KMACustomSensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, sensor_type, entry):
         super().__init__(coordinator)
-        self._type = sensor_type
-        self._entry = entry
+        self._type, self._entry = sensor_type, entry
         prefix = entry.data.get(CONF_PREFIX, "kma").lower()
         details = SENSOR_TYPES[sensor_type]
-
-        # ★ 기존 UI 정체성 유지를 위해 명명 규칙 복구
         self.entity_id = f"sensor.{prefix}_{details[4]}"
         self._attr_name = f"{entry.title} {details[0]}"
-        self._attr_native_unit_of_measurement = details[1]
-        self._attr_icon = details[2]
-        self._attr_device_class = details[3]
-        self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
-        self._attr_entity_category = details[5]
-
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="Murianwind",
-            model="integration"
-        )
+        self._attr_native_unit_of_measurement, self._attr_icon, self._attr_device_class = details[1], details[2], details[3]
+        self._attr_unique_id, self._attr_entity_category = f"{entry.entry_id}_{sensor_type}", details[5]
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Murianwind", model="integration")
 
     @property
     def native_value(self):
-        # 1. API 만료일 (회원님 로직 유지)
         if self._type == "api_expire":
-            expire_str = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
-            if not expire_str: return None
-            try:
-                expire = date.fromisoformat(str(expire_str).strip())
-                return (expire - date.today()).days
-            except Exception: return None
-
-        # 가용성 확보: 코디네이터 데이터 부재 시 Safe Return
+            exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
+            try: return (date.fromisoformat(str(exp).strip()) - date.today()).days
+            except: return None
         if not self.coordinator.data: return None
-
-        weather = self.coordinator.data.get("weather", {})
-        air = self.coordinator.data.get("air", {})
-
-        # 2. weather 데이터 안전 조회
-        if self._type in weather:
-            val = weather.get(self._type)
+        w, a = self.coordinator.data.get("weather", {}), self.coordinator.data.get("air", {})
+        if self._type in w:
+            val = w.get(self._type)
             if self._type in ["TMP", "REH", "WSD", "POP"] and val is not None:
-                try:
-                    return float(val)
-                except (ValueError, TypeError):
-                    return val
+                try: return float(val)
+                except: return val
             return val
-
-        # 3. air 데이터 안전 조회
-        if self._type in air:
-            return air.get(self._type)
-
-        return None
+        return a.get(self._type)
 
     @property
     def suggested_display_precision(self):
-        int_sensors = ["TMP", "REH", "POP", "apparent_temp", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"]
-        if self._type in int_sensors: return 0
+        if self._type in ["TMP", "REH", "POP", "apparent_temp", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"]: return 0
         return None
 
 class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
-    _attr_icon = "mdi:map-marker"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
+    _attr_icon, _attr_entity_category = "mdi:map-marker", EntityCategory.DIAGNOSTIC
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
         prefix = entry.data.get(CONF_PREFIX, "kma").lower()
-        self.entity_id = f"sensor.{prefix}_location"
-        self._attr_name = f"{entry.title} 현재위치"
-        self._attr_unique_id = f"{entry.entry_id}_location"
-
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="Murianwind",
-            model="integration"
-        )
-
+        self.entity_id, self._attr_name, self._attr_unique_id = f"sensor.{prefix}_location", f"{entry.title} 현재위치", f"{entry.entry_id}_location"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Murianwind", model="integration")
     @property
     def native_value(self):
         if not self.coordinator.data: return None
         w = self.coordinator.data.get("weather", {})
         return w.get("address") or f"{w.get('debug_lat')}, {w.get('debug_lon')}"
-
     @property
     def extra_state_attributes(self):
         if not self.coordinator.data: return {}
-        w = self.coordinator.data.get("weather", {})
-        air = self.coordinator.data.get("air", {})
-        return {
-            "nx": w.get("debug_nx"),
-            "ny": w.get("debug_ny"),
-            "reg_id_temp": w.get("debug_reg_id_temp"),
-            "reg_id_land": w.get("debug_reg_id_land"),
-            "air_station": air.get("station"),
-            "lat": w.get("debug_lat"),
-            "lon": w.get("debug_lon"),
-        }
+        w, a = self.coordinator.data.get("weather", {}), self.coordinator.data.get("air", {})
+        return {"nx": w.get("debug_nx"), "ny": w.get("debug_ny"), "reg_id_temp": w.get("debug_reg_id_temp"), "reg_id_land": w.get("debug_reg_id_land"), "air_station": a.get("station"), "lat": w.get("debug_lat"), "lon": w.get("debug_lon")}
