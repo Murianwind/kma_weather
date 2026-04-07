@@ -1,17 +1,15 @@
 """Constants for the KMA Weather integration."""
 
 DOMAIN = "kma_weather"
-NAME = "기상청 스마트 날씨"
 
 CONF_API_KEY = "api_key"
-CONF_NAME = "name"
 CONF_LOCATION_ENTITY = "location_entity"
 CONF_PREFIX = "prefix"
 CONF_APPLY_DATE = "apply_date"
 CONF_EXPIRE_DATE = "expire_date"
 
 def convert_grid(lat, lon):
-    """WGS84 좌표를 기상청 격자 좌표로 변환 (완벽 복구)."""
+    """WGS84 좌표를 기상청 격자 좌표로 변환 (원본 로직 완벽 복구)."""
     import math
     RE = 6371.00877  # 지구 반경(km)
     GRID = 5.0       # 격자 간격(km)
