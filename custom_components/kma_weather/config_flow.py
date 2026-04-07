@@ -9,6 +9,7 @@ from .const import (
 )
 
 class KMAWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """KMA Weather 설정 흐름."""
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
@@ -18,7 +19,7 @@ class KMAWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             return self.async_create_entry(title=user_input[CONF_PREFIX], data=user_input)
 
-        # 등록 화면: 안내 문구 가이드 포함 및 모든 필드 (기본값 없음)
+        # 1 & 2. 등록 시 안내 문구 및 신청일/만료일 필드 복구
         schema = vol.Schema({
             vol.Required(CONF_API_KEY): str,
             vol.Required(CONF_PREFIX): str,
@@ -33,6 +34,7 @@ class KMAWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user", 
             data_schema=schema, 
             errors=errors,
+            # strings.json의 description 키를 통해 가이드 문구가 출력됩니다.
             description_placeholders={"api_link": "https://www.data.go.kr/"}
         )
 
@@ -43,6 +45,7 @@ class KMAWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class KMAWeatherOptionsFlowHandler(config_entries.OptionsFlow):
+    """3. 기기 수정에서 신청일/만료일 모두 수정 가능하도록 복구."""
     def __init__(self, config_entry):
         self._config_entry = config_entry
 
@@ -50,7 +53,7 @@ class KMAWeatherOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        # 수정 화면: 위치 엔티티, 신청일, 만료예정일 모두 수정 가능하게 복구
+        # 옵션 화면에서도 APPLY_DATE와 EXPIRE_DATE 필드를 모두 유지합니다.
         options_schema = vol.Schema({
             vol.Optional(
                 CONF_LOCATION_ENTITY, 
