@@ -58,7 +58,8 @@ class KMAWeatherAPI:
             tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
             timeout = aiohttp.ClientTimeout(total=15)
 
-            # ① 근접 측정소 조회 — ver 파라미터 제거 (API 오류 원인)
+            # 인증키는 이미 URL 인코딩된 상태로 입력되므로 그대로 사용 (추가 인코딩 금지)
+            # ① 근접 측정소 조회
             st_url = (
                 f"http://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
                 f"?serviceKey={self.air_key}"
@@ -66,7 +67,6 @@ class KMAWeatherAPI:
                 f"&tmX={tm_x:.2f}"
                 f"&tmY={tm_y:.2f}"
             )
-            _LOGGER.debug("에어코리아 측정소 URL: %s", st_url)
             async with self.session.get(st_url, timeout=timeout) as resp:
                 if resp.status != 200:
                     _LOGGER.warning("에어코리아 측정소 조회 HTTP %s", resp.status)
@@ -148,7 +148,11 @@ class KMAWeatherAPI:
         )
         try:
             async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                return await r.json(content_type=None) if r.status == 200 else None
+                if r.status != 200:
+                    text = await r.text()
+                    _LOGGER.error("단기예보 HTTP %s: %s", r.status, text[:200])
+                    return None
+                return await r.json(content_type=None)
         except Exception as e:
             _LOGGER.error("단기예보 실패: %s", e)
             return None
