@@ -8,6 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
+# ★ 원본 SENSOR_TYPES 100% 보존
 SENSOR_TYPES = {
     "TMP": ["기온", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
     "REH": ["습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
@@ -56,6 +57,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             try: return (date.fromisoformat(str(exp).strip()) - date.today()).days
             except: return None
         if not self.coordinator.data: return None
+        # ★ KeyError 방어 (.get() 사용)
         w, a = self.coordinator.data.get("weather", {}), self.coordinator.data.get("air", {})
         if self._type in w:
             val = w.get(self._type)
@@ -79,11 +81,10 @@ class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Murianwind", model="integration")
     @property
     def native_value(self):
-        if not self.coordinator.data: return None
-        w = self.coordinator.data.get("weather", {})
+        w = self.coordinator.data.get("weather", {}) if self.coordinator.data else {}
         return w.get("address") or f"{w.get('debug_lat')}, {w.get('debug_lon')}"
     @property
     def extra_state_attributes(self):
-        if not self.coordinator.data: return {}
-        w, a = self.coordinator.data.get("weather", {}), self.coordinator.data.get("air", {})
+        w = self.coordinator.data.get("weather", {}) if self.coordinator.data else {}
+        a = self.coordinator.data.get("air", {}) if self.coordinator.data else {}
         return {"nx": w.get("debug_nx"), "ny": w.get("debug_ny"), "reg_id_temp": w.get("debug_reg_id_temp"), "reg_id_land": w.get("debug_reg_id_land"), "air_station": a.get("station"), "lat": w.get("debug_lat"), "lon": w.get("debug_lon")}
