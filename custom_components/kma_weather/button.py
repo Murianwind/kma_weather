@@ -9,9 +9,7 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    location_entity = entry.data.get(CONF_LOCATION_ENTITY, "")
-    if location_entity.startswith("device_tracker."):
-        async_add_entities([KMAUpdateButton(coordinator, entry)])
+    async_add_entities([KMAUpdateButton(coordinator, entry)])
 
 class KMAUpdateButton(CoordinatorEntity, ButtonEntity):
     _attr_has_entity_name, _attr_icon = True, "mdi:refresh"
@@ -23,10 +21,9 @@ class KMAUpdateButton(CoordinatorEntity, ButtonEntity):
         self._last_press = None
 
     async def async_press(self) -> None:
-        # ★ 5초 Debounce 로직 적용
         now = datetime.now()
         if self._last_press and (now - self._last_press) < timedelta(seconds=5):
-            _LOGGER.info("수동 업데이트가 너무 짧은 간격으로 요청되었습니다.")
+            _LOGGER.info("수동 업데이트 버튼이 너무 자주 눌렸습니다.")
             return
         self._last_press = now
         await self.coordinator.async_request_refresh()
