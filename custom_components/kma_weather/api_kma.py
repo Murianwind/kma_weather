@@ -183,7 +183,6 @@ class KMAWeatherAPI:
         
         # 기존 추가 기능 유지
         if weather_data.get("VEC"): weather_data["VEC_KOR"] = self._get_vec_kor(weather_data["VEC"])
-        weather_data["현재풍향"] = weather_data.get("VEC_KOR")
         weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["apparent_temp"] = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
