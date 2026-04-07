@@ -32,9 +32,12 @@ class KMAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class KMAOptionsFlow(config_entries.OptionsFlow):
-    """Options flow — HA 2024.x 이상 권장 방식.
-    생성자에서 config_entry를 받지 않고 부모 클래스가 주입하는
-    self.config_entry 프로퍼티를 직접 사용합니다."""
+    """Options flow — HA 2024.x 이상 권장 방식."""
+
+    # ★ 500 에러 해결: __init__ 초기화 함수 추가
+    def __init__(self, config_entry):
+        """Initialize options flow."""
+        self.config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
         if user_input is not None:
