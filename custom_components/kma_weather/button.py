@@ -3,7 +3,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo
 from datetime import datetime, timedelta
 import logging
-from .const import DOMAIN, CONF_PREFIX, CONF_LOCATION_ENTITY
+from .const import DOMAIN, CONF_PREFIX
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class KMAUpdateButton(CoordinatorEntity, ButtonEntity):
     async def async_press(self) -> None:
         now = datetime.now()
         if self._last_press and (now - self._last_press) < timedelta(seconds=5):
-            _LOGGER.info("수동 업데이트 버튼이 너무 자주 눌렸습니다.")
+            _LOGGER.info("수동 업데이트가 너무 자주 요청되었습니다. (5초 제한)")
             return
         self._last_press = now
         await self.coordinator.async_request_refresh()
