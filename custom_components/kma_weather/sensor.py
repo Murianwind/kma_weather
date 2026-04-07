@@ -1,150 +1,100 @@
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, EntityCategory
-from homeassistant.helpers.entity import DeviceInfo
-from datetime import date
 import logging
+from datetime import datetime
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.const import UnitOfTemperature, UnitOfSpeed, PERCENTAGE, UnitOfPressure, UnitOfLength
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-SENSOR_TYPES = {
-    "TMP": ["기온", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
-    "REH": ["습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
-    "WSD": ["풍속", UnitOfSpeed.METERS_PER_SECOND, "mdi:weather-windy", None, "wind_speed", None],
-    "VEC_KOR": ["풍향", None, "mdi:compass-outline", None, "wind_direction", None],
-    "POP": ["강수확률", PERCENTAGE, "mdi:umbrella-outline", None, "precipitation_prob", None],
-    "rain_start_time": ["강수 시작 시각", None, "mdi:clock-outline", None, "rain_start", None],
-    "current_condition_kor": ["현재 날씨", None, "mdi:weather-cloudy", None, "condition", None],
-    "pm10Value": ["미세먼지 농도", "㎍/㎥", "mdi:blur", None, "pm10", None],
-    "pm10Grade": ["미세먼지 등급", None, "mdi:check-circle-outline", None, "pm10_grade", None],
-    "pm25Value": ["초미세먼지 농도", "㎍/㎥", "mdi:blur-linear", None, "pm25", None],
-    "pm25Grade": ["초미세먼지 등급", None, "mdi:check-circle-outline", None, "pm25_grade", None],
-    "last_updated": ["업데이트 시간", None, "mdi:update", SensorDeviceClass.TIMESTAMP, "last_updated", EntityCategory.DIAGNOSTIC],
-    "api_expire": ["API 잔여일수", "일", "mdi:key-alert", None, "api_expire", EntityCategory.DIAGNOSTIC],
-    # ── 신규 추가 7개 ──────────────────────────────────────────────────────────
-    "apparent_temp": ["체감온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-lines", None, "apparent_temperature", None],
-    "TMX_today": ["오늘 최고기온", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-up", None, "today_temp_max", None],
-    "TMN_today": ["오늘 최저기온", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", None, "today_temp_min", None],
-    "TMX_tomorrow": ["내일 최고기온", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-up", None, "tomorrow_temp_max", None],
-    "TMN_tomorrow": ["내일 최저기온", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", None, "tomorrow_temp_min", None],
-    "weather_am_tomorrow": ["내일 오전 날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_weather_am", None],
-    "weather_pm_tomorrow": ["내일 오후 날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_weather_pm", None],
-}
-
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    entities = [KMACustomSensor(coordinator, s_type, entry) for s_type in SENSOR_TYPES]
-    entities.append(KMALocationDebugSensor(coordinator, entry))
-    async_add_entities(entities)
+    prefix = entry.data.get(CONF_PREFIX, "kma")
+    
+    sensors = [
+        KMASensor(coordinator, entry, prefix, "temp", "현재 기온", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        KMASensor(coordinator, entry, prefix, "humidity", "현재 습도", PERCENTAGE, SensorDeviceClass.HUMIDITY),
+        KMASensor(coordinator, entry, prefix, "wind_speed", "풍속", UnitOfSpeed.METERS_PER_SECOND, SensorDeviceClass.WIND_SPEED),
+        KMASensor(coordinator, entry, prefix, "wind_dir", "풍향", None, None),
+        KMASensor(coordinator, entry, prefix, "pressure", "현지기압", UnitOfPressure.HPA, SensorDeviceClass.ATMOSPHERIC_PRESSURE),
+        KMASensor(coordinator, entry, prefix, "rain_1h", "시간당 강수량", UnitOfLength.MILLIMETERS, SensorDeviceClass.PRECIPITATION),
+        KMASensor(coordinator, entry, prefix, "pm10", "미세먼지(PM10)", "㎍/㎥", None),
+        KMASensor(coordinator, entry, prefix, "pm25", "초미세먼지(PM25)", "㎍/㎥", None),
+        KMASensor(coordinator, entry, prefix, "station", "측정소", None, None),
+        KMASensor(coordinator, entry, prefix, "address", "현재 주소", None, None),
+        KMASensor(coordinator, entry, prefix, "api_expire", "API 만료 잔여일", "일", None),
+    ]
+    async_add_entities(sensors)
 
-class KMACustomSensor(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator, sensor_type, entry):
+class KMASensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator, entry, prefix, sensor_type, name, unit, device_class):
         super().__init__(coordinator)
-        self._type = sensor_type
-        self._entry = entry
-        prefix = entry.data.get(CONF_PREFIX, "kma").lower()
-        details = SENSOR_TYPES[sensor_type]
-
-        self.entity_id = f"sensor.{prefix}_{details[4]}"
-        self._attr_name = f"{entry.title} {details[0]}"
-        self._attr_native_unit_of_measurement = details[1]
-        self._attr_icon = details[2]
-        self._attr_device_class = details[3]
+        self.entry = entry
+        self._sensor_type = sensor_type
+        self._attr_name = f"{prefix}_{sensor_type}"
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
-        self._attr_entity_category = details[5]
-
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="Murianwind",
-            model="integration"
-        )
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = device_class
+        self._attr_state_class = SensorStateClass.MEASUREMENT if unit else None
 
     @property
     def native_value(self):
-        # 1. API 만료일 계산
-        if self._type == "api_expire":
-            expire_str = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
-            if not expire_str:
-                return None
-            try:
-                expire = date.fromisoformat(str(expire_str).strip())
-                return (expire - date.today()).days
-            except Exception:
-                return None
-
+        """Return the state of the sensor with None-safe access."""
         if not self.coordinator.data:
             return None
-
+            
         weather = self.coordinator.data.get("weather", {})
         air = self.coordinator.data.get("air", {})
 
-        # 2. weather 딕셔너리에서 조회 (last_updated 포함 — coordinator.py에서 weather에 저장됨)
-        if self._type in weather:
-            val = weather.get(self._type)
-            if self._type in ["TMP", "REH", "WSD", "POP"] and val is not None:
+        # ★ 핵심 보완: 모든 접근에 .get() 사용 및 타입 체크
+        if self._sensor_type == "temp": return weather.get("TMP")
+        if self._sensor_type == "humidity": return weather.get("REH")
+        if self._sensor_type == "wind_speed": return weather.get("WSD")
+        if self._sensor_type == "wind_dir": return weather.get("VEC_KOR")
+        if self._sensor_type == "pressure": return weather.get("PCP") # 기압 데이터 필드 확인 필요
+        if self._sensor_type == "rain_1h": return weather.get("PCP")
+        if self._sensor_type == "pm10": return air.get("pm10Value")
+        if self._sensor_type == "pm25": return air.get("pm25Value")
+        if self._sensor_type == "station": return air.get("station")
+        if self._sensor_type == "address": return weather.get("address")
+        
+        if self._sensor_type == "api_expire":
+            expire_str = self.entry.options.get(CONF_EXPIRE_DATE) or self.entry.data.get(CONF_EXPIRE_DATE)
+            if expire_str:
                 try:
-                    return float(val)
-                except (ValueError, TypeError):
-                    return val
-            return val
-
-        # 3. 에어코리아 데이터
-        if self._type in air:
-            return air.get(self._type)
-
+                    expire_date = datetime.strptime(expire_str, "%Y-%m-%d").date()
+                    days_left = (expire_date - datetime.now().date()).days
+                    return max(0, days_left)
+                except Exception: return None
         return None
-
-    @property
-    def suggested_display_precision(self):
-        """기온, 습도, 강수확률 등의 센서 화면 출력 시 소수점을 제거(0)하고 정수로 표시합니다."""
-        # 뭉뚱그려 정수 표현이 필요한 센서 목록
-        int_sensors = [
-            "TMP", "REH", "POP", "apparent_temp", 
-            "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"
-        ]
-        if self._type in int_sensors:
-            return 0
-        return None
-
-class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
-    _attr_icon = "mdi:map-marker"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator)
-        prefix = entry.data.get(CONF_PREFIX, "kma").lower()
-        self.entity_id = f"sensor.{prefix}_location"
-        self._attr_name = f"{entry.title} 현재위치"
-        self._attr_unique_id = f"{entry.entry_id}_location"
-
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="Murianwind",
-            model="integration"
-        )
-
-    @property
-    def native_value(self):
-        if not self.coordinator.data:
-            return None
-        w = self.coordinator.data.get("weather", {})
-        return w.get("address") or f"{w.get('debug_lat')}, {w.get('debug_lon')}"
 
     @property
     def extra_state_attributes(self):
+        """Return entity specific state attributes with None-safe access."""
         if not self.coordinator.data:
             return {}
-        w = self.coordinator.data.get("weather", {})
+            
+        weather = self.coordinator.data.get("weather", {})
         air = self.coordinator.data.get("air", {})
-        return {
-            "nx": w.get("debug_nx"),
-            "ny": w.get("debug_ny"),
-            "reg_id_temp": w.get("debug_reg_id_temp"),
-            "reg_id_land": w.get("debug_reg_id_land"),
-            "air_station": air.get("station"),
-            "lat": w.get("debug_lat"),
-            "lon": w.get("debug_lon"),
-        }
+
+        attrs = {}
+        if self._sensor_type == "temp":
+            attrs.update({
+                "체감온도": weather.get("apparent_temp"),
+                "오늘_최고": weather.get("TMX_today"),
+                "오늘_최저": weather.get("TMN_today"),
+                "내일_최고": weather.get("TMX_tomorrow"),
+                "내일_최저": weather.get("TMN_tomorrow"),
+            })
+        elif self._sensor_type in ["pm10", "pm25"]:
+            attrs.update({
+                "미세먼지_등급": air.get("pm10Grade"),
+                "초미세먼지_등급": air.get("pm25Grade"),
+                "측정소": air.get("station"),
+            })
+        
+        # 공통 속성
+        attrs["강수_시작_예상"] = weather.get("rain_start_time")
+        attrs["마지막_업데이트"] = weather.get("last_updated")
+        
+        return attrs
