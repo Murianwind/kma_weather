@@ -182,7 +182,7 @@ class KMAWeatherAPI:
                 first_t = sorted(forecast_map[first_d].keys())[0]
                 last_past = forecast_map[first_d][first_t]
 
-            # ★ 요건 1: 정수 강제 변환 로직 삭제. 원본 상태로 넘김
+            # 데이터 원복 (강제 int 삭제)
             if last_past:
                 for cat, val in last_past.items():
                     weather_data[cat] = val
@@ -191,7 +191,7 @@ class KMAWeatherAPI:
 
         v_days = [d for d in sorted(forecast_map.keys()) if d >= now.strftime("%Y%m%d")]
         for d_str in v_days[:3]:
-            # ★ 요건 3: 기준 시간을 12시로 고정하고, 오늘 이전 날짜는 철저히 배제
+            # 오늘 이전 날짜 필터링 및 기준시간 12시 고정
             base_dt = datetime.strptime(d_str, "%Y%m%d").replace(hour=12, tzinfo=self.tz)
             if base_dt.date() < now.date():
                 continue
@@ -229,7 +229,6 @@ class KMAWeatherAPI:
                 for i in range(3, 11):
                     target_dt = (now + timedelta(days=i)).replace(hour=12, minute=0, second=0, microsecond=0)
                     
-                    # 중기 예보 역시 오늘 이전 날짜 필터링
                     if target_dt.date() < now.date():
                         continue
                         
