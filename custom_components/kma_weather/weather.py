@@ -18,36 +18,35 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
         super().__init__(coordinator)
         prefix = entry.data.get(CONF_PREFIX, "kma").lower()
         self.entity_id = f"weather.{prefix}_weather"
-        self._attr_name = entry.title
-        self._attr_unique_id = f"{entry.entry_id}_weather"
+        self._attr_name, self._attr_unique_id = entry.title, f"{entry.entry_id}_weather"
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Murianwind", model="integration")
 
     @property
     def native_temperature(self):
-        return self.coordinator.data.get("weather", {}).get("TMP") if self.coordinator.data else None
+        return (self.coordinator.data or {}).get("weather", {}).get("TMP")
 
     @property
     def native_pressure(self):
-        return self.coordinator.data.get("weather", {}).get("PCP") if self.coordinator.data else None
+        return (self.coordinator.data or {}).get("weather", {}).get("PCP")
 
     @property
     def humidity(self):
-        return self.coordinator.data.get("weather", {}).get("REH") if self.coordinator.data else None
+        return (self.coordinator.data or {}).get("weather", {}).get("REH")
 
     @property
     def native_wind_speed(self):
-        return self.coordinator.data.get("weather", {}).get("WSD") if self.coordinator.data else None
+        return (self.coordinator.data or {}).get("weather", {}).get("WSD")
 
     @property
     def wind_bearing(self):
-        return self.coordinator.data.get("weather", {}).get("VEC") if self.coordinator.data else None
+        return (self.coordinator.data or {}).get("weather", {}).get("VEC")
 
     @property
     def condition(self):
-        return self.coordinator.data.get("weather", {}).get("current_condition") if self.coordinator.data else None
+        return (self.coordinator.data or {}).get("weather", {}).get("current_condition")
 
     async def async_forecast_daily(self) -> list[Forecast]:
-        return self.coordinator.data.get("weather", {}).get("forecast_daily", []) if self.coordinator.data else []
+        return (self.coordinator.data or {}).get("weather", {}).get("forecast_daily", [])
 
     async def async_forecast_twice_daily(self) -> list[Forecast]:
-        return self.coordinator.data.get("weather", {}).get("forecast_twice_daily", []) if self.coordinator.data else []
+        return (self.coordinator.data or {}).get("weather", {}).get("forecast_twice_daily", [])
