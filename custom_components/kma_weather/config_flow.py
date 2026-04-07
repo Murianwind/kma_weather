@@ -9,7 +9,7 @@ from .const import (
 )
 
 class KMAWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """KMA Weather 설정 흐름."""
+    """KMA Weather 설정 흐름 (모든 기본값 제거 완료)."""
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
@@ -19,11 +19,11 @@ class KMAWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             return self.async_create_entry(title=user_input[CONF_PREFIX], data=user_input)
 
-        # default 값을 제거하여 사용자가 직접 입력하도록 수정했습니다.
+        # 모든 필드의 default 값을 제거했습니다.
         schema = vol.Schema({
             vol.Required(CONF_API_KEY): str,
-            vol.Required(CONF_PREFIX, default="kma"): str,
-            vol.Optional(CONF_LOCATION_ENTITY, default="zone.home"): selector.EntitySelector(
+            vol.Required(CONF_PREFIX): str, # 기본값 'kma' 삭제
+            vol.Optional(CONF_LOCATION_ENTITY): selector.EntitySelector( # 기본값 'zone.home' 삭제
                 selector.EntitySelectorConfig(domain=["zone", "device_tracker", "person"])
             ),
             vol.Optional(CONF_APPLY_DATE): cv.string,
@@ -47,12 +47,13 @@ class KMAWeatherOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        # 수정 시에는 기존에 입력했던 값을 default로 보여주어 수정을 돕습니다.
         options_schema = vol.Schema({
             vol.Optional(
                 CONF_LOCATION_ENTITY, 
                 default=self._config_entry.options.get(
                     CONF_LOCATION_ENTITY, 
-                    self._config_entry.data.get(CONF_LOCATION_ENTITY, "zone.home")
+                    self._config_entry.data.get(CONF_LOCATION_ENTITY, "")
                 )
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["zone", "device_tracker", "person"])
