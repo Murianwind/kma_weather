@@ -93,8 +93,8 @@ class KMAWeatherAPI:
         weather_data = {
             "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None, "PTY": None, "SKY": None,
             "TMX_today": None, "TMN_today": None, "TMX_tomorrow": None, "TMN_tomorrow": None,
-            "wf_am_tomorrow": None, "wf_pm_tomorrow": None,
-            "rain_start_time": "강수없음", "현재 위치": address, "station": air_data.get("station") if air_data else "정보없음",
+            "wf_am_today": None, "wf_pm_today": None, "wf_am_tomorrow": None, "wf_pm_tomorrow": None,
+            "rain_start_time": "강수없음", "address": address, "현재 위치": address,
             "forecast_twice_daily": [],
             "debug_nx": self.nx, "debug_ny": self.ny, "debug_lat": self.lat, "debug_lon": self.lon,
             "debug_reg_id_temp": self.reg_id_temp, "debug_reg_id_land": self.reg_id_land
@@ -108,57 +108,57 @@ class KMAWeatherAPI:
                 forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
             
             today_str = now.strftime("%Y%m%d")
+            tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
+
+            # [문제 해결] 1. 오늘/내일 최고/최저 온도 및 날씨 추출
+            for target_date, prefix in [(today_str, "today"), (tomorrow_str, "tomorrow")]:
+                if target_date in forecast_map:
+                    day_data = forecast_map[target_date]
+                    tmps = [_safe_float(v.get("TMP")) for v in day_data.values() if "TMP" in v]
+                    if tmps:
+                        weather_data[f"TMX_{prefix}"] = max(tmps)
+                        weather_data[f"TMN_{prefix}"] = min(tmps)
+                    
+                    # 오전(09시)/오후(15시) 날씨 추출
+                    am_val = day_data.get("0900", {})
+                    pm_val = day_data.get("1500", {})
+                    weather_data[f"wf_am_{prefix}"] = self._get_sky_kor(am_val.get("SKY"), am_val.get("PTY"))
+                    weather_data[f"wf_pm_{prefix}"] = self._get_sky_kor(pm_val.get("SKY"), pm_val.get("PTY"))
+
+            # 현재 시간 데이터 매핑
             curr_h = f"{now.hour:02d}00"
             if today_str in forecast_map and curr_h in forecast_map[today_str]:
                 weather_data.update(forecast_map[today_str][curr_h])
 
-            # 1. 강수 시작 시간 탐색 및 포맷팅 (4월 9일 목요일 12시 30분)
+            # 비 시작 시간 포맷팅 (기존 요청 반영)
             days_ko = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
             found_rain = False
             for d_str in sorted(forecast_map.keys()):
                 for t_str in sorted(forecast_map[d_str].keys()):
-                    if d_str == today_str and t_str <= curr_h:
-                        continue
-                    
-                    pty = forecast_map[d_str][t_str].get("PTY", "0")
-                    if pty != "0" and not found_rain:
+                    if d_str == today_str and t_str <= curr_h: continue
+                    if forecast_map[d_str][t_str].get("PTY", "0") != "0" and not found_rain:
                         dt = datetime.strptime(d_str + t_str, "%Y%m%d%H%M")
-                        # 요일 계산
-                        weekday = days_ko[dt.weekday()]
-                        # 시간/분 포맷
-                        time_str = f"{dt.hour}시"
-                        if dt.minute > 0:
-                            time_str += f" {dt.minute}분"
-                        
-                        weather_data["rain_start_time"] = dt.strftime(f"%m월 %d일 {weekday} {time_str}").replace(" 0", " ")
+                        time_label = f"{dt.hour}시" + (f" {dt.minute}분" if dt.minute > 0 else "")
+                        weather_data["rain_start_time"] = dt.strftime(f"%m월 %d일 {days_ko[dt.weekday()]} {time_label}").replace(" 0", " ")
                         found_rain = True
                         break
                 if found_rain: break
 
-            # 2. 내일 오전/오후 날씨 정보
-            tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
-            if tomorrow_str in forecast_map:
-                am = forecast_map[tomorrow_str].get("0900", {})
-                pm = forecast_map[tomorrow_str].get("1500", {})
-                weather_data["wf_am_tomorrow"] = self._get_sky_kor(am.get("SKY"), am.get("PTY"))
-                weather_data["wf_pm_tomorrow"] = self._get_sky_kor(pm.get("SKY"), pm.get("PTY"))
-
-        # 10일치 하이브리드 예보 병합 (단기 1~3일 + 중기 2~10일)
+        # 10일치 예보 병합 (단기 1~3일 + 중기 2~10일)
         twice_daily = []
         mid_ta = mid_res[0].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[0] else {}
         mid_land = mid_res[1].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[1] else {}
-
+        
         for i in range(10):
             target_date = now + timedelta(days=i)
             d_str = target_date.strftime("%Y%m%d")
             for is_am in [True, False]:
                 hour = 9 if is_am else 15
                 dt_iso = target_date.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
-                short_day = forecast_map.get(d_str, {})
-                short_hour = short_day.get(f"{hour:02d}00", {})
+                short_hour = forecast_map.get(d_str, {}).get(f"{hour:02d}00", {})
                 
                 if short_hour:
-                    tmps = [_safe_float(v.get("TMP")) for v in short_day.values() if "TMP" in v]
+                    tmps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
                     twice_daily.append({
                         "datetime": dt_iso, "is_daytime": is_am,
                         "native_temperature": max(tmps) if tmps else None,
@@ -167,32 +167,30 @@ class KMAWeatherAPI:
                         "condition": self._get_condition(short_hour.get("SKY"), short_hour.get("PTY"))
                     })
                 elif i >= 2:
-                    idx = i
-                    ta_min = mid_ta.get(f"taMin{idx}")
-                    ta_max = mid_ta.get(f"taMax{idx}")
-                    wf = mid_land.get(f"wf{idx}{'Am' if is_am else 'Pm'}") or mid_land.get(f"wf{idx}")
-                    pop = mid_land.get(f"rnSt{idx}{'Am' if is_am else 'Pm'}") or mid_land.get(f"rnSt{idx}")
+                    wf = mid_land.get(f"wf{i}Am" if is_am else f"wf{i}Pm") or mid_land.get(f"wf{i}")
                     if wf:
                         twice_daily.append({
                             "datetime": dt_iso, "is_daytime": is_am,
-                            "native_temperature": _safe_float(ta_max),
-                            "native_templow": _safe_float(ta_min),
-                            "native_precipitation_probability": _safe_float(pop),
+                            "native_temperature": _safe_float(mid_ta.get(f"taMax{i}")),
+                            "native_templow": _safe_float(mid_ta.get(f"taMin{i}")),
+                            "native_precipitation_probability": _safe_float(mid_land.get(f"rnSt{i}Am" if is_am else f"rnSt{i}Pm")),
                             "condition": self._translate_mid_condition(wf)
                         })
-
         weather_data["forecast_twice_daily"] = twice_daily
-        if weather_data.get("VEC"): weather_data["현재풍향"] = self._get_vec_kor(weather_data["VEC"])
+
+        # [문제 해결] 2. 풍향 데이터 보강
+        if weather_data.get("VEC"):
+            kor_vec = self._get_vec_kor(weather_data["VEC"])
+            weather_data["VEC_KOR"] = kor_vec
+            weather_data["현재 풍향"] = kor_vec
+            
         weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
-        weather_data["apparent_temp"] = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
-        
         return {"weather": weather_data, "air": air_data or {}}
 
     def _translate_mid_condition(self, wf):
         wf = str(wf)
         if "비" in wf: return "rainy"
-        if "눈" in wf: return "snowy"
         if "구름많음" in wf: return "partlycloudy"
         if "흐림" in wf: return "cloudy"
         return "sunny"
@@ -220,15 +218,6 @@ class KMAWeatherAPI:
         if 292.5 <= v < 337.5: return "북서"
         return "북"
 
-    def _calculate_apparent_temp(self, temp, reh, wsd):
-        try:
-            t, rh, v = _safe_float(temp), _safe_float(reh), _safe_float(wsd)
-            if t is None: return None
-            v_kmh = v * 3.6
-            if t <= 10 and v_kmh >= 4.8: return round(13.12 + 0.6215*t - 11.37*(v_kmh**0.16) + 0.3965*t*(v_kmh**0.16), 1)
-            return t
-        except: return temp
-
     def _wgs84_to_tm(self, lat, lon):
         a, f = 6378137.0, 1 / 298.257222101
         e2 = 2*f - f**2
@@ -237,6 +226,4 @@ class KMAWeatherAPI:
         N = a / math.sqrt(1 - e2 * math.sin(phi)**2)
         T, C, A = math.tan(phi)**2, e2 / (1 - e2) * math.cos(phi)**2, math.cos(phi) * (lam - lon0)
         def M(p): return a * ((1 - e2/4 - 3*e2**2/64 - 5*e2**3/256) * p - (3*e2/8 + 3*e2**2/32 + 45*e2**3/1024) * math.sin(2*p) + (15*e2**2/256 + 45*e2**3/1024) * math.sin(4*p) - (35*e2**3/3072) * math.sin(6*p))
-        tm_x = 200000.0 + 1.0 * N * (A + (1-T+C)*A**3/6 + (5-18*T+T**2+72*C-58*(e2/(1-e2)))*A**5/120)
-        tm_y = 500000.0 + 1.0 * (M(phi) - M(lat0) + N*math.tan(phi)*(A**2/2 + (5-T+9*C+4*C**2)*A**4/24 + (61-58*T+T**2+600*C-330*(e2/(1-e2)))*A**6/720))
-        return tm_x, tm_y
+        return 200000.0 + 1.0 * N * (A + (1-T+C)*A**3/6 + (5-18*T+T**2+72*C-58*(e2/(1-e2)))*A**5/120), 500000.0 + 1.0 * (M(phi) - M(lat0) + N*math.tan(phi)*(A**2/2 + (5-T+9*C+4*C**2)*A**4/24 + (61-58*T+T**2+600*C-330*(e2/(1-e2)))*A**6/720))
