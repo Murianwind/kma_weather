@@ -2,14 +2,14 @@ import logging
 import asyncio
 import aiohttp
 import math
+import json
 from datetime import datetime, timedelta
 from urllib.parse import quote
-from zoneinfo import ZoneInfo  # pytz 대신 zoneinfo 사용
+from zoneinfo import ZoneInfo
 
 _LOGGER = logging.getLogger(__name__)
 
 def _safe_float(v):
-    """문자열 데이터를 안전하게 float로 변환합니다."""
     try:
         if v == "" or v is None: return None
         if isinstance(v, str) and not v.strip(): return None
@@ -18,158 +18,144 @@ def _safe_float(v):
         return None
 
 class KMAWeatherAPI:
-    """기상청 API와 통신하여 데이터를 수집하고 병합하는 클래스입니다."""
-
     def __init__(self, session, api_key, reg_id_temp, reg_id_land):
         self.session = session
         self.api_key = api_key
         self.air_key = api_key
         self.reg_id_temp = reg_id_temp
         self.reg_id_land = reg_id_land
-        # 수정됨: pytz.timezone 대신 ZoneInfo를 사용하여 Blocking Call 에러 방지
+        # Python 3.14 호환 표준 방식 (Blocking Call 방지)
         self.tz = ZoneInfo("Asia/Seoul")
         self.lat = self.lon = self.nx = self.ny = None
 
     def _wgs84_to_tm(self, lat, lon):
-        """WGS84 좌표를 대기질 측정을 위한 TM 좌표로 변환합니다."""
         a, f = 6378137.0, 1 / 298.257222101
         e2 = 2*f - f**2
         lat0, lon0 = math.radians(38.0), math.radians(127.0)
         phi, lam = math.radians(lat), math.radians(lon)
         N = a / math.sqrt(1 - e2 * math.sin(phi)**2)
         T, C, A = math.tan(phi)**2, e2 / (1 - e2) * math.cos(phi)**2, math.cos(phi) * (lam - lon0)
-        
         def M(p):
             return a * ((1 - e2/4 - 3*e2**2/64 - 5*e2**3/256) * p
                         - (3*e2/8 + 3*e2**2/32 + 45*e2**3/1024) * math.sin(2*p)
                         + (15*e2**2/256 + 45*e2**3/1024) * math.sin(4*p)
                         - (35*e2**3/3072) * math.sin(6*p))
-        
         tm_x = 200000.0 + 1.0 * N * (A + (1-T+C)*A**3/6 + (5-18*T+T**2+72*C-58*(e2/(1-e2)))*A**5/120)
         tm_y = 500000.0 + 1.0 * (M(phi) - M(lat0) + N*math.tan(phi)*(A**2/2 + (5-T+9*C+4*C**2)*A**4/24 + (61-58*T+T**2+600*C-330*(e2/(1-e2)))*A**6/720))
         return tm_x, tm_y
 
     async def fetch_data(self, lat, lon, nx, ny):
-        """좌표를 기반으로 모든 기상 정보를 수집합니다."""
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
-        
-        tasks = [
-            self._get_short_term(now), 
-            self._get_mid_term(now), 
-            self._get_air_quality(), 
-            self._get_address(lat, lon)
-        ]
+        tasks = [self._get_short_term(now), self._get_mid_term(now), self._get_air_quality(), self._get_address(lat, lon)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
         
-        if not short_res or "response" not in short_res:
-            _LOGGER.warning("기상청 단기예보 응답 부재")
+        if not short_res or not isinstance(short_res, dict) or "response" not in short_res:
+            _LOGGER.warning("기상청 단기예보 데이터 수집 실패 (네트워크 연결 혹은 API 키 상태를 확인하세요)")
             return None
 
         return self._merge_all(now, short_res, mid_res, air_data, address)
 
     async def _get_air_quality(self):
-        """에어코리아 API를 통해 미세먼지 정보를 조회합니다."""
         try:
             tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
-            url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
+            # 공공데이터포털은 다시 http로 원복 (안정성 우선)
+            url_st = "http://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
             params_st = {"serviceKey": self.air_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
             
             async with self.session.get(url_st, params=params_st, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                st_json = await resp.json(content_type=None)
+                resp_text = await resp.text()
+                try:
+                    st_json = json.loads(resp_text)
+                except json.JSONDecodeError:
+                    _LOGGER.debug("에어코리아(측정소) 비정상 응답: %s", resp_text[:100])
+                    return {}
             
             items = st_json.get("response", {}).get("body", {}).get("items", [])
             if not items: return {}
             sn = items[0]["stationName"]
             
-            url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
+            url_data = "http://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
             params_data = {"serviceKey": self.air_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
             
             async with self.session.get(url_data, params=params_data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                air_json = await resp.json(content_type=None)
+                resp_text = await resp.text()
+                try:
+                    air_json = json.loads(resp_text)
+                except json.JSONDecodeError:
+                    return {}
             
             ai = air_json.get("response", {}).get("body", {}).get("items", [])
             if not ai: return {}
-            return {
-                "pm10Value": ai[0].get("pm10Value"), 
-                "pm10Grade": self._translate_grade(ai[0].get("pm10Grade")), 
-                "pm25Value": ai[0].get("pm25Value"), 
-                "pm25Grade": self._translate_grade(ai[0].get("pm25Grade")), 
-                "station": sn
-            }
+            return {"pm10Value": ai[0].get("pm10Value"), "pm10Grade": self._translate_grade(ai[0].get("pm10Grade")), "pm25Value": ai[0].get("pm25Value"), "pm25Grade": self._translate_grade(ai[0].get("pm25Grade")), "station": sn}
         except Exception as e:
-            _LOGGER.warning("대기질 정보 조회 실패: %s", e)
+            _LOGGER.warning("대기질 정보 조회 중 예외 발생: %s", e)
             return {}
 
     def _translate_grade(self, g):
         return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
 
     async def _get_address(self, lat, lon):
-        """Nominatim을 통해 위경도를 주소로 변환합니다."""
         try:
+            # Nominatim은 https 필수
             url = "https://nominatim.openstreetmap.org/reverse"
             params = {"format": "json", "lat": lat, "lon": lon, "zoom": 16}
             async with self.session.get(url, params=params, headers={"User-Agent": "HA-KMA"}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                d = await resp.json(content_type=None)
-                a = d.get("address", {})
-                parts = [a.get("province", a.get("city", "")), a.get("borough", a.get("county", "")), a.get("suburb", "")]
-                return " ".join([i for i in parts if i]).strip()
-        except Exception as e:
-            _LOGGER.debug("주소 변환 실패(Nominatim): %s", e)
-            return f"{lat:.4f}, {lon:.4f}"
+                if resp.status == 200:
+                    d = await resp.json()
+                    a = d.get("address", {})
+                    parts = [a.get("province", a.get("city", "")), a.get("borough", a.get("county", "")), a.get("suburb", "")]
+                    return " ".join([i for i in parts if i]).strip()
+                return f"{lat:.4f}, {lon:.4f}"
+        except Exception: return f"{lat:.4f}, {lon:.4f}"
 
     async def _get_short_term(self, now):
-        """기상청 단기예보 정보를 가져옵니다."""
         adj = now - timedelta(minutes=10)
         base_d, base_h = adj.strftime("%Y%m%d"), max([h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= adj.hour], default=None)
         if base_h is None: 
-            adj_p = adj - timedelta(days=1)
-            base_d, base_h = adj_p.strftime("%Y%m%d"), 23
+            adj_p = adj - timedelta(days=1); base_d, base_h = adj_p.strftime("%Y%m%d"), 23
         
-        url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
-        params = {
-            "serviceKey": self.api_key, 
-            "dataType": "JSON", 
-            "base_date": base_d, 
-            "base_time": f"{base_h:02d}00", 
-            "nx": self.nx, 
-            "ny": self.ny, 
-            "numOfRows": 1000
-        }
+        # 기상청 주소 http로 원복
+        url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
+        params = {"serviceKey": self.api_key, "dataType": "JSON", "base_date": base_d, "base_time": f"{base_h:02d}00", "nx": self.nx, "ny": self.ny, "numOfRows": 1000}
         try:
             async with self.session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                return await r.json(content_type=None) if r.status == 200 else None
+                resp_text = await r.text()
+                if r.status != 200: return None
+                try:
+                    return json.loads(resp_text)
+                except json.JSONDecodeError:
+                    _LOGGER.debug("기상청 단기예보 비정상 응답: %s", resp_text[:100])
+                    return None
         except Exception as e:
             _LOGGER.warning("단기예보 API 호출 실패: %s", e)
             return None
 
     async def _get_mid_term(self, now):
-        """기상청 중기예보 정보를 가져옵니다."""
-        if 6 <= now.hour < 18:
-            base = now.strftime("%Y%m%d") + "0600"
-        elif now.hour < 6:
-            base = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
-        else:
-            base = now.strftime("%Y%m%d") + "1800"
+        if 6 <= now.hour < 18: base = now.strftime("%Y%m%d") + "0600"
+        elif now.hour < 6: base = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
+        else: base = now.strftime("%Y%m%d") + "1800"
 
         async def fetch(url_base, p):
             try:
                 async with self.session.get(url_base, params=p, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                    return await r.json(content_type=None) if r.status == 200 else None
-            except Exception as e:
-                _LOGGER.warning("중기예보 API 호출 실패(%s): %s", url_base.split('/')[-1], e)
-                return None
+                    resp_text = await r.text()
+                    try:
+                        return json.loads(resp_text) if r.status == 200 else None
+                    except json.JSONDecodeError:
+                        return None
+            except Exception: return None
         
-        url_ta = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
-        url_land = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
+        # 중기예보 주소 http로 원복
+        url_ta = "http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
+        url_land = "http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
         params_ta = {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}
         params_land = {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base}
         
         return await asyncio.gather(fetch(url_ta, params_ta), fetch(url_land, params_land))
 
     def _merge_all(self, now, short_res, mid_res, air_data, address=None):
-        """데이터 병합 로직."""
         weather_data = {"forecast_daily": [], "forecast_twice_daily": []}
         if address: weather_data["address"] = address
         forecast_map, rain_start, last_past = {}, "강수없음", None
@@ -203,12 +189,7 @@ class KMAWeatherAPI:
             tmps = [float(v["TMP"]) for v in day_items.values() if "TMP" in v]
             t_max, t_min = (max(tmps) if tmps else 20.0), (min(tmps) if tmps else 10.0)
             rep = day_items.get("1200") or day_items.get("1500") or next(iter(day_items.values()), {})
-            weather_data["forecast_daily"].append({
-                "datetime": base_dt.isoformat(), 
-                "native_temperature": t_max, 
-                "native_templow": t_min, 
-                "condition": self._get_condition(rep.get("SKY"), rep.get("PTY"))
-            })
+            weather_data["forecast_daily"].append({"datetime": base_dt.isoformat(), "native_temperature": t_max, "native_templow": t_min, "condition": self._get_condition(rep.get("SKY"), rep.get("PTY"))})
             for h, is_day in [(9, True), (21, False)]:
                 t_k = f"{h:02d}00"
                 if t_k in day_items:
@@ -229,12 +210,7 @@ class KMAWeatherAPI:
                     target_dt = (now + timedelta(days=i)).replace(hour=12, minute=0, second=0, microsecond=0)
                     tmin_v, tmax_v = _safe_float(mt.get(f"taMin{i}")), _safe_float(mt.get(f"taMax{i}"))
                     t_min, t_max = (tmin_v if tmin_v is not None else 15.0), (tmax_v if tmax_v is not None else 25.0)
-                    weather_data["forecast_daily"].append({
-                        "datetime": target_dt.isoformat(), 
-                        "native_temperature": t_max, 
-                        "native_templow": t_min, 
-                        "condition": self._get_mid_condition(ml.get(f"wf{i}"))
-                    })
+                    weather_data["forecast_daily"].append({"datetime": target_dt.isoformat(), "native_temperature": t_max, "native_templow": t_min, "condition": self._get_mid_condition(ml.get(f"wf{i}"))})
                     for h, is_day, sfx in [(9, True, "Am"), (21, False, "Pm")]:
                         wf = ml.get(f"wf{i}{sfx}") if i <= 7 else ml.get(f"wf{i}")
                         weather_data["forecast_twice_daily"].append({
@@ -244,8 +220,7 @@ class KMAWeatherAPI:
                             "native_templow": t_min, 
                             "condition": self._get_mid_condition(wf)
                         })
-            except Exception as e:
-                _LOGGER.warning("중기예보 데이터 파싱 실패: %s", e)
+            except Exception as e: _LOGGER.warning("중기예보 데이터 파싱 실패: %s", e)
 
         today_str, tom_str = now.strftime("%Y%m%d"), (now + timedelta(days=1)).strftime("%Y%m%d")
         for d_str, prefix in [(today_str, "today"), (tom_str, "tomorrow")]:
@@ -297,12 +272,10 @@ class KMAWeatherAPI:
         return "북"
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
-        """체감 온도 계산."""
         try:
             t, rh = float(temp), float(reh)
             v = float(wsd) * 3.6
-            if t <= 10 and v >= 4.68: 
-                return 13.12 + 0.6215*t - 11.37*(v**0.16) + 0.3965*t*(v**0.16)
+            if t <= 10 and v >= 4.68: return 13.12 + 0.6215*t - 11.37*(v**0.16) + 0.3965*t*(v**0.16)
             if t >= 18:
                 tw = t * math.atan(0.151977 * (rh + 8.313595)**0.5) + math.atan(t + rh) - math.atan(rh - 1.676331) + 0.00391838 * (rh**1.5) * math.atan(0.023101 * rh) - 4.686035
                 return -0.25 + 1.04 * tw + 0.65
