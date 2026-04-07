@@ -26,6 +26,7 @@ SENSOR_TYPES = {
     # [신규 추가] 내일 오전/오후 날씨 상태 센서
     "wf_am_tomorrow": ["내일오전날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_condition_am", None],
     "wf_pm_tomorrow": ["내일오후날씨", None, "mdi:weather-cloudy", None, "tomorrow_condition_pm", None],
+    "current_wind_dir": ["현재풍향", None, "mdi:compass", None, "wind_direction", None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
