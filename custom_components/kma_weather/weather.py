@@ -21,20 +21,28 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
         self.entity_id = f"weather.{prefix}_weather"
         self._attr_name = entry.title
         self._attr_unique_id = f"{entry.entry_id}_weather"
-        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Murianwind", model="integration")
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Murianwind",
+            model="integration"
+        )
 
     @property
     def native_temperature(self):
-        return (self.coordinator.data or {}).get("weather", {}).get("TMP")
+        val = (self.coordinator.data or {}).get("weather", {}).get("TMP")
+        try: return int(float(val)) if val is not None else None
+        except: return val
 
     @property
     def native_pressure(self):
-        # 기상청 단기예보에는 기압 데이터가 없으므로 None 반환 (PCP 매핑 제거)
         return None
 
     @property
     def humidity(self):
-        return (self.coordinator.data or {}).get("weather", {}).get("REH")
+        val = (self.coordinator.data or {}).get("weather", {}).get("REH")
+        try: return int(float(val)) if val is not None else None
+        except: return val
 
     @property
     def native_wind_speed(self):
@@ -49,7 +57,9 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
         return (self.coordinator.data or {}).get("weather", {}).get("current_condition")
 
     async def async_forecast_daily(self) -> list[Forecast]:
-        return (self.coordinator.data or {}).get("weather", {}).get("forecast_daily", [])
+        twice = (self.coordinator.data or {}).get("weather", {}).get("forecast_twice_daily", [])
+        # 오전 데이터 위주로 일별 리스트 생성
+        return twice[::2]
 
     async def async_forecast_twice_daily(self) -> list[Forecast]:
         return (self.coordinator.data or {}).get("weather", {}).get("forecast_twice_daily", [])
