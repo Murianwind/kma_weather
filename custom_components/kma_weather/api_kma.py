@@ -49,7 +49,6 @@ class KMAWeatherAPI:
         tasks = [self._get_short_term(now), self._get_mid_term(now), self._get_air_quality(), self._get_address(lat, lon)]
         short_res, mid_res, air_data, address = await asyncio.gather(*tasks)
         
-        # ★ 수정 1: HA 부팅 시 네트워크 오류로 데이터를 못 가져오면 '빈 데이터' 대신 '오류'를 뿜어내게 하여 HA가 포기하지 않고 즉각 재시도하도록 강제합니다.
         if not short_res or "response" not in short_res:
             raise ValueError("기상청 단기예보 데이터를 불러오지 못했습니다. (네트워크 지연 또는 응답 오류)")
 
@@ -72,7 +71,6 @@ class KMAWeatherAPI:
             if not items: return {}
             station_name = items[0]["stationName"]
 
-            # 초미세먼지 파라미터(ver=1.3) 포함
             data_url = (
                 f"http://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
                 f"?serviceKey={self.air_key}&returnType=json&stationName={quote(station_name)}&dataTerm=daily&ver=1.3"
@@ -132,7 +130,6 @@ class KMAWeatherAPI:
             return None
 
     async def _get_mid_term(self, now):
-        # ★ 수정 2: 중기예보 발표 시각 직후의 지연 오류를 막기 위해 1시간의 딜레이 버퍼를 둡니다.
         if now.hour < 7:
             base = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
         elif now.hour < 19:
@@ -147,7 +144,6 @@ class KMAWeatherAPI:
             except Exception:
                 return None
 
-        # 중기예보 호출 파라미터 안정화 (pageNo, numOfRows 명시)
         urls = [
             f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa?serviceKey={self.api_key}&pageNo=1&numOfRows=10&dataType=JSON&regId={self.reg_id_temp}&tmFc={base}",
             f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst?serviceKey={self.api_key}&pageNo=1&numOfRows=10&dataType=JSON&regId={self.reg_id_land}&tmFc={base}",
@@ -179,7 +175,6 @@ class KMAWeatherAPI:
                         if f_dt >= now:
                             rain_start = f"{t[:2]}:{t[2:]}" if d == now.strftime("%Y%m%d") else f"{int(d[6:8])}일 {t[:2]}:{t[2:]}"
 
-            # 기상청 현재 날씨 복구 로직 (과거 데이터 없으면 최신 데이터로)
             if not last_past and forecast_map:
                 first_d = sorted(forecast_map.keys())[0]
                 first_t = sorted(forecast_map[first_d].keys())[0]
@@ -195,21 +190,26 @@ class KMAWeatherAPI:
         for d_str in v_days[:3]:
             day_items = forecast_map[d_str]
             tmps = [float(v["TMP"]) for v in day_items.values() if "TMP" in v]
+            t_max = max(tmps) if tmps else 20.0
+            t_min = min(tmps) if tmps else 10.0
             base_dt = datetime.strptime(d_str, "%Y%m%d").replace(tzinfo=self.tz)
             rep = day_items.get("1200") or day_items.get("1500") or day_items.get("1800") or next(iter(day_items.values()), {})
+            
             weather_data["forecast_daily"].append({
                 "datetime": base_dt.isoformat(),
-                "native_temperature": max(tmps) if tmps else 20.0,
-                "native_templow": min(tmps) if tmps else 10.0,
+                "native_temperature": t_max,
+                "native_templow": t_min,
                 "condition": self._get_condition(rep.get("SKY"), rep.get("PTY")),
             })
+            
             for h, is_day in [(9, True), (21, False)]:
                 t_k = f"{h:02d}00"
                 if t_k in day_items:
+                    # ★ 수정됨: daytime -> is_daytime 변경 및 낮(t_max)/밤(t_min) 분리
                     weather_data["forecast_twice_daily"].append({
                         "datetime": base_dt.replace(hour=h).isoformat(),
-                        "daytime": is_day,
-                        "native_temperature": float(day_items[t_k].get("TMP", 20.0)),
+                        "is_daytime": is_day,
+                        "native_temperature": t_max if is_day else t_min,
                         "condition": self._get_condition(day_items[t_k].get("SKY"), day_items[t_k].get("PTY")),
                     })
 
@@ -218,7 +218,6 @@ class KMAWeatherAPI:
             try:
                 mt = mid_t["response"]["body"]["items"]["item"][0]
                 ml = mid_l["response"]["body"]["items"]["item"][0]
-                # ★ 수정 3: 10일치 예보 복구: range(4, 11) -> range(3, 11)로 변경하여 3일차 예보의 공백(이빨 빠짐)을 메웁니다.
                 for i in range(3, 11):
                     target_dt = (now + timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
                     t_min = float(mt.get(f"taMin{i}", 15.0))
@@ -231,13 +230,19 @@ class KMAWeatherAPI:
                     })
                     am_wf = ml.get(f"wf{i}Am") if i <= 7 else ml.get(f"wf{i}")
                     pm_wf = ml.get(f"wf{i}Pm") if i <= 7 else ml.get(f"wf{i}")
+                    
+                    # ★ 수정됨: daytime -> is_daytime 변경 및 낮에는 최고기온(t_max), 밤에는 최저기온(t_min) 적용
                     weather_data["forecast_twice_daily"].append({
-                        "datetime": target_dt.replace(hour=9).isoformat(), "daytime": True,
-                        "native_temperature": t_min, "condition": self._get_mid_condition(am_wf),
+                        "datetime": target_dt.replace(hour=9).isoformat(), 
+                        "is_daytime": True,
+                        "native_temperature": t_max, 
+                        "condition": self._get_mid_condition(am_wf),
                     })
                     weather_data["forecast_twice_daily"].append({
-                        "datetime": target_dt.replace(hour=21).isoformat(), "daytime": False,
-                        "native_temperature": t_max, "condition": self._get_mid_condition(pm_wf),
+                        "datetime": target_dt.replace(hour=21).isoformat(), 
+                        "is_daytime": False,
+                        "native_temperature": t_min, 
+                        "condition": self._get_mid_condition(pm_wf),
                     })
             except Exception as e:
                 _LOGGER.warning("중기예보 파싱 에러: %s", e)
