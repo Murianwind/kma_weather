@@ -49,9 +49,9 @@ class KMAWeatherAPI:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
         
-        # 단기예보가 응답 자체가 없으면(None) 코디네이터가 처리하도록 None 반환
+        # 기상청 서버 타임아웃 등 "응답 없음"인 경우에만 None 반환 (Coordinator 캐시 유도)
         if not short_res or "response" not in short_res:
-            _LOGGER.warning("기상청 API 응답 부재.")
+            _LOGGER.warning("기상청 API 서버 응답 없음.")
             return None
 
         return self._merge_all(now, short_res, mid_res, air_data, address)
@@ -111,9 +111,9 @@ class KMAWeatherAPI:
 
         items = short_res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
         
-        # ★ 핵심 수정: items가 비어있어도 None이 아닌 기본 구조 반환 (구조 깨짐 방지)
+        # ★ 핵심 보완 (리스크 1 해결): items가 비어있어도 None이 아닌 기본 구조 반환
         if not items:
-            _LOGGER.warning("기상청 응답은 정상이나 예보 데이터(items)가 비어있습니다.")
+            _LOGGER.warning("기상청 응답은 왔으나 예보 데이터(items)가 비어있습니다.")
             return {"weather": weather_data, "air": air_data or {}}
 
         for it in items:
@@ -146,10 +146,10 @@ class KMAWeatherAPI:
                 t_k = f"{h:02d}00"
                 if t_k in day_items: weather_data["forecast_twice_daily"].append({"datetime": base_dt.replace(hour=h).isoformat(), "is_daytime": is_day, "native_temperature": t_max, "native_templow": t_min, "condition": self._get_condition(day_items[t_k].get("SKY"), day_items[t_k].get("PTY"))})
 
-        mid_t_raw, mid_l_raw = mid_res if mid_res else (None, None)
-        if isinstance(mid_t_raw, dict) and isinstance(mid_l_raw, dict):
+        mid_res_raw = mid_res if mid_res else (None, None)
+        if isinstance(mid_res_raw[0], dict) and isinstance(mid_res_raw[1], dict):
             try:
-                mt, ml = mid_t_raw["response"]["body"]["items"]["item"][0], mid_l_raw["response"]["body"]["items"]["item"][0]
+                mt, ml = mid_res_raw[0]["response"]["body"]["items"]["item"][0], mid_res_raw[1]["response"]["body"]["items"]["item"][0]
                 for i in range(3, 11):
                     target_dt = (now + timedelta(days=i)).replace(hour=12, minute=0, second=0, microsecond=0)
                     tmin_v, tmax_v = _safe_float(mt.get(f"taMin{i}")), _safe_float(mt.get(f"taMax{i}"))
@@ -174,7 +174,8 @@ class KMAWeatherAPI:
 
         weather_data["rain_start_time"], weather_data["current_condition_kor"] = rain_start, self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
-        weather_data["apparent_temp"] = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
+        app = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
+        weather_data["apparent_temp"] = app
         return {"weather": weather_data, "air": air_data or {}}
 
     def _get_condition(self, s, p):
