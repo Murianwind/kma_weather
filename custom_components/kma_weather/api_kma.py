@@ -195,6 +195,7 @@ class KMAWeatherAPI:
             base_dt = datetime.strptime(d_str, "%Y%m%d").replace(tzinfo=self.tz)
             rep = day_items.get("1200") or day_items.get("1500") or day_items.get("1800") or next(iter(day_items.values()), {})
             
+            # ★ 일일 예보: 최고/최저 정상 작동 유지
             weather_data["forecast_daily"].append({
                 "datetime": base_dt.isoformat(),
                 "native_temperature": t_max,
@@ -202,14 +203,14 @@ class KMAWeatherAPI:
                 "condition": self._get_condition(rep.get("SKY"), rep.get("PTY")),
             })
             
+            # ★ 단기예보(매일 2회): 주간(is_day)에는 최저기온(t_min), 야간(not is_day)에는 최고기온(t_max)
             for h, is_day in [(9, True), (21, False)]:
                 t_k = f"{h:02d}00"
                 if t_k in day_items:
-                    # ★ 수정됨: daytime -> is_daytime 변경 및 낮(t_max)/밤(t_min) 분리
                     weather_data["forecast_twice_daily"].append({
                         "datetime": base_dt.replace(hour=h).isoformat(),
                         "is_daytime": is_day,
-                        "native_temperature": t_max if is_day else t_min,
+                        "native_temperature": t_min if is_day else t_max,
                         "condition": self._get_condition(day_items[t_k].get("SKY"), day_items[t_k].get("PTY")),
                     })
 
@@ -222,26 +223,29 @@ class KMAWeatherAPI:
                     target_dt = (now + timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
                     t_min = float(mt.get(f"taMin{i}", 15.0))
                     t_max = float(mt.get(f"taMax{i}", 25.0))
+                    
+                    # ★ 일일 예보: 최고/최저 정상 작동 유지
                     weather_data["forecast_daily"].append({
                         "datetime": target_dt.isoformat(),
                         "native_temperature": t_max,
                         "native_templow": t_min,
                         "condition": self._get_mid_condition(ml.get(f"wf{i}")),
                     })
+                    
                     am_wf = ml.get(f"wf{i}Am") if i <= 7 else ml.get(f"wf{i}")
                     pm_wf = ml.get(f"wf{i}Pm") if i <= 7 else ml.get(f"wf{i}")
                     
-                    # ★ 수정됨: daytime -> is_daytime 변경 및 낮에는 최고기온(t_max), 밤에는 최저기온(t_min) 적용
+                    # ★ 중기예보(매일 2회): 주간에는 최저기온(t_min), 야간에는 최고기온(t_max)
                     weather_data["forecast_twice_daily"].append({
                         "datetime": target_dt.replace(hour=9).isoformat(), 
                         "is_daytime": True,
-                        "native_temperature": t_max, 
+                        "native_temperature": t_min, 
                         "condition": self._get_mid_condition(am_wf),
                     })
                     weather_data["forecast_twice_daily"].append({
                         "datetime": target_dt.replace(hour=21).isoformat(), 
                         "is_daytime": False,
-                        "native_temperature": t_min, 
+                        "native_temperature": t_max, 
                         "condition": self._get_mid_condition(pm_wf),
                     })
             except Exception as e:
