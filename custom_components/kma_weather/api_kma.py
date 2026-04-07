@@ -49,9 +49,9 @@ class KMAWeatherAPI:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
         
-        # 1. 단기예보 실패 시 즉시 None 반환 (Fail-safe)
+        # 단기예보 실패 시 None 반환하여 코디네이터가 캐시/초기폴백을 쓰도록 유도
         if not short_res or "response" not in short_res:
-            _LOGGER.warning("기상청 단기예보 데이터 수집 실패. 기존 데이터를 유지합니다.")
+            _LOGGER.warning("기상청 단기예보 데이터 부재.")
             return None
 
         return self._merge_all(now, short_res, mid_res, air_data, address)
@@ -71,7 +71,7 @@ class KMAWeatherAPI:
             ai = air_json.get("response", {}).get("body", {}).get("items", [])
             if not ai: return {}
             return {"pm10Value": ai[0].get("pm10Value"), "pm10Grade": self._translate_grade(ai[0].get("pm10Grade")), "pm25Value": ai[0].get("pm25Value"), "pm25Grade": self._translate_grade(ai[0].get("pm25Grade")), "station": sn}
-        except Exception: return {}
+        except: return {}
 
     def _translate_grade(self, g):
         return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
