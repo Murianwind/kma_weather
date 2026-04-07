@@ -5,6 +5,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from datetime import date
 from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE, CONF_APPLY_DATE
 
+# 모든 센서 리스트 정의 (DIAGNOSTIC 및 위치 센서 포함)
 SENSOR_TYPES = {
     "TMP": ["기온", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
     "REH": ["습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
@@ -16,7 +17,9 @@ SENSOR_TYPES = {
     "pm10Value": ["미세먼지 농도", "㎍/㎥", "mdi:blur", None, "pm10", None],
     "pm10Grade": ["미세먼지 등급", None, "mdi:check-circle-outline", None, "pm10_grade", None],
     "pm25Value": ["초미세먼지 농도", "㎍/㎥", "mdi:blur-linear", None, "pm25", None],
-    # 진단 카테고리(DIAGNOSTIC) 복구
+    # 위치 센서 복구
+    "address": ["측정 지점", None, "mdi:map-marker", None, "location", None],
+    # 진단 정보 카테고리 복구
     "last_updated": ["업데이트 시간", None, "mdi:update", SensorDeviceClass.TIMESTAMP, "last_updated", EntityCategory.DIAGNOSTIC],
     "api_expire": ["API 잔여일수", "일", "mdi:key-alert", None, "api_expire", EntityCategory.DIAGNOSTIC],
     "apparent_temp": ["체감온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-lines", None, "apparent_temperature", None],
@@ -44,7 +47,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         self._attr_icon = details[2]
         self._attr_device_class = details[3]
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
-        self._attr_entity_category = details[5] # DIAGNOSTIC 적용
+        self._attr_entity_category = details[5] # DIAGNOSTIC 카테고리 적용
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=entry.title)
 
     @property
@@ -56,5 +59,5 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         
         data = self.coordinator.data or {}
         w, a = data.get("weather", {}), data.get("air", {})
-        # 실제 데이터가 있으면 반환, 없으면 None (Unknown으로 표시됨)
+        # weather 데이터에서 먼저 찾고 없으면 air 데이터에서 찾습니다.
         return w.get(self._type) if self._type in w else a.get(self._type)
