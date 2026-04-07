@@ -9,16 +9,15 @@ CONF_APPLY_DATE = "apply_date"
 CONF_EXPIRE_DATE = "expire_date"
 
 def convert_grid(lat, lon):
-    """WGS84 좌표를 기상청 격자 좌표로 변환합니다."""
     import math
-    RE = 6371.00877
-    GRID = 5.0
-    SLAT1 = 30.0
-    SLAT2 = 60.0
-    OLON = 126.0
-    OLAT = 38.0
-    XO = 43
-    YO = 136
+    RE = 6371.00877  # 지구 반경(km)
+    GRID = 5.0       # 격자 간격(km)
+    SLAT1 = 30.0     # 투영 위도1(degree)
+    SLAT2 = 60.0     # 투영 위도2(degree)
+    OLON = 126.0     # 기준점 경도(degree)
+    OLAT = 38.0      # 기준점 위도(degree)
+    XO = 43          # 기준점 X좌표(GRID)
+    YO = 136         # 기준점 Y좌표(GRID)
 
     DEGRAD = math.pi / 180.0
     re = RE / GRID
