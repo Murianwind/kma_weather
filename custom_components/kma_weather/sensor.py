@@ -59,6 +59,16 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         w, a = data.get("weather", {}), data.get("air", {})
         return w.get(self._type) if self._type in w else a.get(self._type)
 
+        if val is not None and self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
+            try:
+                # 15.6 -> 16 (반올림) 또는 15 (내림). 
+                # 여기서는 말씀하신 15.0 -> 15 케이스를 위해 float 변환 후 int 처리를 수행합니다.
+                return int(float(val))
+            except (ValueError, TypeError):
+                return val
+                
+        return val
+
     @property
     def extra_state_attributes(self):
         # 위치 센서 상세 속성(단기, 중기, 측정소, 위도, 경도) 완벽 복구
