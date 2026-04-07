@@ -34,16 +34,16 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 elif self._last_lat is not None:
                     lat, lon = self._last_lat, self._last_lon
                 else:
-                    if self._cached_data: return self._cached_data
-                    raise UpdateFailed("위치 정보 없음")
+                    # 1. 위치 정보가 아예 없는 초기 단계라면 빈 구조 반환 (Fail-Safe)
+                    return self._cached_data or {"weather": {}, "air": {}}
 
                 new_data = await self.api.fetch_data(lat, lon, self._last_nx, self._last_ny)
                 
-                # ★ 리스크 봉쇄: 딕셔너리 구조 강제 보장 및 Fail-safe 캐시 반환
+                # 2. API 호출 실패 시 초기 구조 보장 (Fail-Safe)
                 if new_data is None:
-                    if self._cached_data: return self._cached_data
-                    raise UpdateFailed("API 호출 실패")
+                    return self._cached_data or {"weather": {}, "air": {}}
 
+                # 3. 딕셔너리 구조 안전성 강제 보장
                 if not isinstance(new_data, dict): new_data = {}
                 if "weather" not in new_data or not isinstance(new_data["weather"], dict):
                     new_data["weather"] = {}
@@ -59,7 +59,5 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 self._cached_data = new_data
                 return new_data
             except Exception as e:
-                if self._cached_data:
-                    _LOGGER.warning("업데이트 오류 발생, 캐시 유지: %s", e)
-                    return self._cached_data
-                raise UpdateFailed(f"기상청 업데이트 실패: {e}")
+                _LOGGER.warning("업데이트 오류 발생, 캐시 유지 시도: %s", e)
+                return self._cached_data or {"weather": {}, "air": {}}
