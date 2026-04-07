@@ -8,6 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
+# ★ 원본 SENSOR_TYPES 구조 100% 동일하게 유지
 SENSOR_TYPES = {
     "TMP": ["기온", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
     "REH": ["습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
@@ -55,8 +56,9 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
             try: return (date.fromisoformat(str(exp).strip()) - date.today()).days
             except: return None
-        if not self.coordinator.data: return None
-        w, a = self.coordinator.data.get("weather", {}), self.coordinator.data.get("air", {})
+        # ★ 안정성 강화: 모든 딕셔너리 접근에 .get() 및 None-check 적용
+        data = self.coordinator.data or {}
+        w, a = data.get("weather", {}), data.get("air", {})
         if self._type in w:
             val = w.get(self._type)
             if self._type in ["TMP", "REH", "WSD", "POP", "apparent_temp", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"] and val is not None:
@@ -79,10 +81,11 @@ class KMALocationDebugSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer="Murianwind", model="integration")
     @property
     def native_value(self):
-        w = self.coordinator.data.get("weather", {}) if self.coordinator.data else {}
+        data = self.coordinator.data or {}
+        w = data.get("weather", {})
         return w.get("address") or f"{w.get('debug_lat')}, {w.get('debug_lon')}"
     @property
     def extra_state_attributes(self):
-        w = self.coordinator.data.get("weather", {}) if self.coordinator.data else {}
-        a = self.coordinator.data.get("air", {}) if self.coordinator.data else {}
+        data = self.coordinator.data or {}
+        w, a = data.get("weather", {}), data.get("air", {})
         return {"nx": w.get("debug_nx"), "ny": w.get("debug_ny"), "reg_id_temp": w.get("debug_reg_id_temp"), "reg_id_land": w.get("debug_reg_id_land"), "air_station": a.get("station"), "lat": w.get("debug_lat"), "lon": w.get("debug_lon")}
