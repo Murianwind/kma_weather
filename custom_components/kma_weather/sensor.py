@@ -9,6 +9,7 @@ SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
     "WSD": ["현재풍속", UnitOfSpeed.METERS_PER_SECOND, "mdi:weather-windy", None, "wind_speed", None],
+    "VEC_KOR": ["현재풍향", None, "mdi:compass-outline", None, "wind_dir", None],
     "POP": ["강수확률", PERCENTAGE, "mdi:umbrella-outline", None, "precipitation_prob", None],
     "rain_start_time": ["비시작시간오늘내", None, "mdi:clock-outline", None, "rain_start", None],
     "current_condition_kor": ["현재날씨", None, "mdi:weather-cloudy", None, "condition", None],
@@ -26,6 +27,7 @@ SENSOR_TYPES = {
     # [신규 추가] 내일 오전/오후 날씨 상태 센서
     "wf_am_tomorrow": ["내일오전날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_condition_am", None],
     "wf_pm_tomorrow": ["내일오후날씨", None, "mdi:weather-cloudy", None, "tomorrow_condition_pm", None],
+    "apparent_temp": ["체감온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-lines", None, "apparent_temp", None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
