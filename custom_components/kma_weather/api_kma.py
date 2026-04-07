@@ -152,6 +152,7 @@ class KMAWeatherAPI:
         weather_data = {"forecast_daily": [], "forecast_twice_daily": []}
         if address: weather_data["address"] = address
         forecast_map, rain_start, last_past = {}, "강수없음", None
+        weekday_ko = ["월", "화", "수", "목", "금", "토", "일"]
 
         if short_res and "response" in short_res:
             try:
@@ -169,18 +170,29 @@ class KMAWeatherAPI:
                     f_dt = datetime.strptime(f"{d}{t}", "%Y%m%d%H%M").replace(tzinfo=self.tz)
                     if f_dt <= now:
                         last_past = forecast_map[d][t]
+                    
+                    # ★ 수정 2: 강수 시작 시간을 "월 일 요일 시간" 포맷으로 변경
                     if rain_start == "강수없음" and forecast_map[d][t].get("PTY") in ["1", "2", "3", "4", "7"]:
                         if f_dt >= now:
-                            rain_start = f"{t[:2]}:{t[2:]}" if d == now.strftime("%Y%m%d") else f"{int(d[6:8])}일 {t[:2]}:{t[2:]}"
+                            wd = weekday_ko[f_dt.weekday()]
+                            h_str = f"{f_dt.hour}시" if f_dt.minute == 0 else f"{f_dt.hour}시 {f_dt.minute}분"
+                            rain_start = f"{f_dt.month}월 {f_dt.day}일 {wd}요일 {h_str}"
 
             if not last_past and forecast_map:
                 first_d = sorted(forecast_map.keys())[0]
                 first_t = sorted(forecast_map[first_d].keys())[0]
                 last_past = forecast_map[first_d][first_t]
 
+            # ★ 수정 1: 현재 온도, 습도, 강수확률을 정수(int)로 변환하여 할당
             if last_past:
                 for cat, val in last_past.items():
-                    weather_data[cat] = val
+                    if cat in ["TMP", "REH", "POP"]:
+                        try:
+                            weather_data[cat] = int(float(val))
+                        except Exception:
+                            weather_data[cat] = val
+                    else:
+                        weather_data[cat] = val
                 if "VEC" in last_past:
                     weather_data["VEC_KOR"] = self._get_vec_kor(last_past["VEC"])
 
@@ -200,15 +212,15 @@ class KMAWeatherAPI:
                 "condition": self._get_condition(rep.get("SKY"), rep.get("PTY")),
             })
             
-            # ★ 2번 솔루션 적용: 주/야간 상관없이 최고기온(t_max)과 최저기온(t_min)을 둘 다 넣어줍니다.
+            # 이전 솔루션 2번 (완벽 호환 유지)
             for h, is_day in [(9, True), (21, False)]:
                 t_k = f"{h:02d}00"
                 if t_k in day_items:
                     weather_data["forecast_twice_daily"].append({
                         "datetime": base_dt.replace(hour=h).isoformat(),
                         "is_daytime": is_day,
-                        "native_temperature": t_max,  # 상단에 표시될 최고온도
-                        "native_templow": t_min,      # 하단에 표시될 최저온도
+                        "native_temperature": t_max,
+                        "native_templow": t_min,
                         "condition": self._get_condition(day_items[t_k].get("SKY"), day_items[t_k].get("PTY")),
                     })
 
@@ -232,7 +244,6 @@ class KMAWeatherAPI:
                     am_wf = ml.get(f"wf{i}Am") if i <= 7 else ml.get(f"wf{i}")
                     pm_wf = ml.get(f"wf{i}Pm") if i <= 7 else ml.get(f"wf{i}")
                     
-                    # ★ 중기예보도 동일하게 최고/최저를 모두 제공
                     weather_data["forecast_twice_daily"].append({
                         "datetime": target_dt.replace(hour=9).isoformat(), 
                         "is_daytime": True,
