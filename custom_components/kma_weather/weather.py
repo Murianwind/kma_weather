@@ -23,6 +23,7 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
 
     @property
     def native_temperature(self):
+        # ★ 가용성 강화: (data or {}).get() 체인 적용
         return (self.coordinator.data or {}).get("weather", {}).get("TMP")
 
     @property
@@ -46,6 +47,7 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
         return (self.coordinator.data or {}).get("weather", {}).get("current_condition")
 
     async def async_forecast_daily(self) -> list[Forecast]:
+        # ★ IndexError 방지: 항상 리스트 타입 반환 보장
         return (self.coordinator.data or {}).get("weather", {}).get("forecast_daily", [])
 
     async def async_forecast_twice_daily(self) -> list[Forecast]:
