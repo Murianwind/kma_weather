@@ -27,30 +27,6 @@ class KMAWeatherAPI:
         short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
         return self._merge_all(now, short_res, mid_res, air_data, address)
 
-    async def _get_air_quality(self):
-        try:
-            tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
-            url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
-            params_st = {"serviceKey": self.air_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
-            async with self.session.get(url_st, params=params_st, timeout=10) as resp:
-                st_json = json.loads(await resp.text())
-            sn = st_json["response"]["body"]["items"][0]["stationName"]
-            
-            url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
-            params_data = {"serviceKey": self.air_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
-            async with self.session.get(url_data, params=params_data, timeout=10) as resp:
-                air_json = json.loads(await resp.text())
-            ai = air_json["response"]["body"]["items"][0]
-            return {
-                "pm10Value": ai.get("pm10Value"), "pm10Grade": self._translate_grade(ai.get("pm10Grade")),
-                "pm25Value": ai.get("pm25Value"), "pm25Grade": self._translate_grade(ai.get("pm25Grade")),
-                "station": sn # 측정소 이름 보존
-            }
-        except: return {}
-
-    def _translate_grade(self, g):
-        return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
-
     async def _get_address(self, lat, lon):
         try:
             url = "https://nominatim.openstreetmap.org/reverse"
@@ -60,6 +36,25 @@ class KMAWeatherAPI:
                 a = d.get("address", {})
                 return f"{a.get('city', a.get('province',''))} {a.get('borough', a.get('county',''))} {a.get('suburb', '')}".strip()
         except: return f"{lat:.4f}, {lon:.4f}"
+
+    async def _get_air_quality(self):
+        try:
+            tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
+            url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
+            params_st = {"serviceKey": self.air_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
+            async with self.session.get(url_st, params=params_st, timeout=10) as resp:
+                st_json = json.loads(await resp.text())
+            sn = st_json["response"]["body"]["items"][0]["stationName"]
+            url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
+            params_data = {"serviceKey": self.air_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
+            async with self.session.get(url_data, params=params_data, timeout=10) as resp:
+                air_json = json.loads(await resp.text())
+            ai = air_json["response"]["body"]["items"][0]
+            return {"pm10Value": ai.get("pm10Value"), "pm10Grade": self._translate_grade(ai.get("pm10Grade")), "pm25Value": ai.get("pm25Value"), "pm25Grade": self._translate_grade(ai.get("pm25Grade")), "station": sn}
+        except: return {}
+
+    def _translate_grade(self, g):
+        return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
 
     async def _get_short_term(self, now):
         adj = now - timedelta(minutes=10)
@@ -82,10 +77,7 @@ class KMAWeatherAPI:
             except: return None
         url_ta = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
         url_land = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
-        return await asyncio.gather(
-            fetch(url_ta, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}), 
-            fetch(url_land, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base})
-        )
+        return await asyncio.gather(fetch(url_ta, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}), fetch(url_land, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base}))
 
     def _merge_all(self, now, short_res, mid_res, air_data, address=None):
         weather_data = {
@@ -94,9 +86,8 @@ class KMAWeatherAPI:
             "rain_start_time": "강수없음", "address": address,
             "debug_lat": self.lat, "debug_lon": self.lon, "debug_nx": self.nx, "debug_ny": self.ny,
             "debug_reg_id_temp": self.reg_id_temp, "debug_reg_id_land": self.reg_id_land,
-            "station": air_data.get("station") if air_data else None
+            "station": air_data.get("station") if air_data else "알수없음"
         }
-        
         if short_res and "response" in short_res:
             items = short_res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
             forecast_map = {}
@@ -113,10 +104,8 @@ class KMAWeatherAPI:
                 if tmps: weather_data["TMX_today"], weather_data["TMN_today"] = max(tmps), min(tmps)
                 weather_data["weather_am_today"] = self._get_sky_kor(day.get("0900",{}).get("SKY"), day.get("0900",{}).get("PTY"))
                 weather_data["weather_pm_today"] = self._get_sky_kor(day.get("1500",{}).get("SKY"), day.get("1500",{}).get("PTY"))
-
         weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
-        
         return {"weather": weather_data, "air": air_data or {}}
 
     def _get_condition(self, s, p):
