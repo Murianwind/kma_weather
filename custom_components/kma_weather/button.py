@@ -23,7 +23,7 @@ class KMAUpdateButton(CoordinatorEntity, ButtonEntity):
     async def async_press(self) -> None:
         now = datetime.now()
         if self._last_press and (now - self._last_press) < timedelta(seconds=5):
-            _LOGGER.info("수동 업데이트가 너무 짧은 시간 내에 여러 번 요청되었습니다. (무시됨)")
+            _LOGGER.info("수동 업데이트가 너무 자주 요청되었습니다. (5초 제한)")
             return
         self._last_press = now
         await self.coordinator.async_request_refresh()
