@@ -34,7 +34,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 elif self._last_lat is not None:
                     lat, lon = self._last_lat, self._last_lon
                 else:
-                    # 1. 위치 정보가 아예 없는 초기 단계라면 빈 구조 반환 (초기 크래시 방어)
+                    # 1. 위치 정보가 없는 초기 단계라면 빈 구조 반환 (초기 크래시 방어)
                     return self._cached_data or {"weather": {}, "air": {}}
 
                 new_data = await self.api.fetch_data(lat, lon, self._last_nx, self._last_ny)
@@ -43,7 +43,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if new_data is None:
                     return self._cached_data or {"weather": {}, "air": {}}
 
-                # ★ 리스크 봉쇄: new_data 및 weather 키 구조 안전성 강제 보장
+                # ★ 리스크 봉쇄: 딕셔너리 구조 강제 보장하여 update() 에러 차단
                 if not isinstance(new_data, dict): new_data = {}
                 if not isinstance(new_data.get("weather"), dict):
                     new_data["weather"] = {}
