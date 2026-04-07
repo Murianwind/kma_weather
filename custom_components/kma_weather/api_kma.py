@@ -34,15 +34,11 @@ class KMAWeatherAPI:
                         + (15*e2**2/256 + 45*e2**3/1024) * math.sin(4*p)
                         - (35*e2**3/3072) * math.sin(6*p))
         tm_x = 200000.0 + 1.0 * N * (
-            A + (1-T+C)*A**3/6
-            + (5-18*T+T**2+72*C-58*(e2/(1-e2)))*A**5/120
+            A + (1-T+C)*A**3/6 + (5-18*T+T**2+72*C-58*(e2/(1-e2)))*A**5/120
         )
         tm_y = 500000.0 + 1.0 * (
-            M(phi) - M(lat0)
-            + N*math.tan(phi)*(
-                A**2/2
-                + (5-T+9*C+4*C**2)*A**4/24
-                + (61-58*T+T**2+600*C-330*(e2/(1-e2)))*A**6/720
+            M(phi) - M(lat0) + N*math.tan(phi)*(
+                A**2/2 + (5-T+9*C+4*C**2)*A**4/24 + (61-58*T+T**2+600*C-330*(e2/(1-e2)))*A**6/720
             )
         )
         return tm_x, tm_y
@@ -52,6 +48,11 @@ class KMAWeatherAPI:
         now = datetime.now(self.tz)
         tasks = [self._get_short_term(now), self._get_mid_term(now), self._get_air_quality(), self._get_address(lat, lon)]
         short_res, mid_res, air_data, address = await asyncio.gather(*tasks)
+        
+        # ★ 수정 1: HA 부팅 시 네트워크 오류로 데이터를 못 가져오면 '빈 데이터' 대신 '오류'를 뿜어내게 하여 HA가 포기하지 않고 즉각 재시도하도록 강제합니다.
+        if not short_res or "response" not in short_res:
+            raise ValueError("기상청 단기예보 데이터를 불러오지 못했습니다. (네트워크 지연 또는 응답 오류)")
+
         return self._merge_all(now, short_res, mid_res, air_data, address)
 
     async def _get_air_quality(self):
@@ -61,40 +62,29 @@ class KMAWeatherAPI:
 
             st_url = (
                 f"http://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
-                f"?serviceKey={self.air_key}"
-                f"&returnType=json"
-                f"&tmX={tm_x:.2f}"
-                f"&tmY={tm_y:.2f}"
+                f"?serviceKey={self.air_key}&returnType=json&tmX={tm_x:.2f}&tmY={tm_y:.2f}"
             )
             async with self.session.get(st_url, timeout=timeout) as resp:
-                if resp.status != 200:
-                    return {}
+                if resp.status != 200: return {}
                 st_json = await resp.json(content_type=None)
 
             items = st_json.get("response", {}).get("body", {}).get("items", [])
-            if not items:
-                return {}
-
+            if not items: return {}
             station_name = items[0]["stationName"]
 
+            # 초미세먼지 파라미터(ver=1.3) 포함
             data_url = (
                 f"http://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
-                f"?serviceKey={self.air_key}"
-                f"&returnType=json"
-                f"&stationName={quote(station_name)}"
-                f"&dataTerm=daily"
-                f"&ver=1.3"
+                f"?serviceKey={self.air_key}&returnType=json&stationName={quote(station_name)}&dataTerm=daily&ver=1.3"
             )
             async with self.session.get(data_url, timeout=timeout) as resp:
-                if resp.status != 200:
-                    return {}
+                if resp.status != 200: return {}
                 air_json = await resp.json(content_type=None)
 
             air_items = air_json.get("response", {}).get("body", {}).get("items", [])
-            if not air_items:
-                return {}
-
+            if not air_items: return {}
             item = air_items[0]
+            
             return {
                 "pm10Value": item.get("pm10Value"),
                 "pm10Grade": self._translate_grade(item.get("pm10Grade")),
@@ -131,21 +121,21 @@ class KMAWeatherAPI:
         
         url = (
             f"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
-            f"?serviceKey={self.api_key}&dataType=JSON&base_date={base_d}&base_time={base_h:02d}00"
-            f"&nx={self.nx}&ny={self.ny}&numOfRows=1500"
+            f"?serviceKey={self.api_key}&pageNo=1&numOfRows=1500&dataType=JSON&base_date={base_d}&base_time={base_h:02d}00"
+            f"&nx={self.nx}&ny={self.ny}"
         )
         try:
             async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                if r.status != 200:
-                    return None
+                if r.status != 200: return None
                 return await r.json(content_type=None)
         except Exception:
             return None
 
     async def _get_mid_term(self, now):
-        if now.hour < 6:
+        # ★ 수정 2: 중기예보 발표 시각 직후의 지연 오류를 막기 위해 1시간의 딜레이 버퍼를 둡니다.
+        if now.hour < 7:
             base = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
-        elif now.hour < 18:
+        elif now.hour < 19:
             base = now.strftime("%Y%m%d") + "0600"
         else:
             base = now.strftime("%Y%m%d") + "1800"
@@ -157,16 +147,16 @@ class KMAWeatherAPI:
             except Exception:
                 return None
 
+        # 중기예보 호출 파라미터 안정화 (pageNo, numOfRows 명시)
         urls = [
-            f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa?serviceKey={self.api_key}&dataType=JSON&regId={self.reg_id_temp}&tmFc={base}",
-            f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst?serviceKey={self.api_key}&dataType=JSON&regId={self.reg_id_land}&tmFc={base}",
+            f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa?serviceKey={self.api_key}&pageNo=1&numOfRows=10&dataType=JSON&regId={self.reg_id_temp}&tmFc={base}",
+            f"http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst?serviceKey={self.api_key}&pageNo=1&numOfRows=10&dataType=JSON&regId={self.reg_id_land}&tmFc={base}",
         ]
         return await asyncio.gather(*(fetch(u) for u in urls))
 
     def _merge_all(self, now, short_res, mid_res, air_data, address=None):
         weather_data = {"forecast_daily": [], "forecast_twice_daily": []}
-        if address:
-            weather_data["address"] = address
+        if address: weather_data["address"] = address
         forecast_map, rain_start, last_past = {}, "강수없음", None
 
         if short_res and "response" in short_res:
@@ -189,7 +179,7 @@ class KMAWeatherAPI:
                         if f_dt >= now:
                             rain_start = f"{t[:2]}:{t[2:]}" if d == now.strftime("%Y%m%d") else f"{int(d[6:8])}일 {t[:2]}:{t[2:]}"
 
-            # ★ 핵심 파싱 버그 수정: 과거 시간이 없으면 가장 가까운(첫 번째) 미래 예보를 현재 날씨로 사용
+            # 기상청 현재 날씨 복구 로직 (과거 데이터 없으면 최신 데이터로)
             if not last_past and forecast_map:
                 first_d = sorted(forecast_map.keys())[0]
                 first_t = sorted(forecast_map[first_d].keys())[0]
@@ -228,7 +218,8 @@ class KMAWeatherAPI:
             try:
                 mt = mid_t["response"]["body"]["items"]["item"][0]
                 ml = mid_l["response"]["body"]["items"]["item"][0]
-                for i in range(4, 11):
+                # ★ 수정 3: 10일치 예보 복구: range(4, 11) -> range(3, 11)로 변경하여 3일차 예보의 공백(이빨 빠짐)을 메웁니다.
+                for i in range(3, 11):
                     target_dt = (now + timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
                     t_min = float(mt.get(f"taMin{i}", 15.0))
                     t_max = float(mt.get(f"taMax{i}", 25.0))
@@ -248,8 +239,8 @@ class KMAWeatherAPI:
                         "datetime": target_dt.replace(hour=21).isoformat(), "daytime": False,
                         "native_temperature": t_max, "condition": self._get_mid_condition(pm_wf),
                     })
-            except Exception:
-                pass
+            except Exception as e:
+                _LOGGER.warning("중기예보 파싱 에러: %s", e)
 
         weather_data["rain_start_time"] = rain_start
         weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
