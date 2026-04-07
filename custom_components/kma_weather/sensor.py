@@ -80,7 +80,8 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if self._type == "address":
             w = self.coordinator.data.get("weather", {})
             return {
-                "short_term_nx_ny": f"{w.get('debug_nx')}, {w.get('debug_ny')}",
+                "short_term_nx": w.get('debug_nx'), 
+                "short_term_ny": w.get('debug_ny'),
                 "mid_term_temp_id": w.get("debug_reg_id_temp"),
                 "mid_term_land_id": w.get("debug_reg_id_land"),
                 "air_korea_station": w.get("station"),
