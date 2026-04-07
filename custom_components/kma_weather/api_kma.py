@@ -182,7 +182,7 @@ class KMAWeatherAPI:
                 first_t = sorted(forecast_map[first_d].keys())[0]
                 last_past = forecast_map[first_d][first_t]
 
-            # 데이터 원복 (강제 int 삭제)
+            # 데이터 원복 (강제 int 삭제 상태 유지)
             if last_past:
                 for cat, val in last_past.items():
                     weather_data[cat] = val
@@ -191,10 +191,8 @@ class KMAWeatherAPI:
 
         v_days = [d for d in sorted(forecast_map.keys()) if d >= now.strftime("%Y%m%d")]
         for d_str in v_days[:3]:
-            # 오늘 이전 날짜 필터링 및 기준시간 12시 고정
-            base_dt = datetime.strptime(d_str, "%Y%m%d").replace(hour=12, tzinfo=self.tz)
-            if base_dt.date() < now.date():
-                continue
+            # 날짜 차단 원복 완료
+            base_dt = datetime.strptime(d_str, "%Y%m%d").replace(tzinfo=self.tz)
                 
             day_items = forecast_map[d_str]
             tmps = [float(v["TMP"]) for v in day_items.values() if "TMP" in v]
@@ -227,10 +225,8 @@ class KMAWeatherAPI:
                 mt = mid_t["response"]["body"]["items"]["item"][0]
                 ml = mid_l["response"]["body"]["items"]["item"][0]
                 for i in range(3, 11):
-                    target_dt = (now + timedelta(days=i)).replace(hour=12, minute=0, second=0, microsecond=0)
-                    
-                    if target_dt.date() < now.date():
-                        continue
+                    # 날짜 차단 원복 완료
+                    target_dt = (now + timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
                         
                     t_min = float(mt.get(f"taMin{i}", 15.0))
                     t_max = float(mt.get(f"taMax{i}", 25.0))
