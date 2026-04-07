@@ -15,6 +15,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
         super().__init__(
             hass, _LOGGER, name=DOMAIN,
+            # 위치 체크 주기는 5분으로 기민하게 유지
             update_interval=timedelta(minutes=5),
         )
         self.entry = entry
@@ -31,30 +32,74 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._last_ny = None
         self._last_api_update = None
         self._cached_data = None
-        # 3️⃣ 핵심 수정: 동시성 제어를 위한 락 추가
+        # ★ 핵심 보완: 동시성 제어를 위한 락 추가
         self._update_lock = asyncio.Lock()
 
     async def _async_update_data(self):
+        """Fetch data from API with concurrency control and fail-safe logic."""
         async with self._update_lock:
             try:
-                # (기존 위치 획득 및 격자 변환 로직 유지)
-                # ...
-                
-                # 4️⃣ 핵심 수정: API 호출 결과가 None(실패)이면 캐시 데이터 즉시 반환
-                new_data = await self.api.fetch_data(current_lat, current_lon, current_nx, current_ny)
-                
-                if new_data is None:
-                    if self._cached_data:
-                        _LOGGER.info("새 데이터를 가져오지 못해 캐시된 데이터를 사용합니다.")
-                        return self._cached_data
-                    raise UpdateFailed("데이터 수집 실패 및 기존 캐시 없음")
+                entity_id = self.entry.data.get(CONF_LOCATION_ENTITY, "")
+                state = self.hass.states.get(entity_id)
 
-                # (성공 시 캐시 업데이트 로직 유지)
-                self._cached_data = new_data
-                return new_data
+                lat, lon = None, None
+
+                # 1. 위치 정보 획득
+                if state and "latitude" in state.attributes and "longitude" in state.attributes:
+                    lat = float(state.attributes["latitude"])
+                    lon = float(state.attributes["longitude"])
+                elif self.hass.config.latitude:
+                    lat = float(self.hass.config.latitude)
+                    lon = float(self.hass.config.longitude)
+
+                if lat is not None and lon is not None:
+                    current_lat, current_lon = lat, lon
+                elif self._last_lat is not None:
+                    current_lat, current_lon = self._last_lat, self._last_lon
+                else:
+                    # 위치 정보가 아예 없는 초기 상황
+                    if self._cached_data: return self._cached_data
+                    raise UpdateFailed("위치 정보를 확인할 수 없습니다.")
+
+                current_nx, current_ny = convert_grid(current_lat, current_lon)
+                now = datetime.now(timezone.utc)
+
+                # 2. 스마트 폴링 판단 (API 호출 여부 결정)
+                needs_api_call = False
+                if not self._cached_data:
+                    needs_api_call = True
+                elif self._last_nx != current_nx or self._last_ny != current_ny:
+                    _LOGGER.info("기상청 격자 변경 감지. 날씨 API를 즉시 갱신합니다.")
+                    needs_api_call = True
+                elif self._last_api_update is None or (now - self._last_api_update) >= timedelta(hours=1):
+                    needs_api_call = True
+
+                # 3. API 호출 및 가용성(Fail-Safe) 처리
+                if needs_api_call:
+                    new_data = await self.api.fetch_data(current_lat, current_lon, current_nx, current_ny)
+                    
+                    if new_data is None:
+                        # API에서 None을 주면(실패) 기존 데이터 유지
+                        if self._cached_data:
+                            _LOGGER.warning("새 데이터를 가져오지 못했습니다. 캐시된 데이터를 사용합니다.")
+                            return self._cached_data
+                        raise UpdateFailed("데이터 수집 실패 및 캐시된 정보 없음")
+
+                    # 성공 시 메타데이터와 함께 저장
+                    new_data["weather"]["last_updated"] = now
+                    self._cached_data = new_data
+                    self._last_api_update = now
+                    self._last_lat, self._last_lon = current_lat, current_lon
+                    self._last_nx, self._last_ny = current_nx, current_ny
+                    
+                    return new_data
+                
+                # 호출 주기가 아니면 기존 데이터 반환
+                return self._cached_data
 
             except Exception as e:
+                # 4. 어떤 예외가 발생해도 캐시가 있으면 엔티티 사망 방지
                 if self._cached_data:
-                    _LOGGER.warning("업데이트 중 오류 발생, 캐시 유지: %s", e)
+                    _LOGGER.warning("업데이트 중 오류 발생, 마지막 성공 데이터 유지: %s", e)
                     return self._cached_data
                 raise UpdateFailed(f"업데이트 실패: {e}")
