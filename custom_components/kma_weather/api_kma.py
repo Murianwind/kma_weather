@@ -24,9 +24,9 @@ class KMAWeatherAPI:
         self.tz = ZoneInfo("Asia/Seoul")
         self.lat = self.lon = self.nx = self.ny = None
        
-        # ✅ 측정소 캐싱 (안전)
+        # 측정소 캐싱 정보
         self._cached_station = None
-        self._cached_tm = None
+        self._cached_lat_lon = None
         self._station_cache_time = None
 
     async def fetch_data(self, lat, lon, nx, ny):
@@ -55,71 +55,64 @@ class KMAWeatherAPI:
 
     async def _get_air_quality(self):
         try:
-            tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
-            url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
-            params_st = {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
-            async with self.session.get(url_st, params=params_st, timeout=10) as resp:
-                st_json = json.loads(await resp.text())
-            items = st_json.get("response", {}).get("body", {}).get("items", [])
-            if not items: return {}
-            sn = items[0]["stationName"]
             now = datetime.now(self.tz)
+            sn = None
 
-            # ✅ 캐시 유효성 검사 (10분)
+            # 1. 위치 변화 체크 (좌표가 약 1km 이상 변했는지 확인)
+            loc_changed = True
+            if self._cached_lat_lon:
+                dist = math.sqrt((self.lat - self._cached_lat_lon[0])**2 + (self.lon - self._cached_lat_lon[1])**2)
+                if dist < 0.01:  # 약 1.1km 미만 이동 시
+                    loc_changed = False
+
+            # 2. 캐시 유효성 확인 (10분 이내 + 위치 고정)
             if (
                 self._cached_station
                 and self._station_cache_time
                 and (now - self._station_cache_time).total_seconds() < 600
+                and not loc_changed
             ):
                 sn = self._cached_station
             else:
+                # 3. 새로운 측정소 조회
                 tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
                 url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
                 params_st = {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
+                
                 async with self.session.get(url_st, params=params_st, timeout=10) as resp:
                     st_json = json.loads(await resp.text())
-
+                
                 items = st_json.get("response", {}).get("body", {}).get("items", [])
                 if not items:
                     return {}
-
-                # ✅ 기존 + nearest 보정 그대로 유지
+                
+                # API가 제공하는 가장 가까운(첫 번째) 측정소 선택
                 sn = items[0].get("stationName")
-
-                try:
-                    best_station = sn
-                    best_tm = float(items[0].get("tm", 999999))
-
-                    for it in items:
-                        tm_val = it.get("tm")
-                        name = it.get("stationName")
-                        if tm_val is None or name is None:
-                            continue
-                        try:
-                            tm_val = float(tm_val)
-                        except:
-                            continue
-                        if tm_val < best_tm:
-                            best_tm = tm_val
-                            best_station = name
-
-                    if best_station and best_station != sn:
-                        if best_tm < (float(items[0].get("tm", best_tm)) * 0.95):
-                            sn = best_station
-                except Exception as e:
-                    _LOGGER.debug(f"Nearest calc error: {e}")
-
-                # ✅ 캐시 저장 (실패 시 영향 없음)
                 self._cached_station = sn
+                self._cached_lat_lon = (self.lat, self.lon)
                 self._station_cache_time = now
 
+            # 4. 선택된 측정소의 실시간 대기질 데이터 조회
             url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
             params_data = {"serviceKey": self.api_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
             async with self.session.get(url_data, params=params_data, timeout=10) as resp:
                 air_json = json.loads(await resp.text())
-            ai = air_json.get("response", {}).get("body", {}).get("items", [])[0]
-            return {"pm10Value": ai.get("pm10Value"), "pm10Grade": self._translate_grade(ai.get("pm10Grade")), "pm25Value": ai.get("pm25Value"), "pm25Grade": self._translate_grade(ai.get("pm25Grade")), "station": sn}
-        except: return {}
+            
+            ai_list = air_json.get("response", {}).get("body", {}).get("items", [])
+            if not ai_list:
+                return {"station": sn}
+            
+            ai = ai_list[0]
+            return {
+                "pm10Value": ai.get("pm10Value"),
+                "pm10Grade": self._translate_grade(ai.get("pm10Grade")),
+                "pm25Value": ai.get("pm25Value"),
+                "pm25Grade": self._translate_grade(ai.get("pm25Grade")),
+                "station": sn
+            }
+        except Exception as e:
+            _LOGGER.error(f"Air quality fetch error: {e}")
+            return {}
 
     def _translate_grade(self, g):
         return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
@@ -145,23 +138,17 @@ class KMAWeatherAPI:
         return await asyncio.gather(fetch(url_ta, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}), fetch(url_land, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base}))
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
-        """기상청 방식 체감온도 계산 (동절기 풍속냉각 / 하절기 열지수)"""
         try:
             t = _safe_float(temp)
             if t is None: return None
-            
-            # 동절기 체감온도 (Wind Chill) - 기온 10도 이하, 풍속 4.8km/h 이상 시 적용
             v = _safe_float(wsd)
             v_kmh = v * 3.6 if v is not None else 0
             if t <= 10 and v_kmh >= 4.8:
                 return round(13.12 + 0.6215 * t - 11.37 * (v_kmh ** 0.16) + 0.3965 * t * (v_kmh ** 0.16), 1)
-            
-            # 하절기 열지수 (Heat Index) - 기온 25도 이상, 습도 40% 이상 시 보정
             rh = _safe_float(reh)
             if t >= 25 and rh is not None and rh >= 40:
                 hi = 0.5 * (t + 61.0 + ((t - 68.0) * 1.2) + (rh * 0.094))
                 return round(hi, 1)
-
             return t
         except: return temp
 
