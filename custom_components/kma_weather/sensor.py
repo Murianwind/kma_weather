@@ -14,6 +14,7 @@ SENSOR_TYPES = {
     "WSD": ["현재풍속", UnitOfSpeed.METERS_PER_SECOND, "mdi:weather-windy", None, "wind_speed", None],
     "VEC_KOR": ["현재풍향", None, "mdi:compass", None, "wind_direction", None],
     "POP": ["강수확률", PERCENTAGE, "mdi:umbrella-outline", None, "precipitation_prob", None],
+    "apparent_temp": ["체감온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-lines", None, "apparent_temperature", None],
     "rain_start_time": ["비시작시간", None, "mdi:clock-outline", None, "rain_start", None],
     "current_condition_kor": ["현재날씨", None, "mdi:weather-cloudy", None, "condition", None],
     "pm10Value": ["미세먼지 농도", "㎍/㎥", "mdi:blur", None, "pm10", None],
@@ -82,13 +83,13 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self):
         if self._type == "address":
             w = self.coordinator.data.get("weather", {})
-            a = self.coordinator.data.get("air", {}) # 에어코리아 데이터를 가져옴
+            a = self.coordinator.data.get("air", {})
             return {
                 "short_term_nx": w.get('debug_nx'), 
                 "short_term_ny": w.get('debug_ny'),
                 "mid_term_temp_id": w.get("debug_reg_id_temp"),
                 "mid_term_land_id": w.get("debug_reg_id_land"),
-                "air_korea_station": a.get("station"), # air 데이터에서 스테이션 정보를 가져옴
+                "air_korea_station": a.get("station"),
                 "latitude": w.get("debug_lat"),
                 "longitude": w.get("debug_lon")
             }
