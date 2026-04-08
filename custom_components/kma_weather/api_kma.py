@@ -23,6 +23,11 @@ class KMAWeatherAPI:
         self.reg_id_land = reg_id_land
         self.tz = ZoneInfo("Asia/Seoul")
         self.lat = self.lon = self.nx = self.ny = None
+       
+        # ✅ 측정소 캐싱 (안전)
+        self._cached_station = None
+        self._cached_tm = None
+        self._station_cache_time = None
 
     async def fetch_data(self, lat, lon, nx, ny):
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
@@ -58,6 +63,56 @@ class KMAWeatherAPI:
             items = st_json.get("response", {}).get("body", {}).get("items", [])
             if not items: return {}
             sn = items[0]["stationName"]
+            now = datetime.now(self.tz)
+
+            # ✅ 캐시 유효성 검사 (10분)
+            if (
+                self._cached_station
+                and self._station_cache_time
+                and (now - self._station_cache_time).total_seconds() < 600
+            ):
+                sn = self._cached_station
+            else:
+                tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
+                url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
+                params_st = {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
+                async with self.session.get(url_st, params=params_st, timeout=10) as resp:
+                    st_json = json.loads(await resp.text())
+
+                items = st_json.get("response", {}).get("body", {}).get("items", [])
+                if not items:
+                    return {}
+
+                # ✅ 기존 + nearest 보정 그대로 유지
+                sn = items[0].get("stationName")
+
+                try:
+                    best_station = sn
+                    best_tm = float(items[0].get("tm", 999999))
+
+                    for it in items:
+                        tm_val = it.get("tm")
+                        name = it.get("stationName")
+                        if tm_val is None or name is None:
+                            continue
+                        try:
+                            tm_val = float(tm_val)
+                        except:
+                            continue
+                        if tm_val < best_tm:
+                            best_tm = tm_val
+                            best_station = name
+
+                    if best_station and best_station != sn:
+                        if best_tm < (float(items[0].get("tm", best_tm)) * 0.95):
+                            sn = best_station
+                except Exception as e:
+                    _LOGGER.debug(f"Nearest calc error: {e}")
+
+                # ✅ 캐시 저장 (실패 시 영향 없음)
+                self._cached_station = sn
+                self._station_cache_time = now
+
             url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
             params_data = {"serviceKey": self.api_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
             async with self.session.get(url_data, params=params_data, timeout=10) as resp:
