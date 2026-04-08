@@ -158,6 +158,7 @@ class KMAWeatherAPI:
                     if d_str == today_str and t_str <= curr_h: continue
                     if forecast_map[d_str][t_str].get("PTY", "0") != "0" and not found_rain:
                         dt = datetime.strptime(d_str + t_str, "%Y%m%d%H%M")
+                        weekday = days_ko[dt.weekday()]
                         time_label = f"{dt.hour}시" + (f" {dt.minute}분" if dt.minute > 0 else "")
                         weather_data["rain_start_time"] = f"{dt.month}월 {dt.day}일 {weekday} {time_label}"
                         found_rain = True
