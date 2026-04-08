@@ -159,7 +159,7 @@ class KMAWeatherAPI:
                     if forecast_map[d_str][t_str].get("PTY", "0") != "0" and not found_rain:
                         dt = datetime.strptime(d_str + t_str, "%Y%m%d%H%M")
                         time_label = f"{dt.hour}시" + (f" {dt.minute}분" if dt.minute > 0 else "")
-                        weather_data["rain_start_time"] = dt.strftime(f"%m월 %d일 {days_ko[dt.weekday()]} {time_label}").replace(" 0", " ")
+                        weather_data["rain_start_time"] = f"{dt.month}월 {dt.day}일 {weekday} {time_label}"
                         found_rain = True
                         break
                 if found_rain: break
