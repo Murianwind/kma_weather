@@ -10,7 +10,7 @@ _LOGGER = logging.getLogger(__name__)
 
 def _safe_float(v):
     try:
-        if v == "" or v is None: return None
+        if v == "" or v is None or v == "-": return None
         return float(v)
     except (TypeError, ValueError):
         return None
