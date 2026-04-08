@@ -210,21 +210,51 @@ class KMAWeatherAPI:
         twice_daily = []
         mid_ta = mid_res[0].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[0] else {}
         mid_land = mid_res[1].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[1] else {}
+
+        # 기상청 단기예보 3시간 슬롯 목록
+        SHORT_SLOTS = ["0000", "0300", "0600", "0900", "1200", "1500", "1800", "2100"]
+        # 주간(00~11시) 슬롯, 야간(12~23시) 슬롯
+        DAYTIME_SLOTS = [s for s in SHORT_SLOTS if int(s) < 1200]   # 0000 0300 0600 0900
+        NIGHTTIME_SLOTS = [s for s in SHORT_SLOTS if int(s) >= 1200] # 1200 1500 1800 2100
+
+        curr_hhmm = f"{now.hour:02d}{now.minute:02d}"  # 현재 시각 HHMM (비교용)
+
         for i in range(10):
             target_date = now + timedelta(days=i)
             d_str = target_date.strftime("%Y%m%d")
+
             for is_am in [True, False]:
-                hour = 9 if is_am else 15
-                dt_iso = target_date.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
-                short_hour = forecast_map.get(d_str, {}).get(f"{hour:02d}00", {})
-                if short_hour:
-                    tmps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
+                if i == 0:
+                    # ── 오늘: 현재 시각 이후의 슬롯을 동적으로 탐색 ──────────────
+                    candidate_slots = DAYTIME_SLOTS if is_am else NIGHTTIME_SLOTS
+                    # 현재 시각(HHMM) 이후인 첫 번째 슬롯 선택
+                    chosen_slot = next(
+                        (s for s in candidate_slots if s > curr_hhmm),
+                        None
+                    )
+                    if chosen_slot is None:
+                        # 해당 시간대(주간 또는 야간) 슬롯이 모두 과거 → 생략
+                        continue
+                    short_hour_data = forecast_map.get(d_str, {}).get(chosen_slot, {})
+                    if not short_hour_data:
+                        continue
+                    slot_hour = int(chosen_slot[:2])
+                    dt_iso = target_date.replace(hour=slot_hour, minute=0, second=0, microsecond=0).isoformat()
+                else:
+                    # ── 내일 이후: 주간=0900, 야간=2100 고정 ─────────────────────
+                    hour = 9 if is_am else 21
+                    dt_iso = target_date.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
+                    short_hour_data = forecast_map.get(d_str, {}).get(f"{hour:02d}00", {})
+
+                tmps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
+
+                if short_hour_data:
                     twice_daily.append({
                         "datetime": dt_iso, "is_daytime": is_am,
                         "native_temperature": max(tmps) if tmps else None,
                         "native_templow": min(tmps) if tmps else None,
-                        "native_precipitation_probability": _safe_float(short_hour.get("POP")),
-                        "condition": self._get_condition(short_hour.get("SKY"), short_hour.get("PTY"))
+                        "native_precipitation_probability": _safe_float(short_hour_data.get("POP")),
+                        "condition": self._get_condition(short_hour_data.get("SKY"), short_hour_data.get("PTY"))
                     })
                 elif i >= 2:
                     wf = mid_land.get(f"wf{i}Am" if is_am else f"wf{i}Pm") or mid_land.get(f"wf{i}")
@@ -236,6 +266,7 @@ class KMAWeatherAPI:
                             "native_precipitation_probability": _safe_float(mid_land.get(f"rnSt{i}Am" if is_am else f"rnSt{i}Pm")),
                             "condition": self._translate_mid_condition(wf)
                         })
+
         weather_data["forecast_twice_daily"] = twice_daily
 
         if weather_data.get("VEC"):
