@@ -60,8 +60,8 @@ MOCK_SCENARIOS = {
             "forecast_twice_daily": forecast_list,
         },
         "air": {
-            "pm10Value": 35, "pm10Grade": "1", 
-            "pm25Value": 15, "pm25Grade": "1", "station": "화성"
+            "pm10Value": 35, "pm10Grade": "좋음", 
+            "pm25Value": 15, "pm25Grade": "좋음", "station": "화성"
         }
     },
     "jeju_missing": {
