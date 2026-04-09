@@ -121,10 +121,13 @@ from custom_components.kma_weather.coordinator import (
 
 @pytest.mark.asyncio
 async def test_coordinator_passes_hass_to_api():
+    """Coordinator가 API 객체를 생성할 때 hass를 정확히 전달하는지 검증"""
     hass = MagicMock()
+    # UUID 설정
     hass.installation_uuid = "12345678-1234-5678-1234-567812345678"
 
     entry = MagicMock()
+    # 좌표 및 필수 데이터 설정
     entry.data = {
         "api_key": "TEST_KEY",
         "nx": 60,
@@ -134,12 +137,21 @@ async def test_coordinator_passes_hass_to_api():
     }
     entry.options = {}
 
+    # Coordinator가 사용하는 KMAWeatherAPI 클래스를 패치
     with patch(
         "custom_components.kma_weather.coordinator.KMAWeatherAPI"
     ) as mock_api:
         mock_api.return_value = MagicMock()
+        
+        # Coordinator 인스턴스 생성
         KMAWeatherUpdateCoordinator(hass, entry)
 
+        # 검증: API가 한 번 호출되었는가?
         mock_api.assert_called_once()
+        
+        # 검증: 호출 시 전달된 인자 중 hass가 포함되어 있는가?
+        # call_args는 (args, kwargs) 튜플을 반환함
         _, kwargs = mock_api.call_args
-        assert kwargs["hass"] is hass
+        
+        # coordinator.py에서 hass=hass 로 전달하므로 kwargs["hass"]를 체크
+        assert kwargs.get("hass") is hass
