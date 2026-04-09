@@ -19,6 +19,18 @@ def _safe_float(v):
         return None
 
 
+# ── 한글 → HA 표준 영문 매핑 (단일 정의) ──────────────────────────────────
+KOR_TO_CONDITION: dict[str, str] = {
+    "맑음":    "sunny",
+    "구름많음": "partlycloudy",
+    "흐림":    "cloudy",
+    "비":      "rainy",
+    "비/눈":   "rainy",
+    "소나기":  "rainy",
+    "눈":      "snowy",
+}
+
+
 class KMAWeatherAPI:
     def __init__(self, session, api_key, reg_id_temp, reg_id_land, hass=None):
         self.session = session
@@ -41,7 +53,6 @@ class KMAWeatherAPI:
         """Nominatim 정책을 준수하는 고유한 User-Agent 생성"""
         base = "HomeAssistant-KMA-Weather"
 
-        # Home Assistant 고유 ID 사용
         if self.hass:
             try:
                 uuid = getattr(self.hass, "installation_uuid", None)
@@ -50,7 +61,6 @@ class KMAWeatherAPI:
             except Exception:
                 pass
 
-        # 폴백: API 키 해시 사용
         try:
             hashed = hashlib.sha1(self.api_key.encode()).hexdigest()[:12]
             return f"{base}/{hashed}"
@@ -221,24 +231,21 @@ class KMAWeatherAPI:
         }.get(str(g), "정보없음")
 
     async def _get_short_term(self, now):
-        """단기예보(VilageFcst) API 호출 로직 수정"""
-        # 발표 시간(0210, 0510...) 대비 10분 여유
         adj = now - timedelta(minutes=10)
         hour = adj.hour
-        
+
         base_hours = [2, 5, 8, 11, 14, 17, 20, 23]
         valid_hours = [h for h in base_hours if h <= hour]
-        
+
         if valid_hours:
             base_h = max(valid_hours)
             base_d = adj.strftime("%Y%m%d")
         else:
-            # 00:00~02:10 사이는 전날 23시 발표분 사용
             base_h = 23
             base_d = (adj - timedelta(days=1)).strftime("%Y%m%d")
-        
+
         _LOGGER.debug("단기예보 호출: base_date=%s, base_time=%02d00", base_d, base_h)
-        
+
         url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
         params = {
             "serviceKey": self.api_key,
@@ -247,7 +254,7 @@ class KMAWeatherAPI:
             "base_time": f"{base_h:02d}00",
             "nx": self.nx,
             "ny": self.ny,
-            "numOfRows": 1500,  # 데이터 잘림 방지를 위해 1500으로 상향
+            "numOfRows": 1500,
             "pageNo": 1,
         }
         return await self._fetch(url, params=params, timeout=15)
@@ -256,15 +263,13 @@ class KMAWeatherAPI:
         base = (now if now.hour >= 18 else (now if now.hour >= 6 else now - timedelta(days=1))).strftime("%Y%m%d") + ("0600" if 6 <= now.hour < 18 else "1800")
         url_ta = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
         url_land = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
-        
-        # 헬퍼 메서드 사용
+
         return await asyncio.gather(
             self._fetch(url_ta, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}, timeout=15),
             self._fetch(url_land, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base}, timeout=15)
         )
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
-        """체감 온도 계산 (안전한 예외 처리 적용)"""
         try:
             t = _safe_float(temp)
             if t is None: return None
@@ -277,8 +282,20 @@ class KMAWeatherAPI:
                 hi = 0.5 * (t + 61.0 + ((t - 68.0) * 1.2) + (rh * 0.094))
                 return round(hi, 1)
             return t
-        except (TypeError, ValueError): # Bare except 대신 특정 예외만 처리
+        except (TypeError, ValueError):
             return temp
+
+    # ── [수정] 한글 → HA 표준 영문 변환 (모듈 상단 KOR_TO_CONDITION 사용) ──
+    @staticmethod
+    def kor_to_condition(kor: str | None) -> str | None:
+        """한글 날씨 상태를 HA 표준 영문 condition 으로 변환합니다.
+        
+        두 값의 동기화를 위한 단일 변환 지점입니다.
+        current_condition 은 항상 이 메서드를 통해 current_condition_kor 로부터 파생됩니다.
+        """
+        if kor is None:
+            return None
+        return KOR_TO_CONDITION.get(kor)
 
     def _merge_all(self, now, short_res, mid_res, air_data, address=None):
         weather_data = {
@@ -290,14 +307,14 @@ class KMAWeatherAPI:
             "debug_nx": self.nx, "debug_ny": self.ny, "debug_lat": self.lat, "debug_lon": self.lon,
             "debug_reg_id_temp": self.reg_id_temp, "debug_reg_id_land": self.reg_id_land
         }
-        
+
         forecast_map = {}
         if short_res and "response" in short_res:
             items = short_res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
             for it in items:
                 d, t, cat, val = it["fcstDate"], it["fcstTime"], it["category"], it["fcstValue"]
                 forecast_map.setdefault(d, {}).setdefault(t, {})[cat] = val
-            
+
             today_str = now.strftime("%Y%m%d")
             tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
 
@@ -308,7 +325,7 @@ class KMAWeatherAPI:
                     if tmps:
                         weather_data[f"TMX_{prefix}"] = max(tmps)
                         weather_data[f"TMN_{prefix}"] = min(tmps)
-                    
+
                     am_val = day_data.get("0900", {})
                     pm_val = day_data.get("1500", {})
                     weather_data[f"wf_am_{prefix}"] = self._get_sky_kor(am_val.get("SKY"), am_val.get("PTY"))
@@ -319,12 +336,10 @@ class KMAWeatherAPI:
                 available_times = sorted(forecast_map[today_str].keys())
                 best_time = None
 
-                # 1. 현재 시각 이후(포함) 중 가장 빠른 시간 탐색
                 future_times = [t for t in available_times if t >= curr_h]
                 if future_times:
                     best_time = future_times[0]
                 elif available_times:
-                    # 2. 미래 예보가 없으면(자정 직전 등) 가장 최근 과거 데이터 사용
                     best_time = available_times[-1]
 
                 if best_time:
@@ -349,13 +364,11 @@ class KMAWeatherAPI:
         mid_ta = mid_res[0].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[0] else {}
         mid_land = mid_res[1].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[1] else {}
 
-        # 기상청 단기예보 3시간 슬롯 목록
         SHORT_SLOTS = ["0000", "0300", "0600", "0900", "1200", "1500", "1800", "2100"]
-        # 주간(00~11시) 슬롯, 야간(12~23시) 슬롯
-        DAYTIME_SLOTS = [s for s in SHORT_SLOTS if int(s) < 1200]   # 0000 0300 0600 0900
-        NIGHTTIME_SLOTS = [s for s in SHORT_SLOTS if int(s) >= 1200] # 1200 1500 1800 2100
+        DAYTIME_SLOTS = [s for s in SHORT_SLOTS if int(s) < 1200]
+        NIGHTTIME_SLOTS = [s for s in SHORT_SLOTS if int(s) >= 1200]
 
-        curr_hhmm = f"{now.hour:02d}{now.minute:02d}"  # 현재 시각 HHMM (비교용)
+        curr_hhmm = f"{now.hour:02d}{now.minute:02d}"
 
         for i in range(10):
             target_date = now + timedelta(days=i)
@@ -363,15 +376,12 @@ class KMAWeatherAPI:
 
             for is_am in [True, False]:
                 if i == 0:
-                    # ── 오늘: 현재 시각 이후의 슬롯을 동적으로 탐색 ──────────────
                     candidate_slots = DAYTIME_SLOTS if is_am else NIGHTTIME_SLOTS
-                    # 현재 시각(HHMM) 이후인 첫 번째 슬롯 선택
                     chosen_slot = next(
                         (s for s in candidate_slots if s > curr_hhmm),
                         None
                     )
                     if chosen_slot is None:
-                        # 해당 시간대(주간 또는 야간) 슬롯이 모두 과거 → 생략
                         continue
                     short_hour_data = forecast_map.get(d_str, {}).get(chosen_slot, {})
                     if not short_hour_data:
@@ -379,7 +389,6 @@ class KMAWeatherAPI:
                     slot_hour = int(chosen_slot[:2])
                     dt_iso = target_date.replace(hour=slot_hour, minute=0, second=0, microsecond=0).isoformat()
                 else:
-                    # ── 내일 이후: 주간=0900, 야간=2100 고정 ─────────────────────
                     hour = 9 if is_am else 21
                     dt_iso = target_date.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
                     short_hour_data = forecast_map.get(d_str, {}).get(f"{hour:02d}00", {})
@@ -387,22 +396,25 @@ class KMAWeatherAPI:
                 tmps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
 
                 if short_hour_data:
+                    # ── [수정] 예보 condition 도 kor_to_condition 으로 파생 ──
+                    kor = self._get_sky_kor(short_hour_data.get("SKY"), short_hour_data.get("PTY"))
                     twice_daily.append({
                         "datetime": dt_iso, "is_daytime": is_am,
                         "native_temperature": max(tmps) if tmps else None,
                         "native_templow": min(tmps) if tmps else None,
                         "native_precipitation_probability": _safe_float(short_hour_data.get("POP")),
-                        "condition": self._get_condition(short_hour_data.get("SKY"), short_hour_data.get("PTY"))
+                        "condition": self.kor_to_condition(kor),
                     })
                 elif i >= 2:
                     wf = mid_land.get(f"wf{i}Am" if is_am else f"wf{i}Pm") or mid_land.get(f"wf{i}")
                     if wf:
+                        kor = self._translate_mid_condition_kor(wf)
                         twice_daily.append({
                             "datetime": dt_iso, "is_daytime": is_am,
                             "native_temperature": _safe_float(mid_ta.get(f"taMax{i}")),
                             "native_templow": _safe_float(mid_ta.get(f"taMin{i}")),
                             "native_precipitation_probability": _safe_float(mid_land.get(f"rnSt{i}Am" if is_am else f"rnSt{i}Pm")),
-                            "condition": self._translate_mid_condition(wf)
+                            "condition": self.kor_to_condition(kor),
                         })
 
         weather_data["forecast_twice_daily"] = twice_daily
@@ -411,24 +423,36 @@ class KMAWeatherAPI:
             kor_vec = self._get_vec_kor(weather_data["VEC"])
             weather_data["VEC_KOR"] = kor_vec
             weather_data["현재 풍향"] = kor_vec
-            
-        weather_data["apparent_temp"] = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
-        weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
-        weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
+
+        weather_data["apparent_temp"] = self._calculate_apparent_temp(
+            weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD")
+        )
+
+        # ── [수정] current_condition_kor 를 먼저 결정하고,
+        #          current_condition 은 항상 kor_to_condition 으로 파생 ──────
+        kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
+        weather_data["current_condition_kor"] = kor_now
+        weather_data["current_condition"] = self.kor_to_condition(kor_now)
+
         return {"weather": weather_data, "air": air_data or {}, "raw_forecast": forecast_map}
 
-    def _translate_mid_condition(self, wf):
+    # ── [수정] 중기예보 한글 변환 메서드 추가 (kor_to_condition 과 연동) ────
+    def _translate_mid_condition_kor(self, wf: str) -> str:
+        """중기예보 날씨 문자열을 KOR_TO_CONDITION 키에 맞는 한글로 정규화합니다."""
         wf = str(wf)
-        if "비" in wf: return "rainy"
-        if "구름많음" in wf: return "partlycloudy"
-        if "흐림" in wf: return "cloudy"
-        return "sunny"
+        if "비" in wf:      return "비"
+        if "눈" in wf:      return "눈"
+        if "구름많음" in wf: return "구름많음"
+        if "흐림" in wf:    return "흐림"
+        return "맑음"
+
+    def _translate_mid_condition(self, wf):
+        """하위 호환성 유지용 — 내부적으로 kor_to_condition 을 경유합니다."""
+        return self.kor_to_condition(self._translate_mid_condition_kor(wf))
 
     def _get_condition(self, s, p):
-        p, s = str(p or "0"), str(s or "1")
-        if p in ["1", "2", "4", "5", "6"]: return "rainy"
-        if p in ["3", "7"]: return "snowy"
-        return {"1": "sunny", "3": "partlycloudy", "4": "cloudy"}.get(s, "sunny")
+        """하위 호환성 유지용 — kor_to_condition 을 경유합니다."""
+        return self.kor_to_condition(self._get_sky_kor(s, p))
 
     def _get_sky_kor(self, sky, pty):
         p, s = str(pty or "0"), str(sky or "1")
