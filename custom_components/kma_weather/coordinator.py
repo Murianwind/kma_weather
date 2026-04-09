@@ -9,9 +9,7 @@ from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid
 
 _LOGGER = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# 기상청 중기예보 기온 구역코드 (getMidTa) 좌표 테이블
-# ---------------------------------------------------------------------------
+# --- 중기예보 구역코드 좌표 테이블 (기존 기능 유지) ---
 _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {
     "11A00101": (37.96, 124.71), "11B10101": (37.56, 126.98), "11B10102": (37.43, 126.99),
     "11B10103": (37.48, 126.87), "11B20101": (37.74, 126.49), "11B20102": (37.61, 126.71),
@@ -112,11 +110,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(hours=1))
         self.entry = entry
+        # [수정] hass를 키워드 인자로 전달하여 API 객체 생성
         self.api = KMAWeatherAPI(
             session=async_get_clientsession(hass),
             api_key=entry.data.get(CONF_API_KEY),
             reg_id_temp=None,
             reg_id_land=None,
+            hass=hass,
         )
         self._last_lat = self._last_lon = None
         self._last_reg_temp = self._last_reg_land = None
@@ -150,11 +150,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         # 00시 데이터 부재 시 fallback (가장 가까운 미래 데이터)
         if not today_temps and forecast_map:
-            first_date = sorted(forecast_map.keys())[0]
-            first_time = sorted(forecast_map[first_date].keys())[0]
-            if (val := forecast_map[first_date][first_time].get("TMP")) is not None:
-                try: today_temps.append(float(val))
-                except: pass
+            for d_key in sorted(forecast_map.keys()):
+                for t_key in sorted(forecast_map[d_key].keys()):
+                    if (val := forecast_map[d_key][t_key].get("TMP")) is not None:
+                        try: today_temps.append(float(val)); break
+                        except: pass
+                if today_temps: break
 
         if not today_temps: return
 
@@ -211,6 +212,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         state = self.hass.states.get(entity_id) if entity_id else None
 
         if state:
+            # [수정] .get()을 사용하여 KeyError 방지
             lat_attr = state.attributes.get("latitude")
             lon_attr = state.attributes.get("longitude")
             if lat_attr is not None and lon_attr is not None:
