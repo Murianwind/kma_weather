@@ -17,11 +17,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          # [추가] pip 캐시 활성화
+          cache: 'pip'
+          # [추가] 어떤 파일이 변했을 때 캐시를 새로 만들지 지정
+          cache-dependency-path: 'custom_components/kma_weather/manifest.json'
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
+          # 기존 설치 명령어 유지
           pip install pytest pytest-homeassistant-custom-component pytest-asyncio pytest-freezegun
-          pip install -r custom_components/kma_weather/manifest.json | jq -r '.requirements[]' # 의존성 자동 설치
+          # jq를 사용하여 manifest.json의 requirements 설치
+          pip install $(jq -r '.requirements[]' custom_components/kma_weather/manifest.json)
 
       - name: Run Pytest
         run: |
