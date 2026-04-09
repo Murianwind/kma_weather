@@ -1,5 +1,3 @@
-# tests/test_coordinator_location.py
-
 import pytest
 from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
 
@@ -32,7 +30,9 @@ class MockEntry:
 class DummyCoordinator(KMAWeatherUpdateCoordinator):
     def __init__(self, hass, entry):
         self.hass = hass
-        self.config_entry = entry
+        self.entry = entry  # [수정된 부분] config_entry 대신 entry로 일치시킴
+        self._last_lat = None
+        self._last_lon = None
         
     # 만약 coordinator.py 내부에 _is_valid_korean_coord가 있다면 그대로 사용되고,
     # 외부 모듈이나 별도 로직이라면 여기서 Mocking 처리할 수 있습니다.
@@ -47,6 +47,7 @@ async def test_resolve_location_with_valid_entity():
     """정상 좌표가 있는 경우 엔티티 좌표를 사용해야 한다."""
     state = MockState({"latitude": 37.5665, "longitude": 126.9780})
     hass = MockHass(state)
+    # 실제 const.py의 CONF_LOCATION_ENTITY 값("location_entity")에 맞게 키 설정
     entry = MockEntry({"location_entity": "zone.home"})
 
     coordinator = DummyCoordinator(hass, entry)
