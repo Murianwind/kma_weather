@@ -145,3 +145,29 @@ def test_location_move_logic_final_check(coordinator):
     # [검증] 만약 로직이 정상이라면 기존 12.0을 유지해야 함.
     # 만약 여기서 에러가 난다면, 로직이 B 지점의 최소값인 13.0으로 덮어씌우고 있다는 증거입니다.
     assert coordinator._daily_min_temp == 12.0
+
+def test_location_move_logic_error_reproduction(coordinator):
+    """
+    [문제 재현 테스트] 12도 기록이 있는 상태에서 13도 예보만 들어왔을 때, 
+    기존 12도가 무너지고 13도로 바뀌는지 확인합니다.
+    """
+    today = datetime.now(coordinator.api.tz).strftime("%Y%m%d")
+    
+    # STEP 1: A 지점 데이터 (최저 12도 기록 생성)
+    coordinator._update_daily_temperatures({today: {"0900": {"TMP": "12"}}})
+    assert coordinator._daily_min_temp == 12.0
+
+    # STEP 2: B 지점 데이터 (최저가 13도인 예보 뭉치)
+    # 실제 환경처럼 새로운 dict 객체로 전달합니다.
+    new_forecast_B = {
+        today: {
+            "1200": {"TMP": "13"},
+            "1500": {"TMP": "14"}
+        }
+    }
+    
+    coordinator._update_daily_temperatures(new_forecast_B)
+
+    # [검증] 여기서 만약 13.0이 나오면 사용자님이 겪으신 버그가 재현된 것입니다.
+    # 12.0이 유지되어야만 합격입니다.
+    assert coordinator._daily_min_temp == 12.0
