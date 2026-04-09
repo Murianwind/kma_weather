@@ -140,16 +140,16 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     async def _restore_daily_temps(self):
         """저장소에서 기온 및 날씨 요약 기록 복구."""
         if self._store_loaded: return
-        stored_data = await self._store.async_load()
-        if stored_data:
+        stored = await self._store.async_load()
+        if stored:
             now = datetime.now(self.api.tz)
-            if stored_data.get("date") == now.strftime("%Y%m%d"):
+            if stored.get("date") == now.strftime("%Y%m%d"):
                 try:
                     self._daily_date = now.date()
-                    self._daily_max_temp = float(stored_data.get("max"))
-                    self._daily_min_temp = float(stored_data.get("min"))
-                    self._wf_am_today = stored_data.get("wf_am")
-                    self._wf_pm_today = stored_data.get("wf_pm")
+                    self._daily_max_temp = float(stored.get("max"))
+                    self._daily_min_temp = float(stored.get("min"))
+                    self._wf_am_today = stored.get("wf_am")
+                    self._wf_pm_today = stored.get("wf_pm")
                     _LOGGER.info("✅ 저장소 복구: 최저 %.1f°, 오전(%s), 오후(%s)", 
                                  self._daily_min_temp, self._wf_am_today, self._wf_pm_today)
                 except (TypeError, ValueError):
