@@ -23,11 +23,23 @@ class KMAWeatherAPI:
         self.reg_id_land = reg_id_land
         self.tz = ZoneInfo("Asia/Seoul")
         self.lat = self.lon = self.nx = self.ny = None
-       
+        
         # 측정소 캐싱 정보
         self._cached_station = None
         self._cached_lat_lon = None
         self._station_cache_time = None
+
+    # [수정 1] HTTP 에러 검증 및 Bare Exception을 제거한 통합 헬퍼 메서드
+    async def _fetch(self, url, params, headers=None, timeout=15):
+        """공통 API 호출 및 에러 처리 헬퍼 메서드"""
+        try:
+            async with self.session.get(url, params=params, headers=headers, timeout=timeout) as response:
+                response.raise_for_status() # HTTP 4xx, 5xx 에러 발생 시 예외 발생
+                # aiohttp 내장 json() 파서를 사용하여 안전하게 파싱
+                return await response.json(content_type=None)
+        except Exception as err:
+            _LOGGER.error("API 호출 실패 (%s): %s", url, err)
+            return None
 
     async def fetch_data(self, lat, lon, nx, ny):
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
@@ -46,12 +58,21 @@ class KMAWeatherAPI:
         try:
             url = "https://nominatim.openstreetmap.org/reverse"
             params = {"format": "json", "lat": lat, "lon": lon, "zoom": 16}
-            async with self.session.get(url, params=params, headers={"User-Agent": "HA-KMA-Weather"}, timeout=5) as resp:
-                d = await resp.json()
+            
+            # [수정 2] Nominatim 정책에 맞춘 명확한 User-Agent 설정
+            headers = {"User-Agent": "kma_weather/1.0 (https://github.com/Murianwind/kma_weather)"}
+            
+            # 헬퍼 메서드 사용
+            d = await self._fetch(url, params=params, headers=headers, timeout=5)
+            
+            if d:
                 a = d.get("address", {})
                 parts = [a.get('city', a.get('province','')), a.get('borough', a.get('county','')), a.get('suburb', a.get('village', ''))]
                 return " ".join([p for p in parts if p]).strip()
-        except: return f"{lat:.4f}, {lon:.4f}"
+            
+            return f"{lat:.4f}, {lon:.4f}"
+        except Exception: 
+            return f"{lat:.4f}, {lon:.4f}"
 
     async def _get_air_quality(self):
         try:
@@ -79,14 +100,15 @@ class KMAWeatherAPI:
                 url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
                 params_st = {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
                 
-                async with self.session.get(url_st, params=params_st, timeout=10) as resp:
-                    st_json = json.loads(await resp.text())
+                # 헬퍼 메서드 사용
+                st_json = await self._fetch(url_st, params=params_st, timeout=10)
+                if not st_json:
+                    return {}
                 
                 items = st_json.get("response", {}).get("body", {}).get("items", [])
                 if not items:
                     return {}
                 
-                # API가 제공하는 가장 가까운(첫 번째) 측정소 선택
                 sn = items[0].get("stationName")
                 self._cached_station = sn
                 self._cached_lat_lon = (self.lat, self.lon)
@@ -95,8 +117,11 @@ class KMAWeatherAPI:
             # 4. 선택된 측정소의 실시간 대기질 데이터 조회
             url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
             params_data = {"serviceKey": self.api_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
-            async with self.session.get(url_data, params=params_data, timeout=10) as resp:
-                air_json = json.loads(await resp.text())
+            
+            # 헬퍼 메서드 사용
+            air_json = await self._fetch(url_data, params=params_data, timeout=10)
+            if not air_json:
+                return {"station": sn}
             
             ai_list = air_json.get("response", {}).get("body", {}).get("items", [])
             if not ai_list:
@@ -123,19 +148,20 @@ class KMAWeatherAPI:
         if adj.hour < 2: base_d = (adj - timedelta(days=1)).strftime("%Y%m%d")
         url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
         params = {"serviceKey": self.api_key, "dataType": "JSON", "base_date": base_d, "base_time": f"{base_h:02d}00", "nx": self.nx, "ny": self.ny, "numOfRows": 1000}
-        try:
-            async with self.session.get(url, params=params, timeout=15) as r: return json.loads(await r.text())
-        except: return None
+        
+        # 헬퍼 메서드 사용
+        return await self._fetch(url, params=params, timeout=15)
 
     async def _get_mid_term(self, now):
         base = (now if now.hour >= 18 else (now if now.hour >= 6 else now - timedelta(days=1))).strftime("%Y%m%d") + ("0600" if 6 <= now.hour < 18 else "1800")
-        async def fetch(u, p):
-            try:
-                async with self.session.get(u, params=p, timeout=15) as r: return json.loads(await r.text())
-            except: return None
         url_ta = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
         url_land = "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
-        return await asyncio.gather(fetch(url_ta, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}), fetch(url_land, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base}))
+        
+        # 헬퍼 메서드 사용
+        return await asyncio.gather(
+            self._fetch(url_ta, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}, timeout=15),
+            self._fetch(url_land, {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base}, timeout=15)
+        )
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
         try:
