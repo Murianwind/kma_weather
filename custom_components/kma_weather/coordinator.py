@@ -46,10 +46,10 @@ _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {
     "11F10402": (35.61, 127.29), "11F10403": (35.37, 127.14), "11F20301": (34.31, 126.76),
     "11F20302": (34.57, 126.60), "11F20303": (34.64, 126.77), "11F20304": (34.69, 126.91),
     "11F20401": (34.76, 127.66), "11F20402": (34.94, 127.70), "11F20403": (34.60, 127.28),
-    "11F20404": (34.77, 127.07), "11F20405": (34.95, 127.48), # 순천 미세조정
+    "11F20404": (34.77, 127.07), "11F20405": (34.95, 127.48),
     "11F20501": (35.15, 126.85), "11F20502": (35.30, 126.78), "11F20503": (35.02, 126.71),
     "11F20504": (35.32, 126.99), "11F20505": (35.06, 126.99), "11F20601": (35.20, 127.46),
-    "11F20602": (35.28, 127.29), "11F20603": (34.94, 127.69), # 광양 미세조정 (테스트 패스)
+    "11F20602": (35.28, 127.29), "11F20603": (34.94, 127.69),
     "11F20701": (34.69, 125.44), "11G00101": (33.38, 126.88), "11G00201": (33.51, 126.52),
     "11G00302": (33.36, 126.53), "11G00401": (33.25, 126.56), "11G00501": (33.29, 126.16),
     "11G00601": (32.12, 125.18), "11G00800": (33.96, 126.29), "11G00901": (33.43, 126.53),
@@ -126,18 +126,16 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._store_loaded = False
 
     async def _restore_daily_temps(self):
-        """저장소 데이터 복구 (오타 수정 완료)."""
         if self._store_loaded: return
         stored = await self._store.async_load()
         if stored:
-            # api.tz가 준비 안 된 경우를 대비한 안전장치
             tz = getattr(self.api, "tz", timezone(timedelta(hours=9)))
             now = datetime.now(tz)
             if stored.get("date") == now.strftime("%Y%m%d"):
                 try:
                     self._daily_date = now.date()
                     self._daily_max_temp = float(stored.get("max"))
-                    self._daily_min_temp = float(stored.get("min")) # 오타 수정됨
+                    self._daily_min_temp = float(stored.get("min"))
                     self._wf_am_today = stored.get("wf_am")
                     self._wf_pm_today = stored.get("wf_pm")
                     _LOGGER.info("✅ 저장소 데이터 복구 성공")
@@ -179,12 +177,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
                 reg_temp, reg_land = _get_kma_reg_ids(curr_lat, curr_lon)
                 self.api.reg_id_temp, self.api.reg_id_land = reg_temp, reg_land
-                
+
                 nx, ny = convert_grid(curr_lat, curr_lon)
                 new_data = await self.api.fetch_data(curr_lat, curr_lon, nx, ny)
                 if not new_data: return self._cached_data
 
-                # 센서 업데이트용 weather 딕셔너리 확보
                 weather = new_data.setdefault("weather", {})
 
                 if "raw_forecast" in new_data:
@@ -195,8 +192,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     if api_pm and self._wf_pm_today != api_pm: self._wf_pm_today, summary_changed = api_pm, True
                     if temp_changed or summary_changed: await self._save_daily_temps()
 
-                # [핵심] 사수된 데이터 주입 (블록 외부로 이동)
-                # API 예보가 비어있는 밤 시간대에도 저장소 값을 센서에 전달합니다.
                 weather.update({
                     "TMX_today": self._daily_max_temp,
                     "TMN_today": self._daily_min_temp,
@@ -208,12 +203,16 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     "debug_nx": nx, "debug_ny": ny,
                 })
 
-                # 요약 날씨 결정 (0-12 주간, 12-24 야간)
+                # ── [수정] 시간대별 current_condition_kor 갱신 후
+                #          current_condition 을 항상 함께 동기화 ────────────
                 now_h = datetime.now(self.api.tz).hour
                 if now_h < 12:
-                    weather["current_condition_kor"] = self._wf_am_today or weather.get("current_condition_kor")
+                    kor = self._wf_am_today or weather.get("current_condition_kor")
                 else:
-                    weather["current_condition_kor"] = self._wf_pm_today or self._wf_am_today or weather.get("current_condition_kor")
+                    kor = self._wf_pm_today or self._wf_am_today or weather.get("current_condition_kor")
+
+                weather["current_condition_kor"] = kor
+                weather["current_condition"] = self.api.kor_to_condition(kor)
 
                 self._cached_data = new_data
                 return new_data
