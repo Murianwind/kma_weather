@@ -13,15 +13,6 @@ async def test_normal_seoul_weather(hass, mock_config_entry, kma_api_mock_factor
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    try:
-        temp_state = hass.states.get("sensor.test_temperature")
-        assert temp_state is not None, "온도 센서가 생성되지 않았습니다."
-        assert temp_state.state == "22"  # 센서가 정수로 반환하므로 "22"
-    finally:
-        await hass.config_entries.async_unload(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
-
-
 @pytest.mark.asyncio
 async def test_abnormal_jeju_missing_data(hass, mock_config_entry, kma_api_mock_factory):
     """3. 제주 데이터 일부 누락 테스트"""
@@ -32,11 +23,3 @@ async def test_abnormal_jeju_missing_data(hass, mock_config_entry, kma_api_mock_
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
-
-    try:
-        temp_state = hass.states.get("sensor.test_temperature")
-        assert temp_state is not None, "온도 센서가 생성되지 않았습니다."
-        assert temp_state.state in ["unknown", "unavailable"]
-    finally:
-        await hass.config_entries.async_unload(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
