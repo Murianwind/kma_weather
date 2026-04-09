@@ -116,3 +116,32 @@ def test_location_move_preserves_min_temp(coordinator):
     # 기존에 기록된 A 지점의 12도가 더 낮으므로 12도가 유지되어야 함.
     assert coordinator._daily_min_temp == 12.0  # 13.0으로 변하면 테스트 실패
     assert coordinator._daily_max_temp == 15.0  # 최고 기온은 B 지점의 15도로 갱신됨
+
+def test_location_move_logic_final_check(coordinator):
+    """
+    [결정적 테스트] 장소 이동 시 기존 기록이 새 예보에 의해 덮어씌워지는지 확인
+    시나리오: 12도 기록 보유 중 -> 최저값이 13도인 새 지역 데이터 수신 -> 12도 유지되어야 함
+    """
+    today = datetime.now(coordinator.api.tz).strftime("%Y%m%d")
+    
+    # STEP 1: A 지점에서 12도 데이터를 받음 (누적값 12도 생성)
+    coordinator._update_daily_temperatures({
+        today: {"0900": {"TMP": "12"}}
+    })
+    assert coordinator._daily_min_temp == 12.0
+
+    # STEP 2: B 지점으로 이동하여 새 데이터를 받음
+    # 이 데이터 뭉치 안에는 13, 14, 15도만 있음 (12도보다 높은 값들)
+    new_forecast_B = {
+        today: {
+            "1200": {"TMP": "13"},
+            "1500": {"TMP": "14"},
+            "1800": {"TMP": "15"}
+        }
+    }
+    
+    coordinator._update_daily_temperatures(new_forecast_B)
+
+    # [검증] 만약 로직이 정상이라면 기존 12.0을 유지해야 함.
+    # 만약 여기서 에러가 난다면, 로직이 B 지점의 최소값인 13.0으로 덮어씌우고 있다는 증거입니다.
+    assert coordinator._daily_min_temp == 12.0
