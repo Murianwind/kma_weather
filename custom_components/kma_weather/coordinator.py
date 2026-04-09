@@ -4,13 +4,13 @@ import math
 from datetime import datetime, timedelta, timezone
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.storage import Store  # [추가] 로컬 저장소 모듈
+from homeassistant.helpers.storage import Store
 from .api_kma import KMAWeatherAPI
 from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- 중기예보 구역코드 좌표 테이블 (생략 없이 원본 유지) ---
+# --- 중기예보 구역코드 좌표 테이블 ---
 _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {
     "11A00101": (37.96, 124.71), "11B10101": (37.56, 126.98), "11B10102": (37.43, 126.99),
     "11B10103": (37.48, 126.87), "11B20101": (37.74, 126.49), "11B20102": (37.61, 126.71),
@@ -128,11 +128,15 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._daily_max_temp = None
         self._daily_min_temp = None
 
+        # [핵심] 부팅 즉시 저장소 객체를 미리 생성하여 파일 주도권을 선점합니다.
+        target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
+        safe_file_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
+        store_key = f"{DOMAIN}_{safe_file_key}_daily_temp"
+        self._store = Store(hass, version=1, key=store_key)
+        self._store_loaded = False  # 복구 여부 플래그
+
     def _update_daily_temperatures(self, forecast_map: dict[str, dict[str, dict]]) -> bool:
-        """
-        오늘의 최고/최저 기온 누적 계산.
-        값이 변경(업데이트)되었으면 True를 반환합니다. (로컬 파일 저장을 위함)
-        """
+        """오늘의 최고/최저 기온 누적 계산 및 변경 여부 반환."""
         now = datetime.now(self.api.tz)
         today_str = now.strftime("%Y%m%d")
         today_date = now.date()
@@ -179,27 +183,25 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
             try:
-                # --- [추가] 1. 구성요소가 로드될 때 로컬 저장소(.storage)에서 기존 온도 복구 ---
-                if not hasattr(self, "_store_loaded"):
-                    # 메모장(Store) 생성 (엔티티 ID별로 독립된 파일 사용)
-                    self._store = Store(self.hass, version=1, key=f"{DOMAIN}_{self.entry.entry_id}_daily_temp")
+                # 1. 저장소에서 오늘 기온 기록 복구 (최초 1회 실행)
+                if not self._store_loaded:
                     stored_data = await self._store.async_load()
-                    
                     if stored_data:
                         now = datetime.now(self.api.tz)
-                        # 저장된 날짜가 '오늘'일 때만 복구 (어제 기록은 무시)
                         if stored_data.get("date") == now.strftime("%Y%m%d"):
                             self._daily_date = now.date()
                             self._daily_max_temp = stored_data.get("max")
                             self._daily_min_temp = stored_data.get("min")
-                            _LOGGER.debug("로컬 저장소에서 기온 복구 완료: min=%s, max=%s", self._daily_min_temp, self._daily_max_temp)
-                    
+                            _LOGGER.warning("✅ 저장소 복구 성공: 최저 %s도 사수 중!", self._daily_min_temp)
+                        else:
+                            _LOGGER.warning("날짜가 변경되어 저장소 데이터를 초기화합니다.")
+                    else:
+                        _LOGGER.warning("❌ 신규 저장소 파일을 생성합니다.")
                     self._store_loaded = True
-                # --------------------------------------------------------------------------------
 
                 curr_lat, curr_lon = self._resolve_location()
                 if curr_lat is None or curr_lon is None:
-                    _LOGGER.warning("유효한 위치 정보를 얻지 못했습니다. 캐시 데이터를 반환합니다.")
+                    _LOGGER.warning("위치를 확인할 수 없습니다. 이전 데이터를 반환합니다.")
                     return self._cached_data or {"weather": {}, "air": {}}
 
                 reg_temp, reg_land = _get_kma_reg_ids(curr_lat, curr_lon)
@@ -217,17 +219,16 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if new_data is None: return self._cached_data or {"weather": {}, "air": {}}
 
                 if "raw_forecast" in new_data:
-                    # 값이 갱신되었는지 확인 (True / False)
+                    # 기온 누적 업데이트 및 변경 여부 확인
                     changed = self._update_daily_temperatures(new_data["raw_forecast"])
                     
-                    # --- [추가] 2. 값이 갱신되었다면 로컬 저장소(.storage)에 조용히 저장 ---
-                    if changed and getattr(self, "_store", None):
+                    # 2. 변경된 내용이 있다면 즉시 저장소에 기록
+                    if changed:
                         await self._store.async_save({
                             "date": self._daily_date.strftime("%Y%m%d") if self._daily_date else None,
                             "min": self._daily_min_temp,
                             "max": self._daily_max_temp
                         })
-                    # ---------------------------------------------------------------------
 
                     weather = new_data.setdefault("weather", {})
                     weather["today_max"] = self._daily_max_temp
@@ -243,7 +244,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 return new_data
 
             except Exception as exc:
-                _LOGGER.warning("업데이트 중 오류 발생: %s", exc)
+                _LOGGER.error("업데이트 처리 중 치명적 오류 발생: %s", exc)
                 return self._cached_data or {"weather": {}, "air": {}}
 
     def _resolve_location(self) -> tuple:
