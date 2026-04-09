@@ -327,6 +327,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             api_key=entry.data.get(CONF_API_KEY),
             reg_id_temp=None,   # 하드코딩 제거 — 첫 업데이트 시 좌표로 결정
             reg_id_land=None,
+            hass=hass,
         )
         self._last_lat: float | None = None
         self._last_lon: float | None = None
