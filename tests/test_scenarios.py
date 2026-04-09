@@ -2,7 +2,11 @@ import pytest
 from unittest.mock import patch, AsyncMock
 from homeassistant.util import dt as dt_util
 from custom_components.kma_weather.const import DOMAIN
-from .conftest import MOCK_SCENARIOS
+try:
+    from tests.conftest import MOCK_SCENARIOS
+except ImportError:
+    # 로컬 실행 환경에 따라 임포트 경로가 달라질 수 있으므로 fallback 추가
+    from conftest import MOCK_SCENARIOS
 
 @pytest.mark.asyncio
 async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory, freezer):
