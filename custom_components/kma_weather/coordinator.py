@@ -319,67 +319,48 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             reg_id_temp=None,
             reg_id_land=None,
         )
-        self._last_lat = None
-        self._last_lon = None
-        self._last_reg_temp = None
-        self._last_reg_land = None
+        self._last_lat = self._last_lon = None
+        self._last_reg_temp = self._last_reg_land = None
         self._cached_data = None
         self._update_lock = asyncio.Lock()
         
-        # --- [추가] 일일 최고/최저 기온 누적 변수 ---
+        # [추가] 일일 누적 변수 초기화
         self._daily_date = None
         self._daily_max_temp = None
         self._daily_min_temp = None
 
     def _update_daily_temperatures(self, forecast_map):
-        """단기예보 forecast_map을 기반으로 오늘의 최고/최저 기온을 누적 계산한다."""
+        """오늘의 최고/최저 기온을 누적 계산 (00시 초기화 및 Fallback 포함)"""
         now = datetime.now(self.api.tz)
         today_str = now.strftime("%Y%m%d")
-        today_date = now.date()
-
-        # 1. 날짜 변경 시 초기화
-        if self._daily_date != today_date:
-            _LOGGER.debug("일일 최고/최저 기온 초기화 (기존: %s, 신규: %s)", self._daily_date, today_date)
-            self._daily_date = today_date
-            self._daily_max_temp = None
-            self._daily_min_temp = None
+        
+        if self._daily_date != now.date():
+            self._daily_date = now.date()
+            self._daily_max_temp = self._daily_min_temp = None
 
         today_temps = []
-
-        # 2. forecast_map에서 오늘의 온도(TMP)만 수집
         if today_str in forecast_map:
-            for time_slot in forecast_map[today_str].values():
-                val = time_slot.get("TMP")
-                try:
-                    if val is not None:
-                        today_temps.append(float(val))
-                except (ValueError, TypeError):
-                    continue
+            for slot in forecast_map[today_str].values():
+                if (val := slot.get("TMP")) is not None:
+                    try: today_temps.append(float(val))
+                    except: continue
 
-        # 3. 00시 예외 처리: 오늘 데이터가 없으면 전체 예보 중 첫 번째 값(가장 가까운 시각) 사용
-        if not today_temps:
-            for d_str in sorted(forecast_map.keys()):
-                for t_str in sorted(forecast_map[d_str].keys()):
-                    val = forecast_map[d_str][t_str].get("TMP")
-                    if val is not None:
-                        try:
-                            today_temps.append(float(val))
-                            break
-                        except: continue
-                if today_temps: break
+        if not today_temps and forecast_map:
+            # 00시 예외 처리: 오늘 예보가 없으면 가장 가까운 미래 시각 데이터 사용
+            first_date = sorted(forecast_map.keys())[0]
+            first_time = sorted(forecast_map[first_date].keys())[0]
+            if (val := forecast_map[first_date][first_time].get("TMP")) is not None:
+                try: today_temps.append(float(val))
+                except: pass
 
-        if not today_temps:
-            return
+        if not today_temps: return
 
-        current_period_min = min(today_temps)
-        current_period_max = max(today_temps)
-
-        # 4. 누적 업데이트 (최고는 더 높을 때만, 최저는 더 낮을 때만)
-        if self._daily_min_temp is None or current_period_min < self._daily_min_temp:
-            self._daily_min_temp = current_period_min
-
-        if self._daily_max_temp is None or current_period_max > self._daily_max_temp:
-            self._daily_max_temp = current_period_max
+        new_min, new_max = min(today_temps), max(today_temps)
+        
+        if self._daily_min_temp is None or new_min < self._daily_min_temp:
+            self._daily_min_temp = new_min
+        if self._daily_max_temp is None or new_max > self._daily_max_temp:
+            self._daily_max_temp = new_max
 
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
@@ -402,37 +383,17 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 nx, ny = convert_grid(curr_lat, curr_lon)
                 new_data = await self.api.fetch_data(curr_lat, curr_lon, nx, ny)
 
-                if new_data is None:
-                    return self._cached_data or {"weather": {}, "air": {}}
+                if new_data and "raw_forecast" in new_data:
+                    # [수정] 최고/최저 기온 누적 계산 및 데이터 주입
+                    self._update_daily_temperatures(new_data["raw_forecast"])
+                    new_data["weather"]["today_max"] = self._daily_max_temp
+                    new_data["weather"]["today_min"] = self._daily_min_temp
 
-                # --- [핵심 추가] 일일 최고/최저 기온 계산 및 데이터 반영 ---
-                # api.fetch_data가 반환한 raw forecast_map을 찾기 위해 api 내부 로직을 활용하거나 
-                # merge_all 과정에서 계산된 값을 coordinator에 보관합니다.
+                # [수정] 마지막 업데이트 시간 기록
+                new_data["weather"]["last_updated"] = datetime.now(timezone.utc)
                 
-                # api_kma.py의 _merge_all 결과에 포함된 forecast_map을 사용하여 업데이트
-                # (api_kma.py에서 merge_all 호출 시 forecast_map을 coordinator가 인지하게 함)
-                # 실제로는 api_kma의 merge_all 로직에서 추출된 데이터를 사용합니다.
-                weather = new_data.get("weather", {})
-                
-                # api.fetch_data 과정에서 생성된 forecast_map을 사용하여 누적값 갱신
-                # 기존 api_kma.py 소스코드에 맞춰 forecast_map을 처리하는 함수를 호출
-                if hasattr(self.api, "_last_forecast_map"):
-                    self._update_daily_temperatures(self.api._last_forecast_map)
-
-                # 계산된 누적 값을 최종 데이터에 주입
-                weather["today_max"] = self._daily_max_temp
-                weather["today_min"] = self._daily_min_temp
-                # --- [추가 끝] ---
-
-                weather.update({
-                    "last_updated": datetime.now(timezone.utc),
-                    "debug_nx": nx, "debug_ny": ny,
-                    "debug_lat": round(curr_lat, 5), "debug_lon": round(curr_lon, 5),
-                    "debug_reg_id_temp": reg_temp, "debug_reg_id_land": reg_land,
-                })
                 self._cached_data = new_data
                 return new_data
-
             except Exception as exc:
                 _LOGGER.warning("업데이트 중 오류 발생: %s", exc)
                 return self._cached_data or {"weather": {}, "air": {}}
