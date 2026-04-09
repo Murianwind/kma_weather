@@ -8,7 +8,6 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# SENSOR_TYPES에 적절한 SensorDeviceClass 추가
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -75,16 +74,14 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         w, a = data.get("weather", {}), data.get("air", {})
         val = w.get(self._type) if self._type in w else a.get(self._type)
 
-        # [수정] 값이 "-"인 경우 None(unknown) 반환하여 시스템 보호
-        if val == "-":
+        if val in [None, "-", ""]:
             return None
 
-        # 수치형 변환 로직 보강
-        if val is not None and self._attr_native_unit_of_measurement is not None:
+        if self._attr_native_unit_of_measurement is not None:
             try:
                 return int(float(val))
             except (ValueError, TypeError):
-                # 변환 불가능한 값은 None으로 반환하여 unknown 유도
+                # 수치 변환 실패 시 None을 반환하여 unknown 상태가 되도록 보장
                 return None
         return val
 
@@ -94,10 +91,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             w = self.coordinator.data.get("weather", {})
             a = self.coordinator.data.get("air", {})
             return {
-                "short_term_nx": w.get('debug_nx'), 
-                "short_term_ny": w.get('debug_ny'),
-                "mid_term_temp_id": w.get("debug_reg_id_temp"),
-                "mid_term_land_id": w.get("debug_reg_id_land"),
                 "air_korea_station": a.get("station"),
                 "latitude": w.get("debug_lat"),
                 "longitude": w.get("debug_lon")
