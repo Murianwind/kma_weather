@@ -393,7 +393,7 @@ class KMAWeatherAPI:
         weather_data["apparent_temp"] = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
         weather_data["current_condition_kor"] = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data["current_condition"] = self._get_condition(weather_data.get("SKY"), weather_data.get("PTY"))
-        return {"weather": weather_data, "air": air_data or {}}
+        return {"weather": weather_data, "air": air_data or {}, "raw_forecast": forecast_map}
 
     def _translate_mid_condition(self, wf):
         wf = str(wf)
