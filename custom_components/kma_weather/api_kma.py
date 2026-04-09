@@ -1,7 +1,6 @@
 import logging
 import asyncio
 import math
-import json
 import aiohttp
 from datetime import datetime, timedelta
 from urllib.parse import unquote
