@@ -215,8 +215,18 @@ class KMAWeatherAPI:
             curr_h = f"{now.hour:02d}00"
             if today_str in forecast_map:
                 available_times = sorted(forecast_map[today_str].keys())
-                best_time = curr_h if curr_h in available_times else (available_times[0] if available_times else None)
+                best_time = None
+
+                # 1. 현재 시각 이후(포함) 중 가장 빠른 시간 탐색
+                future_times = [t for t in available_times if t >= curr_h]
+                if future_times:
+                    best_time = future_times[0]
+                elif available_times:
+                    # 2. 미래 예보가 없으면(자정 직전 등) 가장 최근 과거 데이터 사용
+                    best_time = available_times[-1]
+
                 if best_time:
+                    _LOGGER.debug("현재 날씨 데이터 슬롯 선택: %s (현재 시각: %s)", best_time, curr_h)
                     weather_data.update(forecast_map[today_str][best_time])
 
             days_ko = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
