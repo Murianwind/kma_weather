@@ -1,0 +1,28 @@
+name: Pytest Automation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-homeassistant-custom-component pytest-asyncio pytest-freezegun
+          pip install -r custom_components/kma_weather/manifest.json | jq -r '.requirements[]' # 의존성 자동 설치
+
+      - name: Run Pytest
+        run: |
+          pytest tests/
