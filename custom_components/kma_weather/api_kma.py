@@ -2,34 +2,61 @@ import logging
 import asyncio
 import math
 import aiohttp
+import hashlib
 from datetime import datetime, timedelta
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
 _LOGGER = logging.getLogger(__name__)
 
+
 def _safe_float(v):
     try:
-        if v == "" or v is None or v == "-": return None
+        if v == "" or v is None or v == "-":
+            return None
         return float(v)
     except (TypeError, ValueError):
         return None
 
+
 class KMAWeatherAPI:
-    def __init__(self, session, api_key, reg_id_temp, reg_id_land):
+    def __init__(self, session, api_key, reg_id_temp, reg_id_land, hass=None):
         self.session = session
         self.api_key = unquote(api_key)
         self.reg_id_temp = reg_id_temp
         self.reg_id_land = reg_id_land
+        self.hass = hass
         self.tz = ZoneInfo("Asia/Seoul")
         self.lat = self.lon = self.nx = self.ny = None
-        
+
         # 측정소 캐싱 정보
         self._cached_station = None
         self._cached_lat_lon = None
         self._station_cache_time = None
 
-    # [수정 1] HTTP 에러 검증 및 Bare Exception을 제거한 통합 헬퍼 메서드
+        # Nominatim User-Agent 생성
+        self._nominatim_user_agent = self._build_nominatim_user_agent()
+
+    def _build_nominatim_user_agent(self):
+        """Nominatim 정책을 준수하는 고유한 User-Agent 생성"""
+        base = "HomeAssistant-KMA-Weather"
+
+        # Home Assistant 고유 ID 사용
+        if self.hass:
+            try:
+                uuid = getattr(self.hass, "installation_uuid", None)
+                if uuid:
+                    return f"{base}/{uuid.replace('-', '')[:12]}"
+            except Exception:
+                pass
+
+        # 폴백: API 키 해시 사용
+        try:
+            hashed = hashlib.sha1(self.api_key.encode()).hexdigest()[:12]
+            return f"{base}/{hashed}"
+        except Exception:
+            return base
+
     async def _fetch(self, url, params, headers=None, timeout=15):
         """세분화된 예외 처리를 적용한 API 호출 헬퍼"""
         try:
@@ -38,9 +65,13 @@ class KMAWeatherAPI:
             ) as response:
                 response.raise_for_status()
                 return await response.json(content_type=None)
-        
+
         except asyncio.TimeoutError:
-            _LOGGER.error("API 타임아웃 (%s): 응답 시간이 %s초를 초과했습니다.", url, timeout)
+            _LOGGER.error(
+                "API 타임아웃 (%s): 응답 시간이 %s초를 초과했습니다.",
+                url,
+                timeout,
+            )
         except aiohttp.ClientError as err:
             _LOGGER.error("HTTP/연결 오류 (%s): %s", url, err)
         except ValueError as err:
@@ -56,30 +87,44 @@ class KMAWeatherAPI:
             self._get_short_term(now),
             self._get_mid_term(now),
             self._get_air_quality(),
-            self._get_address(lat, lon)
+            self._get_address(lat, lon),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        short_res, mid_res, air_data, address = [r if not isinstance(r, Exception) else None for r in results]
+        short_res, mid_res, air_data, address = [
+            r if not isinstance(r, Exception) else None for r in results
+        ]
         return self._merge_all(now, short_res, mid_res, air_data, address)
 
     async def _get_address(self, lat, lon):
         try:
             url = "https://nominatim.openstreetmap.org/reverse"
-            params = {"format": "json", "lat": lat, "lon": lon, "zoom": 16}
-            
-            # [수정 2] Nominatim 정책에 맞춘 명확한 User-Agent 설정
-            headers = {"User-Agent": f"HomeAssistant-KMA-Weather-{self.api_key[:8]}", "Accept-Language": "ko"}
-            
-            # 헬퍼 메서드 사용
-            d = await self._fetch(url, params=params, headers=headers, timeout=5)
-            
+            params = {
+                "format": "json",
+                "lat": lat,
+                "lon": lon,
+                "zoom": 16,
+            }
+
+            headers = {
+                "User-Agent": self._nominatim_user_agent,
+                "Accept-Language": "ko",
+            }
+
+            d = await self._fetch(
+                url, params=params, headers=headers, timeout=5
+            )
+
             if d:
                 a = d.get("address", {})
-                parts = [a.get('city', a.get('province','')), a.get('borough', a.get('county','')), a.get('suburb', a.get('village', ''))]
+                parts = [
+                    a.get("city", a.get("province", "")),
+                    a.get("borough", a.get("county", "")),
+                    a.get("suburb", a.get("village", "")),
+                ]
                 return " ".join([p for p in parts if p]).strip()
-            
+
             return f"{lat:.4f}, {lon:.4f}"
-        except Exception: 
+        except Exception:
             return f"{lat:.4f}, {lon:.4f}"
 
     async def _get_air_quality(self):
@@ -87,14 +132,15 @@ class KMAWeatherAPI:
             now = datetime.now(self.tz)
             sn = None
 
-            # 1. 위치 변화 체크 (좌표가 약 1km 이상 변했는지 확인)
             loc_changed = True
             if self._cached_lat_lon:
-                dist = math.sqrt((self.lat - self._cached_lat_lon[0])**2 + (self.lon - self._cached_lat_lon[1])**2)
-                if dist < 0.01:  # 약 1.1km 미만 이동 시
+                dist = math.sqrt(
+                    (self.lat - self._cached_lat_lon[0]) ** 2
+                    + (self.lon - self._cached_lat_lon[1]) ** 2
+                )
+                if dist < 0.01:
                     loc_changed = False
 
-            # 2. 캐시 유효성 확인 (10분 이내 + 위치 고정)
             if (
                 self._cached_station
                 and self._station_cache_time
@@ -103,52 +149,76 @@ class KMAWeatherAPI:
             ):
                 sn = self._cached_station
             else:
-                # 3. 새로운 측정소 조회
                 tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
                 url_st = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList"
-                params_st = {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"}
-                
-                # 헬퍼 메서드 사용
-                st_json = await self._fetch(url_st, params=params_st, timeout=10)
+                params_st = {
+                    "serviceKey": self.api_key,
+                    "returnType": "json",
+                    "tmX": f"{tm_x:.2f}",
+                    "tmY": f"{tm_y:.2f}",
+                }
+
+                st_json = await self._fetch(
+                    url_st, params=params_st, timeout=10
+                )
                 if not st_json:
                     return {}
-                
-                items = st_json.get("response", {}).get("body", {}).get("items", [])
+
+                items = (
+                    st_json.get("response", {})
+                    .get("body", {})
+                    .get("items", [])
+                )
                 if not items:
                     return {}
-                
+
                 sn = items[0].get("stationName")
                 self._cached_station = sn
                 self._cached_lat_lon = (self.lat, self.lon)
                 self._station_cache_time = now
 
-            # 4. 선택된 측정소의 실시간 대기질 데이터 조회
             url_data = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
-            params_data = {"serviceKey": self.api_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"}
-            
-            # 헬퍼 메서드 사용
-            air_json = await self._fetch(url_data, params=params_data, timeout=10)
+            params_data = {
+                "serviceKey": self.api_key,
+                "returnType": "json",
+                "stationName": sn,
+                "dataTerm": "daily",
+                "ver": "1.3",
+            }
+
+            air_json = await self._fetch(
+                url_data, params=params_data, timeout=10
+            )
             if not air_json:
                 return {"station": sn}
-            
-            ai_list = air_json.get("response", {}).get("body", {}).get("items", [])
+
+            ai_list = (
+                air_json.get("response", {})
+                .get("body", {})
+                .get("items", [])
+            )
             if not ai_list:
                 return {"station": sn}
-            
+
             ai = ai_list[0]
             return {
                 "pm10Value": ai.get("pm10Value"),
                 "pm10Grade": self._translate_grade(ai.get("pm10Grade")),
                 "pm25Value": ai.get("pm25Value"),
                 "pm25Grade": self._translate_grade(ai.get("pm25Grade")),
-                "station": sn
+                "station": sn,
             }
         except Exception as e:
             _LOGGER.error(f"Air quality fetch error: {e}")
             return {}
 
     def _translate_grade(self, g):
-        return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
+        return {
+            "1": "좋음",
+            "2": "보통",
+            "3": "나쁨",
+            "4": "매우나쁨",
+        }.get(str(g), "정보없음")
 
     async def _get_short_term(self, now):
         adj = now - timedelta(minutes=10)
