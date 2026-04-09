@@ -221,13 +221,35 @@ class KMAWeatherAPI:
         }.get(str(g), "정보없음")
 
     async def _get_short_term(self, now):
+        """단기예보(VilageFcst) API 호출 로직 수정"""
+        # 발표 시간(0210, 0510...) 대비 10분 여유
         adj = now - timedelta(minutes=10)
-        base_d, base_h = adj.strftime("%Y%m%d"), max([h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= adj.hour], default=23)
-        if adj.hour < 2: base_d = (adj - timedelta(days=1)).strftime("%Y%m%d")
-        url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
-        params = {"serviceKey": self.api_key, "dataType": "JSON", "base_date": base_d, "base_time": f"{base_h:02d}00", "nx": self.nx, "ny": self.ny, "numOfRows": 1000}
+        hour = adj.hour
         
-        # 헬퍼 메서드 사용
+        base_hours = [2, 5, 8, 11, 14, 17, 20, 23]
+        valid_hours = [h for h in base_hours if h <= hour]
+        
+        if valid_hours:
+            base_h = max(valid_hours)
+            base_d = adj.strftime("%Y%m%d")
+        else:
+            # 00:00~02:10 사이는 전날 23시 발표분 사용
+            base_h = 23
+            base_d = (adj - timedelta(days=1)).strftime("%Y%m%d")
+        
+        _LOGGER.debug("단기예보 호출: base_date=%s, base_time=%02d00", base_d, base_h)
+        
+        url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
+        params = {
+            "serviceKey": self.api_key,
+            "dataType": "JSON",
+            "base_date": base_d,
+            "base_time": f"{base_h:02d}00",
+            "nx": self.nx,
+            "ny": self.ny,
+            "numOfRows": 1500,  # 데이터 잘림 방지를 위해 1500으로 상향
+            "pageNo": 1,
+        }
         return await self._fetch(url, params=params, timeout=15)
 
     async def _get_mid_term(self, now):
