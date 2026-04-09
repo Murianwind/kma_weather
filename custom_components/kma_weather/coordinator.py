@@ -128,12 +128,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._daily_max_temp = None
         self._daily_min_temp = None
 
-        # [핵심] 부팅 즉시 저장소 객체를 미리 생성하여 파일 주도권을 선점합니다.
+        # [핵심] 부팅 즉시 저장소 객체 선점
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
         safe_file_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
         store_key = f"{DOMAIN}_{safe_file_key}_daily_temp"
         self._store = Store(hass, version=1, key=store_key)
-        self._store_loaded = False  # 복구 여부 플래그
+        self._store_loaded = False 
 
     def _update_daily_temperatures(self, forecast_map: dict[str, dict[str, dict]]) -> bool:
         """오늘의 최고/최저 기온 누적 계산 및 변경 여부 반환."""
@@ -143,6 +143,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         curr_h = f"{now.hour:02d}00"
         changed = False
 
+        # 날짜가 바뀌면 초기화
         if self._daily_date != today_date:
             self._daily_date = today_date
             self._daily_max_temp = None
@@ -152,11 +153,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         today_temps = []
         if today_str in forecast_map:
             for t_str, slot in forecast_map[today_str].items():
+                # [수정] 현재 시간 이후의 데이터만 추출
                 if t_str >= curr_h:
                     if (val := slot.get("TMP")) is not None:
                         try: today_temps.append(float(val))
                         except (TypeError, ValueError): continue
 
+        # 데이터가 없을 때의 폴백(가장 가까운 예보)
         if not today_temps and forecast_map:
             for d_key in sorted(forecast_map.keys()):
                 for t_key in sorted(forecast_map[d_key].keys()):
@@ -167,23 +170,36 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         if not today_temps: return changed
 
+        # [핵심 로직 보강] 
+        # 새로 가져온 예보의 최소/최대값
         new_min_from_api = min(today_temps)
         new_max_from_api = max(today_temps)
 
-        if self._daily_min_temp is None or new_min_from_api < self._daily_min_temp:
+        # 기존 기록이 없다면 API 값을 그대로 수용
+        if self._daily_min_temp is None:
             self._daily_min_temp = new_min_from_api
             changed = True
+        else:
+            # [중요] 기존 기록보다 더 낮은 온도가 발견되었을 때만 갱신 (13도는 12도보다 크므로 무시됨)
+            if new_min_from_api < self._daily_min_temp:
+                self._daily_min_temp = new_min_from_api
+                changed = True
 
-        if self._daily_max_temp is None or new_max_from_api > self._daily_max_temp:
+        if self._daily_max_temp is None:
             self._daily_max_temp = new_max_from_api
             changed = True
+        else:
+            # 기존 기록보다 더 높은 온도가 발견되었을 때만 갱신
+            if new_max_from_api > self._daily_max_temp:
+                self._daily_max_temp = new_max_from_api
+                changed = True
 
         return changed
 
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
             try:
-                # 1. 저장소에서 오늘 기온 기록 복구 (최초 1회 실행)
+                # 1. 저장소에서 오늘 기온 기록 복구 (최우선 순위)
                 if not self._store_loaded:
                     stored_data = await self._store.async_load()
                     if stored_data:
@@ -219,10 +235,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if new_data is None: return self._cached_data or {"weather": {}, "air": {}}
 
                 if "raw_forecast" in new_data:
-                    # 기온 누적 업데이트 및 변경 여부 확인
+                    # 복구된 값이 있는 상태에서 예보와 비교 분석
                     changed = self._update_daily_temperatures(new_data["raw_forecast"])
                     
-                    # 2. 변경된 내용이 있다면 즉시 저장소에 기록
+                    # 2. 정말로 값이 변했을 때만(더 낮아지거나 높아졌을 때만) 저장
                     if changed:
                         await self._store.async_save({
                             "date": self._daily_date.strftime("%Y%m%d") if self._daily_date else None,
