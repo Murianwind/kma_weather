@@ -60,7 +60,7 @@ class KMAWeatherAPI:
             params = {"format": "json", "lat": lat, "lon": lon, "zoom": 16}
             
             # [수정 2] Nominatim 정책에 맞춘 명확한 User-Agent 설정
-            headers = {"User-Agent": "kma_weather/1.0 (https://github.com/Murianwind/kma_weather)"}
+            headers = {"User-Agent": f"HomeAssistant-KMA-Weather-{self.api_key[:8]}", "Accept-Language": "ko"}
             
             # 헬퍼 메서드 사용
             d = await self._fetch(url, params=params, headers=headers, timeout=5)
