@@ -8,6 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
+# 모든 센서 타입 정의 (총 23종)
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -40,6 +41,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(entities)
 
 class KMACustomSensor(CoordinatorEntity, SensorEntity):
+    """기상청 커스텀 센서 엔티티 클래스"""
     _attr_has_entity_name = True
 
     def __init__(self, coordinator, sensor_type, entry):
@@ -65,32 +67,51 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
+        """센서의 현재 상태값 반환"""
+        # API 잔여일수 계산 (별도 로직)
         if self._type == "api_expire":
             exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
-            try: return (date.fromisoformat(exp) - date.today()).days
-            except: return None
+            try:
+                return (date.fromisoformat(exp) - date.today()).days
+            except (ValueError, TypeError):
+                return None
         
         data = self.coordinator.data or {}
-        w, a = data.get("weather", {}), data.get("air", {})
+        w = data.get("weather", {})
+        a = data.get("air", {})
+        
+        # 날씨 데이터와 대기 질 데이터에서 값 조회
         val = w.get(self._type) if self._type in w else a.get(self._type)
 
+        # 1. 데이터가 없거나 기상청의 누락 데이터 기호('-')인 경우 None 반환
+        # Home Assistant에서 native_value가 None이면 상태는 'unknown'이 됨
         if val in [None, "-", ""]:
             return None
 
+        # 2. 수치형 데이터 처리 (단위가 정의된 센서인 경우)
         if self._attr_native_unit_of_measurement is not None:
             try:
+                # float으로 먼저 변환 후 int 처리 (예: "22.0" -> 22)
                 return int(float(val))
             except (ValueError, TypeError):
-                # 수치 변환 실패 시 None을 반환하여 unknown 상태가 되도록 보장
+                # 수치 변환 실패 시(예: "문자열") None을 반환하여 센서를 보호
+                _LOGGER.debug("수치 변환 실패: 엔티티 %s, 값 %s", self.entity_id, val)
                 return None
+        
+        # 3. 단위가 없는 문자형 데이터(풍향, 날씨 상태 등)는 그대로 반환
         return val
 
     @property
     def extra_state_attributes(self):
+        """센서의 추가 속성 반환"""
         if self._type == "address":
             w = self.coordinator.data.get("weather", {})
             a = self.coordinator.data.get("air", {})
             return {
+                "short_term_nx": w.get('debug_nx'), 
+                "short_term_ny": w.get('debug_ny'),
+                "mid_term_temp_id": w.get("debug_reg_id_temp"),
+                "mid_term_land_id": w.get("debug_reg_id_land"),
                 "air_korea_station": a.get("station"),
                 "latitude": w.get("debug_lat"),
                 "longitude": w.get("debug_lon")
