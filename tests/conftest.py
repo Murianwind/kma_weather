@@ -44,18 +44,27 @@ MOCK_SCENARIOS = {
     # [시나리오 1~6용] 모든 데이터가 완벽한 상태
     "full_test": {
         "weather": {
-            "TMP": "22.5", "REH": "45", "WSD": "2.1", "VEC": "150", 
-            "POP": "10", "PTY": "0", "SKY": "1",
-            "TMX_today": "25", "TMN_today": "15",
+            "TMP": 22.5, "REH": 45, "WSD": 2.1, 
+            "VEC": 150, 
+            "VEC_KOR": "남동",              # [추가] 풍향 센서가 참조하는 키
+            "POP": 10, "PTY": 0, "SKY": 1,
+            "current_condition_kor": "맑음", # [추가] 현재날씨 센서가 참조하는 키
+            "current_condition": "sunny",   # [추가] weather 엔티티가 참조하는 키
+            "TMX_today": 25, "TMN_today": 15,
             "wf_am_today": "맑음", "wf_pm_today": "구름많음",
-            "TMX_tomorrow": "26", "TMN_tomorrow": "16",
+            "TMX_tomorrow": 26, "TMN_tomorrow": 16,
             "wf_am_tomorrow": "흐림", "wf_pm_tomorrow": "맑음",
-            "apparent_temp": "23.4", "rain_start_time": "강수없음",
+            "apparent_temp": 23.4, 
+            "rain_start_time": "강수없음",
             "address": "경기도 화성시", "현재 위치": "경기도 화성시",
             "forecast_daily": daily_list,
             "forecast_twice_daily": twice_daily_list,
         },
-        "air": {"station": "화성", "pm10": "35", "pm25": "15", "pm10Grade": "1", "pm25Grade": "1"}
+        "air": {
+            "station": "화성", 
+            "pm10Value": 35, "pm10Grade": "좋음", # [수정] pm10 -> pm10Value, pm10Grade
+            "pm25Value": 15, "pm25Grade": "좋음"  # [수정] pm25 -> pm25Value, pm25Grade
+        }
     },
     # [시나리오 2] 부산 (비 상황)
     "busan_rain": {
