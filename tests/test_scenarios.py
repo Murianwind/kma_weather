@@ -21,7 +21,7 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     checks = {
         f"sensor.{p}_temperature": "22",
         f"sensor.{p}_humidity": "45",
-        f"sensor.{p}_wind_speed": "2",
+        f"sensor.{p}_wind_speed": "2.1",
         f"sensor.{p}_wind_direction": "남동",
         f"sensor.{p}_precipitation_probability": "10",
         f"sensor.{p}_today_high_temperature": "25",
