@@ -30,19 +30,19 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
 
     # --- 시나리오 1. 개별 센서 검증 ---
-    # 온도 센서 확인
+    # 온도 센서 확인 (Mock 데이터: TMP="22")
     state = hass.states.get(f"sensor.{p}_temperature")
     assert state.state == "22"
     assert state.attributes.get("unit_of_measurement") == "°C"
     assert state.attributes.get("device_class") == "temperature"
 
-    # 습도 센서 확인 (AssertionError: 60 -> 45 수정 반영)
-    # Mock 데이터의 REH 값이 45인 경우를 대비해 실제 값에 맞게 검증합니다.
+    # 습도 센서 확인 (Mock 데이터: REH="45")
     state_reh = hass.states.get(f"sensor.{p}_humidity")
-    assert state_reh.state in ["45", "60"] 
+    assert state_reh.state == "45" 
 
-    # 풍속 및 강수확률
-    assert hass.states.get(f"sensor.{p}_wind_speed").state == "3"
+    # 풍속 및 강수확률 (Mock 데이터: WSD="7", POP="10")
+    # [수정] 풍속 기댓값을 '3'에서 '7'로 변경했습니다.
+    assert hass.states.get(f"sensor.{p}_wind_speed").state == "7"
     assert hass.states.get(f"sensor.{p}_precipitation_prob").state == "10"
 
     # --- 시나리오 2. 예보 10일치 검증 ---
@@ -54,11 +54,10 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     forecast = response[f"weather.{p}_weather"]["forecast"]
     assert len(forecast) >= 10
     
-    # 첫 번째 예보 아이템 상세 체크 (KeyError 방지 로직 적용)
+    # 첫 번째 예보 아이템 상세 체크
     f0 = forecast[0]
     assert "temperature" in f0
     assert f0["temperature"] is not None
-    # templow가 없을 수 있는 시나리오에 대비
     if "templow" in f0:
         assert f0["templow"] is not None
     assert f0["condition"] is not None
@@ -75,6 +74,7 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     assert hass.states.get(f"sensor.{p}_pm10_grade").state == "보통"
 
     # --- 시나리오 4. 체감온도 및 추가 속성 검증 ---
+    # Mock 데이터: apparent_temp="23"
     assert hass.states.get(f"sensor.{p}_apparent_temperature").state == "23"
     
     # 위치 진단 센서의 속성 확인
@@ -82,7 +82,7 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     assert loc_state.attributes.get("air_korea_station") == "종로구"
 
     # --- 시나리오 5 & 6. 현재 위치 출력 및 변경 시 갱신 ---
-    # 5. 초기 위치 확인 (경기도 화성시)
+    # 5. 초기 위치 확인 (Mock 데이터: address="경기도 화성시")
     assert hass.states.get(f"sensor.{p}_location").state == "경기도 화성시"
 
     # 6. 위치 변경 시뮬레이션 (부산광역시)
@@ -110,7 +110,7 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         assert hass.states.get(f"sensor.{p}_location").state == "부산광역시"
 
     # --- 시나리오 7 & 8. 데이터 누락 및 복원 ---
-    # 7. 데이터 누락 상황 주입 (일부 필드가 unknown이 되어야 함)
+    # 7. 데이터 누락 상황 주입 (jeju_missing 시나리오)
     kma_api_mock_factory("jeju_missing")
     await coordinator.async_refresh()
     await hass.async_block_till_done()
@@ -123,7 +123,6 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     assert hass.states.get(f"sensor.{p}_temperature").state == "22"
 
     # --- 시나리오 10. 모든 센서 안정성(Fault Tolerance) 전수 검사 ---
-    # "기상청에서 '-' 데이터를 보내도 모든 센서가 unavailable이 되지 않고 unknown이 되는가?"
     from custom_components.kma_weather.sensor import SENSOR_TYPES
 
     polluted_data = {
@@ -146,9 +145,9 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
             state = hass.states.get(entity_id)
             
             if state:
-                # 핵심 요구사항 1: 절대 unavailable이 되어서는 안 됨
+                # 핵심 요구사항: 절대 unavailable이 되어서는 안 됨
                 assert state.state != "unavailable", f"센서 {entity_id}가 unavailable 상태입니다!"
-                # 핵심 요구사항 2: 쓰레기 데이터("-")는 unknown 처리되어야 함
+                # 핵심 요구사항: 쓰레기 데이터("-")는 unknown 처리되어야 함
                 assert state.state == "unknown", f"센서 {entity_id}가 unknown이 아닌 {state.state}입니다."
 
     # --- 시나리오 11. 가비지 데이터(Garbage) 주입 시 강건성 검증 ---
@@ -168,11 +167,8 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
             entity_id = f"sensor.{p}_{details[4]}"
             state = hass.states.get(entity_id)
             if state:
-                # 단위가 지정된 센서(수치형)는 문자열 처리 실패 시 unknown이 되어야 함
                 if details[1] is not None:
                     assert state.state == "unknown", f"수치형 센서 {entity_id}가 가비지 데이터를 처리하지 못했습니다."
-                
-                # 어떤 경우에도 엔티티 자체가 죽으면 안 됨
                 assert state.state != "unavailable"
 
     # 테스트 종료 및 언로드
