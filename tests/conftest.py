@@ -88,8 +88,7 @@ def kma_api_mock_factory():
 
 @pytest.fixture(autouse=True)
 async def shutdown_executor(hass):
-    """테스트 후 HA executor를 명시적으로 종료해 잔여 스레드 방지"""
+    """테스트 후 HA를 완전히 종료해 잔여 스레드 방지"""
     yield
-    # executor 종료를 기다림
-    if hass.loop and not hass.loop.is_closed():
-        await hass.loop.shutdown_default_executor()
+    await hass.async_stop(force=True)
+    await hass.async_block_till_done()
