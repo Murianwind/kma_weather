@@ -128,43 +128,55 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._daily_max_temp = None
         self._daily_min_temp = None
 
-    def _update_daily_temperatures(self, forecast_map):
-        """오늘의 최고/최저 기온 누적 계산 및 리셋 로직"""
+    def _update_daily_temperatures(self, forecast_map: dict[str, dict[str, dict]]) -> None:
+        """오늘의 최고/최저 기온을 누적 계산 (권장 사항 반영 버전)"""
         now = datetime.now(self.api.tz)
         today_str = now.strftime("%Y%m%d")
         today_date = now.date()
 
-        # 날짜 변경 시 초기화
+        # 1. 날짜 변경 시 초기화
         if self._daily_date != today_date:
             self._daily_date = today_date
             self._daily_max_temp = None
             self._daily_min_temp = None
-            _LOGGER.debug("날짜 변경으로 인한 최고/최저 기온 초기화: %s", today_date)
+            _LOGGER.debug("날짜 변경으로 최고/최저 기온 초기화: %s", today_date)
 
         today_temps = []
         if today_str in forecast_map:
             for slot in forecast_map[today_str].values():
                 if (val := slot.get("TMP")) is not None:
-                    try: today_temps.append(float(val))
-                    except: continue
+                    try:
+                        today_temps.append(float(val))
+                    except (TypeError, ValueError): # 예외 처리 구체화
+                        continue
 
-        # 00시 데이터 부재 시 fallback (가장 가까운 미래 데이터)
+        # 2. 00시 데이터 부재 시 fallback (가장 가까운 미래 데이터)
         if not today_temps and forecast_map:
             for d_key in sorted(forecast_map.keys()):
                 for t_key in sorted(forecast_map[d_key].keys()):
                     if (val := forecast_map[d_key][t_key].get("TMP")) is not None:
-                        try: today_temps.append(float(val)); break
-                        except: pass
+                        try:
+                            today_temps.append(float(val))
+                            break
+                        except (TypeError, ValueError):
+                            continue
                 if today_temps: break
 
-        if not today_temps: return
+        if not today_temps:
+            return
 
         new_min, new_max = min(today_temps), max(today_temps)
         
+        # 3. 누적 업데이트 로직
         if self._daily_min_temp is None or new_min < self._daily_min_temp:
             self._daily_min_temp = new_min
         if self._daily_max_temp is None or new_max > self._daily_max_temp:
             self._daily_max_temp = new_max
+            
+        _LOGGER.debug(
+            "오늘 기온 누적 현황: min=%s, max=%s (기준 시각: %s)",
+            self._daily_min_temp, self._daily_max_temp, now
+        )
 
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
@@ -189,8 +201,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if new_data is None: return self._cached_data or {"weather": {}, "air": {}}
 
                 # 일일 최고/최저 기온 계산 및 데이터 주입
-                if "raw_forecast" in new_data:
+                
+                if new_data and "raw_forecast" in new_data:
                     self._update_daily_temperatures(new_data["raw_forecast"])
+                    weather = new_data.setdefault("weather", {})
                     new_data["weather"]["today_max"] = self._daily_max_temp
                     new_data["weather"]["today_min"] = self._daily_min_temp
 
