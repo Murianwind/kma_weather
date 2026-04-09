@@ -10,7 +10,7 @@ except ImportError:
 
 @pytest.mark.asyncio
 async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory, freezer):
-    """8가지 통합 시나리오 테스트"""
+    """모든 통합 시나리오 테스트 (1~8번 유지 + 10~11번 추가)"""
     
     # 기본 좌표 설정
     hass.config.latitude = 37.56
@@ -23,10 +23,12 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     await hass.async_block_till_done()
 
     p = "test"
+    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
 
     # --- 시나리오 1. 개별 센서 검증 ---
     state = hass.states.get(f"sensor.{p}_temperature")
     assert state.state == "22"
+    assert state.attributes.get("unit_of_measurement") == "°C"
 
     # --- 시나리오 2. 예보 10일치 검증 ---
     response = await hass.services.async_call(
@@ -36,18 +38,24 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     )
     forecast = response[f"weather.{p}_weather"]["forecast"]
     assert len(forecast) >= 10
+    assert forecast[0]["temperature"] is not None
+    assert forecast[0]["templow"] is not None
+
+    # --- 시나리오 3 & 4. 미세먼지 센서 및 아이콘 검증 ---
+    pm10 = hass.states.get(f"sensor.{p}_pm10")
+    assert pm10.state == "35"
+    assert pm10.attributes.get("icon") == "mdi:blur"
+    
+    pm25 = hass.states.get(f"sensor.{p}_pm25")
+    assert pm25.state == "20"
 
     # --- 시나리오 5 & 6. 현재 위치 출력 및 변경 시 갱신 ---
-    # 5. 초기 위치 확인
+    # 5. 초기 위치 확인 (경기도 화성시)
     assert hass.states.get(f"sensor.{p}_location").state == "경기도 화성시"
 
     # 6. 위치 변경 시뮬레이션
-    # [수정] 단순히 _get_address만 패치하는 대신, 
-    # 위치가 부산으로 바뀐 상황의 새로운 Mock 데이터를 팩토리를 통해 주입합니다.
-    
-    # conftest.py에 정의된 부산 시나리오를 사용하거나 직접 Mocking
     with patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data", new_callable=AsyncMock) as mock_fetch:
-        # 부산 데이터 모방 (주소가 부산광역시인 데이터 반환)
+        # 부산 데이터 모방
         busan_data = MOCK_SCENARIOS["full_test"].copy()
         busan_data["weather"] = busan_data["weather"].copy()
         busan_data["weather"]["address"] = "부산광역시"
@@ -62,8 +70,7 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         )
         await hass.async_block_till_done()
 
-        # 코디네이터 리프레시 강제 실행 (이때 위에서 만든 mock_fetch가 실행됨)
-        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+        # 코디네이터 리프레시 강제 실행
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
@@ -79,32 +86,51 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     await coordinator.async_refresh()
     assert hass.states.get(f"sensor.{p}_temperature").state == "22"
 
-    await hass.config_entries.async_unload(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    # --- 시나리오 10. 모든 센서에 대한 안정성(Fault Tolerance) 전수 검사 ---
+    # 어떤 경우에도 unavailable이 되지 않고 unknown이 되는지 모든 센서 타입 확인
+    from custom_components.kma_weather.sensor import SENSOR_TYPES
 
-# --- 시나리오 9. 기상청 특유의 "-" 데이터(누락) 처리 검증 ---
-    # 기상청 API는 데이터가 없을 때 "-"를 반환하는 경우가 있음. 
-    # 이 경우 Home Assistant 센서 상태가 'unknown'이 되는지 확인.
-    dash_data = MOCK_SCENARIOS["full_test"].copy()
-    dash_data["weather"] = dash_data["weather"].copy()
+    polluted_data = {
+        "weather": {key: "-" for key in SENSOR_TYPES},
+        "air": {key: "-" for key in SENSOR_TYPES}
+    }
     
-    # 테스트할 주요 필드들에 "-" 주입
-    dash_data["weather"]["TMP"] = "-"  # 숫자형 (온도)
-    dash_data["weather"]["REH"] = "-"  # 숫자형 (습도)
-    dash_data["weather"]["current_condition_kor"] = "-"  # 문자형 (상태)
-    
-    with patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data", new_callable=AsyncMock) as mock_dash:
-        mock_dash.return_value = dash_data
+    with patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data", new_callable=AsyncMock) as mock_polluted:
+        mock_polluted.return_value = polluted_data
         
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-        # 1. 숫자형 센서 (int(float("-")) 에서 ValueError 발생 시 원본 "-" 반환 -> HA에서 숫자가 아니면 unknown 처리)
-        # sensor.py의 native_value 로직에 따라 "-"가 반환되지만, 
-        # State 객체로 변환될 때 숫자가 아니므로 유효성 검사 등에 의해 unknown으로 간주될 수 있음.
-        state_tmp = hass.states.get(f"sensor.{p}_temperature")
-        assert state_tmp.state in ["unknown", "unavailable", "-"] 
-        
-        # 2. 문자형 센서
-        state_cond = hass.states.get(f"sensor.{p}_condition")
-        assert state_cond.state == "-"
+        for sensor_type, details in SENSOR_TYPES.items():
+            entity_id = f"sensor.{p}_{details[4]}"
+            state = hass.states.get(entity_id)
+            
+            if state:
+                # 핵심 요구사항: 어떤 경우에도 unavailable이 되어서는 안 됨
+                assert state.state != "unavailable", f"센서 {entity_id}가 unavailable 상태입니다!"
+                # 예기치 않은 데이터("-")이므로 unknown 상태여야 함
+                assert state.state == "unknown", f"센서 {entity_id}가 unknown이 아닌 {state.state}입니다."
+
+    # --- 시나리오 11. 완전히 잘못된 문자열(Garbage) 주입 시 검증 ---
+    garbage_data = {
+        "weather": {key: "InvalidData" for key in SENSOR_TYPES},
+        "air": {key: "InvalidData" for key in SENSOR_TYPES}
+    }
+    with patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data", new_callable=AsyncMock) as mock_garbage:
+        mock_garbage.return_value = garbage_data
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        for sensor_type, details in SENSOR_TYPES.items():
+            entity_id = f"sensor.{p}_{details[4]}"
+            state = hass.states.get(entity_id)
+            if state:
+                # 수치형 센서(단위가 있는 센서)는 unknown이어야 함
+                if details[1] is not None:
+                    assert state.state == "unknown", f"{entity_id} 센서가 unknown이 아닙니다."
+                # 어떤 상황에서도 unavailable은 금지
+                assert state.state != "unavailable"
+
+    # 최종 정리 및 언로드
+    await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
