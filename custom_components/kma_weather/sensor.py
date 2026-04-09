@@ -8,28 +8,29 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
+# [수정] 4번째 인자를 명확하게 SensorDeviceClass로 정의
 SENSOR_TYPES = {
-    "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", None, "temperature", None],
-    "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", None, "humidity", None],
-    "WSD": ["현재풍속", UnitOfSpeed.METERS_PER_SECOND, "mdi:weather-windy", None, "wind_speed", None],
+    "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
+    "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
+    "WSD": ["현재풍속", UnitOfSpeed.METERS_PER_SECOND, "mdi:weather-windy", SensorDeviceClass.WIND_SPEED, "wind_speed", None],
     "VEC_KOR": ["현재풍향", None, "mdi:compass", None, "wind_direction", None],
     "POP": ["강수확률", PERCENTAGE, "mdi:umbrella-outline", None, "precipitation_prob", None],
-    "apparent_temp": ["체감온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-lines", None, "apparent_temperature", None],
+    "apparent_temp": ["체감온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-lines", SensorDeviceClass.TEMPERATURE, "apparent_temperature", None],
     "rain_start_time": ["비시작시간", None, "mdi:clock-outline", None, "rain_start", None],
     "current_condition_kor": ["현재날씨", None, "mdi:weather-cloudy", None, "condition", None],
-    "pm10Value": ["미세먼지 농도", "㎍/㎥", "mdi:blur", None, "pm10", None],
+    "pm10Value": ["미세먼지 농도", "㎍/㎥", "mdi:blur", SensorDeviceClass.PM10, "pm10", None],
     "pm10Grade": ["미세먼지 등급", None, "mdi:check-circle-outline", None, "pm10_grade", None],
-    "pm25Value": ["초미세먼지 농도", "㎍/㎥", "mdi:blur-linear", None, "pm25", None],
+    "pm25Value": ["초미세먼지 농도", "㎍/㎥", "mdi:blur-linear", SensorDeviceClass.PM25, "pm25", None],
     "pm25Grade": ["초미세먼지 등급", None, "mdi:check-circle-outline", None, "pm25_grade", None],
     "address": ["현재 위치", None, "mdi:map-marker", None, "location", EntityCategory.DIAGNOSTIC],
     "last_updated": ["업데이트 시간", None, "mdi:update", SensorDeviceClass.TIMESTAMP, "last_updated", EntityCategory.DIAGNOSTIC],
     "api_expire": ["API 잔여일수", "일", "mdi:key-alert", None, "api_expire", EntityCategory.DIAGNOSTIC],
-    "TMX_today": ["오늘최고온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-up", None, "today_temp_max", None],
-    "TMN_today": ["오늘최저온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", None, "today_temp_min", None],
+    "TMX_today": ["오늘최고온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-up", SensorDeviceClass.TEMPERATURE, "today_temp_max", None],
+    "TMN_today": ["오늘최저온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", SensorDeviceClass.TEMPERATURE, "today_temp_min", None],
     "wf_am_today": ["오늘오전날씨", None, "mdi:weather-partly-cloudy", None, "today_condition_am", None],
     "wf_pm_today": ["오늘오후날씨", None, "mdi:weather-cloudy", None, "today_condition_pm", None],
-    "TMX_tomorrow": ["내일최고온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-up", None, "tomorrow_temp_max", None],
-    "TMN_tomorrow": ["내일최저온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", None, "tomorrow_temp_min", None],
+    "TMX_tomorrow": ["내일최고온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-up", SensorDeviceClass.TEMPERATURE, "tomorrow_temp_max", None],
+    "TMN_tomorrow": ["내일최저온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", SensorDeviceClass.TEMPERATURE, "tomorrow_temp_min", None],
     "wf_am_tomorrow": ["내일오전날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_condition_am", None],
     "wf_pm_tomorrow": ["내일오후날씨", None, "mdi:weather-cloudy", None, "tomorrow_condition_pm", None],
 }
@@ -53,7 +54,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = details[0]
         self._attr_native_unit_of_measurement = details[1]
         self._attr_icon = details[2]
-        self._attr_device_class = details[3]
+        self._attr_device_class = details[3]  # SensorDeviceClass 할당
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
         self._attr_entity_category = details[5]
         self._attr_device_info = DeviceInfo(
@@ -82,7 +83,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 return int(float(val))
             except (ValueError, TypeError):
                 return None
-        
         return val
 
     @property
@@ -91,10 +91,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             w = self.coordinator.data.get("weather", {})
             a = self.coordinator.data.get("air", {})
             return {
-                "short_term_nx": w.get('debug_nx'), 
-                "short_term_ny": w.get('debug_ny'),
-                "mid_term_temp_id": w.get("debug_reg_id_temp"),
-                "mid_term_land_id": w.get("debug_reg_id_land"),
                 "air_korea_station": a.get("station"),
                 "latitude": w.get("debug_lat"),
                 "longitude": w.get("debug_lon")
