@@ -4,12 +4,13 @@ import math
 from datetime import datetime, timedelta, timezone
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store  # [추가] 로컬 저장소 모듈
 from .api_kma import KMAWeatherAPI
 from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- 중기예보 구역코드 좌표 테이블 (기존 기능 유지) ---
+# --- 중기예보 구역코드 좌표 테이블 (생략 없이 원본 유지) ---
 _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {
     "11A00101": (37.96, 124.71), "11B10101": (37.56, 126.98), "11B10102": (37.43, 126.99),
     "11B10103": (37.48, 126.87), "11B20101": (37.74, 126.49), "11B20102": (37.61, 126.71),
@@ -110,7 +111,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(hours=1))
         self.entry = entry
-        # [수정] hass를 키워드 인자로 전달하여 API 객체 생성
         self.api = KMAWeatherAPI(
             session=async_get_clientsession(hass),
             api_key=entry.data.get(CONF_API_KEY),
@@ -128,59 +128,75 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._daily_max_temp = None
         self._daily_min_temp = None
 
-    def _update_daily_temperatures(self, forecast_map: dict[str, dict[str, dict]]) -> None:
-        """오늘의 최고/최저 기온을 누적 계산 (권장 사항 반영 버전)"""
+    def _update_daily_temperatures(self, forecast_map: dict[str, dict[str, dict]]) -> bool:
+        """
+        오늘의 최고/최저 기온 누적 계산.
+        값이 변경(업데이트)되었으면 True를 반환합니다. (로컬 파일 저장을 위함)
+        """
         now = datetime.now(self.api.tz)
         today_str = now.strftime("%Y%m%d")
         today_date = now.date()
+        curr_h = f"{now.hour:02d}00"
+        changed = False
 
-        # 1. 날짜 변경 시 초기화
         if self._daily_date != today_date:
             self._daily_date = today_date
             self._daily_max_temp = None
             self._daily_min_temp = None
-            _LOGGER.debug("날짜 변경으로 최고/최저 기온 초기화: %s", today_date)
+            changed = True
 
         today_temps = []
         if today_str in forecast_map:
-            for slot in forecast_map[today_str].values():
-                if (val := slot.get("TMP")) is not None:
-                    try:
-                        today_temps.append(float(val))
-                    except (TypeError, ValueError): # 예외 처리 구체화
-                        continue
+            for t_str, slot in forecast_map[today_str].items():
+                if t_str >= curr_h:
+                    if (val := slot.get("TMP")) is not None:
+                        try: today_temps.append(float(val))
+                        except (TypeError, ValueError): continue
 
-        # 2. 00시 데이터 부재 시 fallback (가장 가까운 미래 데이터)
         if not today_temps and forecast_map:
             for d_key in sorted(forecast_map.keys()):
                 for t_key in sorted(forecast_map[d_key].keys()):
                     if (val := forecast_map[d_key][t_key].get("TMP")) is not None:
-                        try:
-                            today_temps.append(float(val))
-                            break
-                        except (TypeError, ValueError):
-                            continue
+                        try: today_temps.append(float(val)); break
+                        except (TypeError, ValueError): continue
                 if today_temps: break
 
-        if not today_temps:
-            return
+        if not today_temps: return changed
 
-        new_min, new_max = min(today_temps), max(today_temps)
-        
-        # 3. 누적 업데이트 로직
-        if self._daily_min_temp is None or new_min < self._daily_min_temp:
-            self._daily_min_temp = new_min
-        if self._daily_max_temp is None or new_max > self._daily_max_temp:
-            self._daily_max_temp = new_max
-            
-        _LOGGER.debug(
-            "오늘 기온 누적 현황: min=%s, max=%s (기준 시각: %s)",
-            self._daily_min_temp, self._daily_max_temp, now
-        )
+        new_min_from_api = min(today_temps)
+        new_max_from_api = max(today_temps)
+
+        if self._daily_min_temp is None or new_min_from_api < self._daily_min_temp:
+            self._daily_min_temp = new_min_from_api
+            changed = True
+
+        if self._daily_max_temp is None or new_max_from_api > self._daily_max_temp:
+            self._daily_max_temp = new_max_from_api
+            changed = True
+
+        return changed
 
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
             try:
+                # --- [추가] 1. 구성요소가 로드될 때 로컬 저장소(.storage)에서 기존 온도 복구 ---
+                if not hasattr(self, "_store_loaded"):
+                    # 메모장(Store) 생성 (엔티티 ID별로 독립된 파일 사용)
+                    self._store = Store(self.hass, version=1, key=f"{DOMAIN}_{self.entry.entry_id}_daily_temp")
+                    stored_data = await self._store.async_load()
+                    
+                    if stored_data:
+                        now = datetime.now(self.api.tz)
+                        # 저장된 날짜가 '오늘'일 때만 복구 (어제 기록은 무시)
+                        if stored_data.get("date") == now.strftime("%Y%m%d"):
+                            self._daily_date = now.date()
+                            self._daily_max_temp = stored_data.get("max")
+                            self._daily_min_temp = stored_data.get("min")
+                            _LOGGER.debug("로컬 저장소에서 기온 복구 완료: min=%s, max=%s", self._daily_min_temp, self._daily_max_temp)
+                    
+                    self._store_loaded = True
+                # --------------------------------------------------------------------------------
+
                 curr_lat, curr_lon = self._resolve_location()
                 if curr_lat is None or curr_lon is None:
                     _LOGGER.warning("유효한 위치 정보를 얻지 못했습니다. 캐시 데이터를 반환합니다.")
@@ -200,13 +216,22 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
                 if new_data is None: return self._cached_data or {"weather": {}, "air": {}}
 
-                # 일일 최고/최저 기온 계산 및 데이터 주입
-                
-                if new_data and "raw_forecast" in new_data:
-                    self._update_daily_temperatures(new_data["raw_forecast"])
+                if "raw_forecast" in new_data:
+                    # 값이 갱신되었는지 확인 (True / False)
+                    changed = self._update_daily_temperatures(new_data["raw_forecast"])
+                    
+                    # --- [추가] 2. 값이 갱신되었다면 로컬 저장소(.storage)에 조용히 저장 ---
+                    if changed and getattr(self, "_store", None):
+                        await self._store.async_save({
+                            "date": self._daily_date.strftime("%Y%m%d") if self._daily_date else None,
+                            "min": self._daily_min_temp,
+                            "max": self._daily_max_temp
+                        })
+                    # ---------------------------------------------------------------------
+
                     weather = new_data.setdefault("weather", {})
-                    new_data["weather"]["today_max"] = self._daily_max_temp
-                    new_data["weather"]["today_min"] = self._daily_min_temp
+                    weather["today_max"] = self._daily_max_temp
+                    weather["today_min"] = self._daily_min_temp
 
                 new_data["weather"].update({
                     "last_updated": datetime.now(timezone.utc),
@@ -226,7 +251,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         state = self.hass.states.get(entity_id) if entity_id else None
 
         if state:
-            # [수정] .get()을 사용하여 KeyError 방지
             lat_attr = state.attributes.get("latitude")
             lon_attr = state.attributes.get("longitude")
             if lat_attr is not None and lon_attr is not None:
