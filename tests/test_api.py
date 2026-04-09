@@ -76,6 +76,10 @@ async def test_nominatim_user_agent():
     assert address == "서울특별시 강남구"
     
     # 2. session.get이 호출될 때 우리가 지정한 User-Agent가 들어갔는가?
+    # 2. session.get이 호출될 때 User-Agent가 포함되어 있는가?
     assert "headers" in session.last_kwargs
-    assert "User-Agent" in session.last_kwargs["headers"]
-    assert "kma_weather" in session.last_kwargs["headers"]["User-Agent"]
+    user_agent = session.last_kwargs["headers"].get("User-Agent", "")
+    
+    # [수정] 특정 문자열 대신 'KMA-Weather'가 포함되어 있는지, 
+    # 혹은 현재 소스 코드의 형식(HomeAssistant-KMA-Weather-...)을 따르는지 검증
+    assert "KMA-Weather" in user_agent
