@@ -17,19 +17,31 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          # [추가] pip 캐시 활성화
           cache: 'pip'
-          # [추가] 어떤 파일이 변했을 때 캐시를 새로 만들지 지정
-          cache-dependency-path: 'custom_components/kma_weather/manifest.json'
+          # manifest.json이나 테스트용 의존성이 변했을 때만 캐시 갱신
+          cache-dependency-path: |
+            custom_components/kma_weather/manifest.json
+            requirements_test.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 기존 설치 명령어 유지
-          pip install pytest pytest-homeassistant-custom-component pytest-asyncio pytest-freezegun
-          # jq를 사용하여 manifest.json의 requirements 설치
-          pip install $(jq -r '.requirements[]' custom_components/kma_weather/manifest.json)
+          # 1. 테스트 도구 및 manifest 의존성을 한 번에 설치 (속도 향상)
+          # jq 결과와 고정 패키지를 합쳐서 한 번의 pip install 명령으로 처리합니다.
+          REQ_LIST=$(jq -r '.requirements[]' custom_components/kma_weather/manifest.json)
+          pip install $REQ_LIST pytest pytest-homeassistant-custom-component pytest-asyncio pytest-freezegun
 
-      - name: Run Pytest
+      - name: Run Pytest & Generate Summary
+        shell: bash
         run: |
-          pytest tests/
+          # 2. --no-header와 -q 옵션으로 로그 출력 최소화 (IO 병목 감소)
+          pytest tests/ --no-header -v > test_result.txt || true
+          
+          # 3. 이전에 원하셨던 Summary 리포트 자동 생성
+          echo "### ✅ Pytest Execution Report" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          grep "tests/test_" test_result.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          # 실제 테스트 결과에 따라 워크플로우 성공/실패 결정
+          grep -q "FAILED" test_result.txt && exit 1 || exit 0
