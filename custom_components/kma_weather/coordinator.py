@@ -10,7 +10,7 @@ from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- 중기예보 구역코드 좌표 테이블 ---
+# --- 중기예보 구역코드 좌표 테이블 (기존 원본 유지) ---
 _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {
     "11A00101": (37.96, 124.71), "11B10101": (37.56, 126.98), "11B10102": (37.43, 126.99),
     "11B10103": (37.48, 126.87), "11B20101": (37.74, 126.49), "11B20102": (37.61, 126.71),
@@ -83,11 +83,11 @@ _LAND_CODE_MAP: list[tuple[str, str]] = [
 ]
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    R = 6371.0
+    r = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
     a = (math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
-    return R * 2 * math.asin(math.sqrt(a))
+    return r * 2 * math.asin(math.sqrt(a))
 
 def _land_code(temp_id: str) -> str:
     for prefix, land in sorted(_LAND_CODE_MAP, key=lambda x: len(x[0]), reverse=True):
@@ -122,25 +122,50 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._last_reg_temp = self._last_reg_land = None
         self._cached_data = None
         self._update_lock = asyncio.Lock()
-        
+
         # 일일 누적 변수
         self._daily_date = None
         self._daily_max_temp = None
         self._daily_min_temp = None
 
-        # [핵심] 부팅 즉시 저장소 객체 선점
+        # [핵심] 저장소 객체 초기화
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
-        safe_file_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
-        store_key = f"{DOMAIN}_{safe_file_key}_daily_temp"
+        safe_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
+        store_key = f"{DOMAIN}_{safe_key}_daily_temp"
         self._store = Store(hass, version=1, key=store_key)
-        self._store_loaded = False 
+        self._store_loaded = False
 
-    def _update_daily_temperatures(self, forecast_map: dict[str, dict[str, dict]]) -> bool:
-        """오늘의 최고/최저 기온 누적 계산 및 변경 여부 반환."""
+    async def _restore_daily_temps(self):
+        """저장소에서 기존 기온 기록 복구."""
+        if self._store_loaded: return
+        stored_data = await self._store.async_load()
+        if stored_data:
+            now = datetime.now(self.api.tz)
+            if stored_data.get("date") == now.strftime("%Y%m%d"):
+                try:
+                    self._daily_date = now.date()
+                    # 제안하신 float() 변환으로 타입 안정성 확보
+                    self._daily_max_temp = float(stored_data.get("max"))
+                    self._daily_min_temp = float(stored_data.get("min"))
+                    _LOGGER.info("✅ 저장소 복구 성공: 사수 중인 최저 %.1f°C", self._daily_min_temp)
+                except (TypeError, ValueError):
+                    _LOGGER.warning("저장소 데이터 형식이 잘못되어 초기화합니다.")
+        self._store_loaded = True
+
+    async def _save_daily_temps(self):
+        """변경된 기온 기록을 저장소에 파일로 기록."""
+        if self._daily_date:
+            await self._store.async_save({
+                "date": self._daily_date.strftime("%Y%m%d"),
+                "min": self._daily_min_temp,
+                "max": self._daily_max_temp
+            })
+
+    def _update_daily_temperatures(self, forecast_map: dict) -> bool:
+        """오늘의 최고/최저 기온 계산 (사수 로직)."""
         now = datetime.now(self.api.tz)
         today_str = now.strftime("%Y%m%d")
         today_date = now.date()
-        curr_h = f"{now.hour:02d}00"
         changed = False
 
         # 날짜가 바뀌면 초기화
@@ -150,80 +175,44 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             self._daily_min_temp = None
             changed = True
 
-        today_temps = []
+        temps = []
         if today_str in forecast_map:
-            for t_str, slot in forecast_map[today_str].items():
-                # [수정] 현재 시간 이후의 데이터만 추출
-                if t_str >= curr_h:
-                    if (val := slot.get("TMP")) is not None:
-                        try: today_temps.append(float(val))
-                        except (TypeError, ValueError): continue
+            for slot in forecast_map[today_str].values():
+                if (val := slot.get("TMP")) is not None:
+                    try: temps.append(float(val))
+                    except (TypeError, ValueError): continue
 
-        # 데이터가 없을 때의 폴백(가장 가까운 예보)
-        if not today_temps and forecast_map:
-            for d_key in sorted(forecast_map.keys()):
-                for t_key in sorted(forecast_map[d_key].keys()):
-                    if (val := forecast_map[d_key][t_key].get("TMP")) is not None:
-                        try: today_temps.append(float(val)); break
-                        except (TypeError, ValueError): continue
-                if today_temps: break
+        if not temps: return changed
 
-        if not today_temps: return changed
+        new_min_api = min(temps)
+        new_max_api = max(temps)
 
-        # [핵심 로직 보강] 
-        # 새로 가져온 예보의 최소/최대값
-        new_min_from_api = min(today_temps)
-        new_max_from_api = max(today_temps)
-
-        # 기존 기록이 없다면 API 값을 그대로 수용
-        if self._daily_min_temp is None:
-            self._daily_min_temp = new_min_from_api
+        # [핵심 방어] 기존 기록보다 더 낮은 온도가 나올 때만 최저 기온 갱신
+        if self._daily_min_temp is None or new_min_api < self._daily_min_temp:
+            self._daily_min_temp = new_min_api
             changed = True
-        else:
-            # [중요] 기존 기록보다 더 낮은 온도가 발견되었을 때만 갱신 (13도는 12도보다 크므로 무시됨)
-            if new_min_from_api < self._daily_min_temp:
-                self._daily_min_temp = new_min_from_api
-                changed = True
 
-        if self._daily_max_temp is None:
-            self._daily_max_temp = new_max_from_api
+        # [핵심 방어] 기존 기록보다 더 높은 온도가 나올 때만 최고 기온 갱신
+        if self._daily_max_temp is None or new_max_api > self._daily_max_temp:
+            self._daily_max_temp = new_max_api
             changed = True
-        else:
-            # 기존 기록보다 더 높은 온도가 발견되었을 때만 갱신
-            if new_max_from_api > self._daily_max_temp:
-                self._daily_max_temp = new_max_from_api
-                changed = True
 
         return changed
 
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
             try:
-                # 1. 저장소에서 오늘 기온 기록 복구 (최우선 순위)
-                if not self._store_loaded:
-                    stored_data = await self._store.async_load()
-                    if stored_data:
-                        now = datetime.now(self.api.tz)
-                        if stored_data.get("date") == now.strftime("%Y%m%d"):
-                            self._daily_date = now.date()
-                            self._daily_max_temp = stored_data.get("max")
-                            self._daily_min_temp = stored_data.get("min")
-                            _LOGGER.warning("✅ 저장소 복구 성공: 최저 %s도 사수 중!", self._daily_min_temp)
-                        else:
-                            _LOGGER.warning("날짜가 변경되어 저장소 데이터를 초기화합니다.")
-                    else:
-                        _LOGGER.warning("❌ 신규 저장소 파일을 생성합니다.")
-                    self._store_loaded = True
+                # 1. 부팅 직후라면 파일에서 기존 기록 읽어오기
+                await self._restore_daily_temps()
 
                 curr_lat, curr_lon = self._resolve_location()
                 if curr_lat is None or curr_lon is None:
-                    _LOGGER.warning("위치를 확인할 수 없습니다. 이전 데이터를 반환합니다.")
+                    _LOGGER.warning("위치를 확인할 수 없습니다.")
                     return self._cached_data or {"weather": {}, "air": {}}
 
                 reg_temp, reg_land = _get_kma_reg_ids(curr_lat, curr_lon)
                 if reg_temp is None:
-                    if self._last_reg_temp: reg_temp, reg_land = self._last_reg_temp, self._last_reg_land
-                    else: return self._cached_data or {"weather": {}, "air": {}}
+                    return self._cached_data or {"weather": {}, "air": {}}
 
                 self._last_lat, self._last_lon = curr_lat, curr_lon
                 self._last_reg_temp, self._last_reg_land = reg_temp, reg_land
@@ -235,32 +224,35 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if new_data is None: return self._cached_data or {"weather": {}, "air": {}}
 
                 if "raw_forecast" in new_data:
-                    # 복구된 값이 있는 상태에서 예보와 비교 분석
+                    # 2. 기온 사수 로직 실행
                     changed = self._update_daily_temperatures(new_data["raw_forecast"])
                     
-                    # 2. 정말로 값이 변했을 때만(더 낮아지거나 높아졌을 때만) 저장
+                    # 3. 새로운 기록이 생겼다면 파일에 저장
                     if changed:
-                        await self._store.async_save({
-                            "date": self._daily_date.strftime("%Y%m%d") if self._daily_date else None,
-                            "min": self._daily_min_temp,
-                            "max": self._daily_max_temp
-                        })
+                        await self._save_daily_temps()
 
                     weather = new_data.setdefault("weather", {})
+                    
+                    # [핵심 수정] 센서(`sensor.py`)가 사용하는 키에 사수된 값을 강제 할당
+                    weather["TMX_today"] = self._daily_max_temp
+                    weather["TMN_today"] = self._daily_min_temp
+                    # 기존 호환성 유지용
                     weather["today_max"] = self._daily_max_temp
                     weather["today_min"] = self._daily_min_temp
 
+                # 디버그 정보 및 시간 업데이트
                 new_data["weather"].update({
                     "last_updated": datetime.now(timezone.utc),
                     "debug_nx": nx, "debug_ny": ny,
                     "debug_lat": round(curr_lat, 5), "debug_lon": round(curr_lon, 5),
                     "debug_reg_id_temp": reg_temp, "debug_reg_id_land": reg_land,
                 })
+
                 self._cached_data = new_data
                 return new_data
 
             except Exception as exc:
-                _LOGGER.error("업데이트 처리 중 치명적 오류 발생: %s", exc)
+                _LOGGER.error("업데이트 중 오류 발생: %s", exc)
                 return self._cached_data or {"weather": {}, "air": {}}
 
     def _resolve_location(self) -> tuple:
