@@ -2,6 +2,8 @@ import logging
 import asyncio
 import math
 import json
+import aiohttp
+import asyncio
 from datetime import datetime, timedelta
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
@@ -31,15 +33,23 @@ class KMAWeatherAPI:
 
     # [수정 1] HTTP 에러 검증 및 Bare Exception을 제거한 통합 헬퍼 메서드
     async def _fetch(self, url, params, headers=None, timeout=15):
-        """공통 API 호출 및 에러 처리 헬퍼 메서드"""
+        """세분화된 예외 처리를 적용한 API 호출 헬퍼"""
         try:
-            async with self.session.get(url, params=params, headers=headers, timeout=timeout) as response:
-                response.raise_for_status() # HTTP 4xx, 5xx 에러 발생 시 예외 발생
-                # aiohttp 내장 json() 파서를 사용하여 안전하게 파싱
+            async with self.session.get(
+                url, params=params, headers=headers, timeout=timeout
+            ) as response:
+                response.raise_for_status()
                 return await response.json(content_type=None)
+        
+        except asyncio.TimeoutError:
+            _LOGGER.error("API 타임아웃 (%s): 응답 시간이 %s초를 초과했습니다.", url, timeout)
+        except aiohttp.ClientError as err:
+            _LOGGER.error("HTTP/연결 오류 (%s): %s", url, err)
+        except ValueError as err:
+            _LOGGER.error("JSON 파싱 오류 (%s): %s", url, err)
         except Exception as err:
-            _LOGGER.error("API 호출 실패 (%s): %s", url, err)
-            return None
+            _LOGGER.error("알 수 없는 API 오류 (%s): %s", url, err)
+        return None
 
     async def fetch_data(self, lat, lon, nx, ny):
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
@@ -164,6 +174,7 @@ class KMAWeatherAPI:
         )
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
+        """체감 온도 계산 (안전한 예외 처리 적용)"""
         try:
             t = _safe_float(temp)
             if t is None: return None
@@ -176,7 +187,8 @@ class KMAWeatherAPI:
                 hi = 0.5 * (t + 61.0 + ((t - 68.0) * 1.2) + (rh * 0.094))
                 return round(hi, 1)
             return t
-        except: return temp
+        except (TypeError, ValueError): # Bare except 대신 특정 예외만 처리
+            return temp
 
     def _merge_all(self, now, short_res, mid_res, air_data, address=None):
         weather_data = {
