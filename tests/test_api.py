@@ -81,3 +81,65 @@ async def test_nominatim_user_agent():
     # [수정] 특정 문자열 대신 'KMA-Weather'가 포함되어 있는지, 
     # 혹은 현재 소스 코드의 형식(HomeAssistant-KMA-Weather-...)을 따르는지 검증
     assert "KMA-Weather" in user_agent
+
+# --- 4. Home Assistant UUID 기반 User-Agent 검증 테스트 ---
+@pytest.mark.asyncio
+async def test_nominatim_user_agent_with_hass_uuid():
+    class MockHass:
+        def __init__(self):
+            self.installation_uuid = "12345678-1234-5678-1234-567812345678"
+
+    hass = MockHass()
+
+    session = MockAiohttpSession(json_data={
+        "address": {"city": "서울특별시", "borough": "강남구"}
+    })
+
+    api = KMAWeatherAPI(
+        session,
+        "TEST_KEY",
+        "TEMP",
+        "LAND",
+        hass=hass
+    )
+
+    address = await api._get_address(37.56, 126.98)
+
+    assert address == "서울특별시 강남구"
+    assert "headers" in session.last_kwargs
+
+    user_agent = session.last_kwargs["headers"]["User-Agent"]
+    assert "HomeAssistant-KMA-Weather" in user_agent
+    assert "123456781234" in user_agent
+
+
+# --- 5. Coordinator에서 hass 전달 검증 테스트 ---
+from unittest.mock import MagicMock, patch
+from custom_components.kma_weather.coordinator import (
+    KMAWeatherUpdateCoordinator,
+)
+
+@pytest.mark.asyncio
+async def test_coordinator_passes_hass_to_api():
+    hass = MagicMock()
+    hass.installation_uuid = "12345678-1234-5678-1234-567812345678"
+
+    entry = MagicMock()
+    entry.data = {
+        "api_key": "TEST_KEY",
+        "nx": 60,
+        "ny": 127,
+        "reg_id_temp": "11B10101",
+        "reg_id_land": "11B00000",
+    }
+    entry.options = {}
+
+    with patch(
+        "custom_components.kma_weather.coordinator.KMAWeatherAPI"
+    ) as mock_api:
+        mock_api.return_value = MagicMock()
+        KMAWeatherUpdateCoordinator(hass, entry)
+
+        mock_api.assert_called_once()
+        _, kwargs = mock_api.call_args
+        assert kwargs["hass"] is hass
