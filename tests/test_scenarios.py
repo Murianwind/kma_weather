@@ -33,18 +33,32 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     assert len(forecast) >= 10
 
     # --- 시나리오 5 & 6. 현재 위치 출력 및 변경 시 갱신 ---
+    # 5. 초기 위치 확인
     assert hass.states.get(f"sensor.{p}_location").state == "경기도 화성시"
 
     # 6. 위치 변경 시뮬레이션
-    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    # [수정] 단순히 _get_address만 패치하는 대신, 
+    # 위치가 부산으로 바뀐 상황의 새로운 Mock 데이터를 팩토리를 통해 주입합니다.
     
-    # 클래스가 아닌 코디네이터 내부의 api 인스턴스 메서드를 직접 패치
-    with patch.object(coordinator.api, "_get_address", AsyncMock(return_value="부산광역시")):
-        # 좌표 변경
-        hass.states.async_set("device_tracker.my_phone", "home", {"latitude": 35.1, "longitude": 129.0})
+    # conftest.py에 정의된 부산 시나리오를 사용하거나 직접 Mocking
+    with patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data", new_callable=AsyncMock) as mock_fetch:
+        # 부산 데이터 모방 (주소가 부산광역시인 데이터 반환)
+        busan_data = MOCK_SCENARIOS["full_test"].copy()
+        busan_data["weather"] = busan_data["weather"].copy()
+        busan_data["weather"]["address"] = "부산광역시"
+        busan_data["weather"]["현재 위치"] = "부산광역시"
+        mock_fetch.return_value = busan_data
+
+        # device_tracker 좌표 변경
+        hass.states.async_set(
+            "device_tracker.my_phone", 
+            "home", 
+            {"latitude": 35.1, "longitude": 129.0}
+        )
         await hass.async_block_till_done()
 
-        # 데이터 갱신 강제 실행
+        # 코디네이터 리프레시 강제 실행 (이때 위에서 만든 mock_fetch가 실행됨)
+        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
