@@ -403,22 +403,26 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         state = self.hass.states.get(entity_id) if entity_id else None
 
         # 1순위: 위치 엔티티
-        if state and state.attributes.get("latitude") is not None:
-            try:
-                lat = float(state.attributes["latitude"])
-                lon = float(state.attributes["longitude"])
-                if _is_valid_korean_coord(lat, lon):
-                    return lat, lon
-                _LOGGER.warning(
-                    "엔티티 '%s' 좌표 (%.4f, %.4f)가 유효 범위 밖입니다. "
-                    "마지막 캐시 좌표를 사용합니다.",
-                    entity_id, lat, lon,
-                )
-            except (TypeError, ValueError) as exc:
-                _LOGGER.warning(
-                    "엔티티 '%s' 좌표 변환 실패 (%s). 마지막 캐시 좌표를 사용합니다.",
-                    entity_id, exc,
-                )
+        if state:
+            lat_attr = state.attributes.get("latitude")
+            lon_attr = state.attributes.get("longitude")
+
+            if lat_attr is not None and lon_attr is not None:
+                try:
+                    lat = float(lat_attr)
+                    lon = float(lon_attr)
+                    if _is_valid_korean_coord(lat, lon):
+                        return lat, lon
+                    _LOGGER.warning(
+                        "엔티티 '%s' 좌표 (%.4f, %.4f)가 유효 범위 밖입니다. "
+                        "마지막 캐시 좌표를 사용합니다.",
+                        entity_id, lat, lon,
+                    )
+                except (TypeError, ValueError) as exc:
+                    _LOGGER.warning(
+                        "엔티티 '%s' 좌표 변환 실패 (%s). 마지막 캐시 좌표를 사용합니다.",
+                        entity_id, exc,
+                    )
 
         # 2순위: 마지막 캐시 좌표
         if self._last_lat is not None and self._last_lon is not None:
