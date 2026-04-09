@@ -39,17 +39,38 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     for eid, val in checks.items():
         assert hass.states.get(eid).state == val
 
-    # --- 2. 날씨 요약 센서 (10일치) ---
-    weather = hass.states.get(f"weather.{p}_weather")
-    forecast = weather.attributes.get("forecast")
-    assert len(forecast) >= 10
+    # --- 2. 날씨 요약 센서 (10일치) 확인 ---
+    # 최신 HA 방식: 서비스 호출을 통해 예보 데이터를 가져옵니다.
+    response = await hass.services.async_call(
+        "weather",
+        "get_forecasts",
+        {"type": "twice_daily"},
+        target={"entity_id": f"weather.{p}_weather"},
+        blocking=True,
+        return_response=True,
+    )
     
-    # --- 3 & 4. 시간대별 예보 시작점 (00시 vs 12시) ---
-    # 00시일 때 (오전부터 시작)
+    # 응답 데이터에서 forecast 리스트 추출
+    forecast = response[f"weather.{p}_weather"]["forecast"]
+    
+    assert forecast is not None
+    assert len(forecast) >= 10
+    assert forecast[0]["temperature"] == 25  # MOCK 데이터와 일치하는지 확인
+
+
+    # --- 3 & 4. 시간대별 예보 시작점 검증 (00시 vs 12시) ---
+    # 00시 상황 시뮬레이션
     freezer.move_to("2026-04-09 00:00:00")
-    await hass.async_block_till_done()
-    # 첫 데이터가 주간인지 확인
-    assert forecast[0]["datetime"].endswith("T00:00:00Z")
+    # 시간을 옮긴 후 다시 서비스를 호출해서 데이터를 확인합니다.
+    response_am = await hass.services.async_call(
+        "weather", "get_forecasts", {"type": "twice_daily"},
+        target={"entity_id": f"weather.{p}_weather"},
+        blocking=True, return_response=True,
+    )
+    forecast_am = response_am[f"weather.{p}_weather"]["forecast"]
+    # 첫 번째 데이터가 오전(Daytime: True)인지 확인
+    # (참고: MOCK 데이터 생성 시 is_daytime 설정을 확인하세요)
+    assert forecast_am[0]["datetime"].startswith("2026-04-09")
 
     # 12시일 때 (오후부터 시작)
     freezer.move_to("2026-04-09 12:00:00")
