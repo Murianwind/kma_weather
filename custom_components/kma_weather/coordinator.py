@@ -126,19 +126,21 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._store_loaded = False
 
     async def _restore_daily_temps(self):
-        """저장소 복구 (오타 수정됨)."""
+        """저장소 데이터 복구 (오타 수정 완료)."""
         if self._store_loaded: return
         stored = await self._store.async_load()
         if stored:
-            now = datetime.now(self.api.tz)
+            # api.tz가 준비 안 된 경우를 대비한 안전장치
+            tz = getattr(self.api, "tz", timezone(timedelta(hours=9)))
+            now = datetime.now(tz)
             if stored.get("date") == now.strftime("%Y%m%d"):
                 try:
                     self._daily_date = now.date()
                     self._daily_max_temp = float(stored.get("max"))
-                    self._daily_min_temp = float(stored.get("min")) # stored_data -> stored 오타 수정
+                    self._daily_min_temp = float(stored.get("min")) # 오타 수정됨
                     self._wf_am_today = stored.get("wf_am")
                     self._wf_pm_today = stored.get("wf_pm")
-                    _LOGGER.info("✅ 저장소 복구 성공: 최저 %.1f°C", self._daily_min_temp)
+                    _LOGGER.info("✅ 저장소 데이터 복구 성공")
                 except: pass
         self._store_loaded = True
 
@@ -173,46 +175,52 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await self._restore_daily_temps()
                 curr_lat, curr_lon = self._resolve_location()
-                if not curr_lat: return self._cached_data or {"weather": {}, "air": {}}
+                if curr_lat is None: return self._cached_data or {"weather": {}, "air": {}}
 
                 reg_temp, reg_land = _get_kma_reg_ids(curr_lat, curr_lon)
                 self.api.reg_id_temp, self.api.reg_id_land = reg_temp, reg_land
                 
                 nx, ny = convert_grid(curr_lat, curr_lon)
                 new_data = await self.api.fetch_data(curr_lat, curr_lon, nx, ny)
-                if not new_data: return self._cached_data or {"weather": {}, "air": {}}
+                if not new_data: return self._cached_data
 
+                # 센서 업데이트용 weather 딕셔너리 확보
                 weather = new_data.setdefault("weather", {})
+
                 if "raw_forecast" in new_data:
                     temp_changed = self._update_daily_temperatures(new_data["raw_forecast"])
                     api_am, api_pm = weather.get("wf_am_today"), weather.get("wf_pm_today")
                     summary_changed = False
                     if api_am and self._wf_am_today != api_am: self._wf_am_today, summary_changed = api_am, True
                     if api_pm and self._wf_pm_today != api_pm: self._wf_pm_today, summary_changed = api_pm, True
-
                     if temp_changed or summary_changed: await self._save_daily_temps()
 
-                    weather.update({
-                        "TMX_today": self._daily_max_temp, "TMN_today": self._daily_min_temp,
-                        "wf_am_today": self._wf_am_today, "wf_pm_today": self._wf_pm_today,
-                        "today_max": self._daily_max_temp, "today_min": self._daily_min_temp,
-                    })
-
-                    now_h = datetime.now(self.api.tz).hour
-                    if now_h < 12: weather["current_condition_kor"] = self._wf_am_today or weather.get("current_condition_kor")
-                    else: weather["current_condition_kor"] = self._wf_pm_today or self._wf_am_today or weather.get("current_condition_kor")
-
+                # [핵심] 사수된 데이터 주입 (블록 외부로 이동)
+                # API 예보가 비어있는 밤 시간대에도 저장소 값을 센서에 전달합니다.
                 weather.update({
+                    "TMX_today": self._daily_max_temp,
+                    "TMN_today": self._daily_min_temp,
+                    "wf_am_today": self._wf_am_today,
+                    "wf_pm_today": self._wf_pm_today,
+                    "today_max": self._daily_max_temp,
+                    "today_min": self._daily_min_temp,
                     "last_updated": datetime.now(timezone.utc),
                     "debug_nx": nx, "debug_ny": ny,
-                    "debug_lat": round(curr_lat, 5), "debug_lon": round(curr_lon, 5),
-                    "debug_reg_id_temp": reg_temp, "debug_reg_id_land": reg_land,
                 })
+
+                # 요약 날씨 결정 (0-12 주간, 12-24 야간)
+                now_h = datetime.now(self.api.tz).hour
+                if now_h < 12:
+                    weather["current_condition_kor"] = self._wf_am_today or weather.get("current_condition_kor")
+                else:
+                    weather["current_condition_kor"] = self._wf_pm_today or self._wf_am_today or weather.get("current_condition_kor")
+
                 self._cached_data = new_data
                 return new_data
+
             except Exception as exc:
-                _LOGGER.error("업데이트 처리 중 오류 발생: %s", exc)
-                return self._cached_data or {"weather": {}, "air": {}}
+                _LOGGER.error("업데이트 중 오류: %s", exc)
+                return self._cached_data
 
     def _resolve_location(self) -> tuple:
         entity_id = self.entry.data.get(CONF_LOCATION_ENTITY, "")
