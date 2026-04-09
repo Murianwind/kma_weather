@@ -59,14 +59,16 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
     @property
     def native_temperature(self):
         val = (self.coordinator.data or {}).get("weather", {}).get("TMP")
+        if val == "-": return None # 수동 처리 추가
         try: return int(float(val)) if val is not None else None
-        except: return val
+        except: return None # 에러 시 원본 대신 None 반환
 
     @property
     def humidity(self):
         val = (self.coordinator.data or {}).get("weather", {}).get("REH")
+        if val == "-": return None
         try: return int(float(val)) if val is not None else None
-        except: return val
+        except: return None
 
     @property
     def native_wind_speed(self):
