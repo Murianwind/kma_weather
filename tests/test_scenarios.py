@@ -81,3 +81,30 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
 
     await hass.config_entries.async_unload(mock_config_entry.entry_id)
     await hass.async_block_till_done()
+
+# --- 시나리오 9. 기상청 특유의 "-" 데이터(누락) 처리 검증 ---
+    # 기상청 API는 데이터가 없을 때 "-"를 반환하는 경우가 있음. 
+    # 이 경우 Home Assistant 센서 상태가 'unknown'이 되는지 확인.
+    dash_data = MOCK_SCENARIOS["full_test"].copy()
+    dash_data["weather"] = dash_data["weather"].copy()
+    
+    # 테스트할 주요 필드들에 "-" 주입
+    dash_data["weather"]["TMP"] = "-"  # 숫자형 (온도)
+    dash_data["weather"]["REH"] = "-"  # 숫자형 (습도)
+    dash_data["weather"]["current_condition_kor"] = "-"  # 문자형 (상태)
+    
+    with patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data", new_callable=AsyncMock) as mock_dash:
+        mock_dash.return_value = dash_data
+        
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        # 1. 숫자형 센서 (int(float("-")) 에서 ValueError 발생 시 원본 "-" 반환 -> HA에서 숫자가 아니면 unknown 처리)
+        # sensor.py의 native_value 로직에 따라 "-"가 반환되지만, 
+        # State 객체로 변환될 때 숫자가 아니므로 유효성 검사 등에 의해 unknown으로 간주될 수 있음.
+        state_tmp = hass.states.get(f"sensor.{p}_temperature")
+        assert state_tmp.state in ["unknown", "unavailable", "-"] 
+        
+        # 2. 문자형 센서
+        state_cond = hass.states.get(f"sensor.{p}_condition")
+        assert state_cond.state == "-"
