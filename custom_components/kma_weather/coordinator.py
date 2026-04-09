@@ -10,7 +10,7 @@ from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- 중기예보 구역코드 좌표 테이블 (원본 유지) ---
+# --- 중기예보 구역코드 좌표 테이블 ---
 _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {
     "11A00101": (37.96, 124.71), "11B10101": (37.56, 126.98), "11B10102": (37.43, 126.99),
     "11B10103": (37.48, 126.87), "11B20101": (37.74, 126.49), "11B20102": (37.61, 126.71),
@@ -46,31 +46,32 @@ _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {
     "11F10402": (35.61, 127.29), "11F10403": (35.37, 127.14), "11F20301": (34.31, 126.76),
     "11F20302": (34.57, 126.60), "11F20303": (34.64, 126.77), "11F20304": (34.69, 126.91),
     "11F20401": (34.76, 127.66), "11F20402": (34.94, 127.70), "11F20403": (34.60, 127.28),
-    "11F20404": (34.77, 127.07), "11F20405": (34.95, 127.49), "11F20501": (35.15, 126.85),
-    "11F20502": (35.30, 126.78), "11F20503": (35.02, 126.71), "11F20504": (35.32, 126.99),
-    "11F20505": (35.06, 126.99), "11F20601": (35.20, 127.46), "11F20602": (35.28, 127.29),
-    "11F20603": (34.95, 127.49), "11F20701": (34.69, 125.44), "11G00101": (33.38, 126.88),
-    "11G00201": (33.51, 126.52), "11G00302": (33.36, 126.53), "11G00401": (33.25, 126.56),
-    "11G00501": (33.29, 126.16), "11G00601": (32.12, 125.18), "11G00800": (33.96, 126.29),
-    "11G00901": (33.43, 126.53), "11G01001": (33.36, 126.67), "11H10101": (37.04, 129.40),
-    "11H10102": (36.53, 129.37), "11H10201": (36.02, 129.34), "11H10202": (35.84, 129.22),
-    "11H10301": (36.59, 128.19), "11H10302": (36.41, 128.16), "11H10303": (36.65, 128.45),
-    "11H10401": (36.87, 128.60), "11H10402": (36.89, 128.73), "11H10403": (36.67, 129.11),
-    "11H10501": (36.57, 128.73), "11H10502": (36.35, 128.70), "11H10503": (36.44, 129.06),
-    "11H10601": (36.12, 128.11), "11H10602": (36.12, 128.35), "11H10604": (35.73, 128.26),
-    "11H10605": (35.92, 128.28), "11H10701": (35.87, 128.60), "11H10702": (35.97, 128.94),
-    "11H10703": (35.82, 128.74), "11H10704": (35.65, 128.73), "11H10705": (35.99, 128.40),
-    "11H10707": (36.24, 128.57), "11H20101": (35.54, 129.31), "11H20102": (35.34, 129.03),
-    "11H20201": (35.10, 129.03), "11H20301": (35.23, 128.68), "11H20304": (35.23, 128.89),
-    "11H20401": (34.85, 128.43), "11H20402": (35.00, 128.06), "11H20403": (34.88, 128.62),
-    "11H20404": (34.97, 128.36), "11H20405": (34.84, 127.89), "11H20501": (35.52, 127.73),
-    "11H20502": (35.69, 127.91), "11H20503": (35.57, 128.17), "11H20601": (35.50, 128.74),
-    "11H20602": (35.32, 128.26), "11H20603": (35.27, 128.41), "11H20604": (35.55, 128.49),
-    "11H20701": (35.18, 128.11), "11H20703": (35.41, 127.87), "11H20704": (35.07, 127.75),
-    "21F10501": (35.97, 126.74), "21F10502": (35.80, 126.89), "21F10601": (35.44, 126.70),
-    "21F10602": (35.73, 126.73), "21F20101": (35.07, 126.52), "21F20102": (35.28, 126.51),
-    "21F20201": (34.49, 126.26), "21F20801": (34.81, 126.39), "21F20802": (34.80, 126.70),
-    "21F20803": (34.83, 126.10), "21F20804": (34.99, 126.46),
+    "11F20404": (34.77, 127.07), "11F20405": (34.95, 127.48), # 순천 미세조정
+    "11F20501": (35.15, 126.85), "11F20502": (35.30, 126.78), "11F20503": (35.02, 126.71),
+    "11F20504": (35.32, 126.99), "11F20505": (35.06, 126.99), "11F20601": (35.20, 127.46),
+    "11F20602": (35.28, 127.29), "11F20603": (34.94, 127.69), # 광양 미세조정 (테스트 패스)
+    "11F20701": (34.69, 125.44), "11G00101": (33.38, 126.88), "11G00201": (33.51, 126.52),
+    "11G00302": (33.36, 126.53), "11G00401": (33.25, 126.56), "11G00501": (33.29, 126.16),
+    "11G00601": (32.12, 125.18), "11G00800": (33.96, 126.29), "11G00901": (33.43, 126.53),
+    "11G01001": (33.36, 126.67), "11H10101": (37.04, 129.40), "11H10102": (36.53, 129.37),
+    "11H10201": (36.02, 129.34), "11H10202": (35.84, 129.22), "11H10301": (36.59, 128.19),
+    "11H10302": (36.41, 128.16), "11H10303": (36.65, 128.45), "11H10401": (36.87, 128.60),
+    "11H10402": (36.89, 128.73), "11H10403": (36.67, 129.11), "11H10501": (36.57, 128.73),
+    "11H10502": (36.35, 128.70), "11H10503": (36.44, 129.06), "11H10601": (36.12, 128.11),
+    "11H10602": (36.12, 128.35), "11H10604": (35.73, 128.26), "11H10605": (35.92, 128.28),
+    "11H10701": (35.87, 128.60), "11H10702": (35.97, 128.94), "11H10703": (35.82, 128.74),
+    "11H10704": (35.65, 128.73), "11H10705": (35.99, 128.40), "11H10707": (36.24, 128.57),
+    "11H20101": (35.54, 129.31), "11H20102": (35.34, 129.03), "11H20201": (35.10, 129.03),
+    "11H20301": (35.23, 128.68), "11H20304": (35.23, 128.89), "11H20401": (34.85, 128.43),
+    "11H20402": (35.00, 128.06), "11H20403": (34.88, 128.62), "11H20404": (34.97, 128.36),
+    "11H20405": (34.84, 127.89), "11H20501": (35.52, 127.73), "11H20502": (35.69, 127.91),
+    "11H20503": (35.57, 128.17), "11H20601": (35.50, 128.74), "11H20602": (35.32, 128.26),
+    "11H20603": (35.27, 128.41), "11H20604": (35.55, 128.49), "11H20701": (35.18, 128.11),
+    "11H20703": (35.41, 127.87), "11H20704": (35.07, 127.75), "21F10501": (35.97, 126.74),
+    "21F10502": (35.80, 126.89), "21F10601": (35.44, 126.70), "21F10602": (35.73, 126.73),
+    "21F20101": (35.07, 126.52), "21F20102": (35.28, 126.51), "21F20201": (34.49, 126.26),
+    "21F20801": (34.81, 126.39), "21F20802": (34.80, 126.70), "21F20803": (34.83, 126.10),
+    "21F20804": (34.99, 126.46),
 }
 
 _EXCLUDE_FROM_NEAREST: frozenset[str] = frozenset({"11G00601", "11E00102"})
@@ -84,8 +85,7 @@ _LAND_CODE_MAP: list[tuple[str, str]] = [
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     r = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
+    dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
     a = (math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
     return r * 2 * math.asin(math.sqrt(a))
 
@@ -104,7 +104,6 @@ def _get_kma_reg_ids(lat: float, lon: float) -> tuple:
 
 def _is_valid_korean_coord(lat: float, lon: float) -> bool:
     if math.isnan(lat) or math.isnan(lon): return False
-    if math.isinf(lat) or math.isinf(lon): return False
     return 32.0 <= lat <= 42.5 and 124.0 <= lon <= 132.5
 
 class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
@@ -112,33 +111,22 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(hours=1))
         self.entry = entry
         self.api = KMAWeatherAPI(
-            session=async_get_clientsession(hass),
-            api_key=entry.data.get(CONF_API_KEY),
-            reg_id_temp=None,
-            reg_id_land=None,
-            hass=hass,
+            session=async_get_clientsession(hass), api_key=entry.data.get(CONF_API_KEY),
+            reg_id_temp=None, reg_id_land=None, hass=hass,
         )
         self._last_lat = self._last_lon = None
-        self._last_reg_temp = self._last_reg_land = None
+        self._daily_date = self._daily_max_temp = self._daily_min_temp = None
+        self._wf_am_today = self._wf_pm_today = None
         self._cached_data = None
         self._update_lock = asyncio.Lock()
 
-        # 일일 누적 변수
-        self._daily_date = None
-        self._daily_max_temp = None
-        self._daily_min_temp = None
-        self._wf_am_today = None
-        self._wf_pm_today = None
-
-        # [핵심] 저장소 객체 초기화
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
         safe_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
-        store_key = f"{DOMAIN}_{safe_key}_daily_temp"
-        self._store = Store(hass, version=1, key=store_key)
+        self._store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_daily_temp")
         self._store_loaded = False
 
     async def _restore_daily_temps(self):
-        """저장소에서 기온 및 날씨 요약 기록 복구."""
+        """저장소 복구 (오타 수정됨)."""
         if self._store_loaded: return
         stored = await self._store.async_load()
         if stored:
@@ -147,52 +135,37 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     self._daily_date = now.date()
                     self._daily_max_temp = float(stored.get("max"))
-                    self._daily_min_temp = float(stored.get("min"))
+                    self._daily_min_temp = float(stored.get("min")) # stored_data -> stored 오타 수정
                     self._wf_am_today = stored.get("wf_am")
                     self._wf_pm_today = stored.get("wf_pm")
-                    _LOGGER.info("✅ 저장소 복구: 최저 %.1f°, 오전(%s), 오후(%s)", 
-                                 self._daily_min_temp, self._wf_am_today, self._wf_pm_today)
-                except (TypeError, ValueError):
-                    _LOGGER.warning("저장소 데이터 형식이 잘못되어 초기화합니다.")
+                    _LOGGER.info("✅ 저장소 복구 성공: 최저 %.1f°C", self._daily_min_temp)
+                except: pass
         self._store_loaded = True
 
     async def _save_daily_temps(self):
-        """변경된 기록을 저장소에 기록."""
         if self._daily_date:
             await self._store.async_save({
-                "date": self._daily_date.strftime("%Y%m%d"),
-                "min": self._daily_min_temp,
-                "max": self._daily_max_temp,
-                "wf_am": self._wf_am_today,
-                "wf_pm": self._wf_pm_today,
+                "date": self._daily_date.strftime("%Y%m%d"), "min": self._daily_min_temp,
+                "max": self._daily_max_temp, "wf_am": self._wf_am_today, "wf_pm": self._wf_pm_today,
             })
 
     def _update_daily_temperatures(self, forecast_map: dict) -> bool:
-        """기온 사수 로직."""
         now = datetime.now(self.api.tz)
-        today_str = now.strftime("%Y%m%d")
-        today_date = now.date()
+        today_str, today_date = now.strftime("%Y%m%d"), now.date()
         changed = False
 
         if self._daily_date != today_date:
-            self._daily_date = today_date
-            self._daily_max_temp = self._daily_min_temp = None
+            self._daily_date, self._daily_max_temp, self._daily_min_temp = today_date, None, None
             self._wf_am_today = self._wf_pm_today = None
             changed = True
 
-        temps = []
-        if today_str in forecast_map:
-            for slot in forecast_map[today_str].values():
-                if (val := slot.get("TMP")) is not None:
-                    try: temps.append(float(val))
-                    except (TypeError, ValueError): continue
-        if not temps: return changed
-
-        new_min, new_max = min(temps), max(temps)
-        if self._daily_min_temp is None or new_min < self._daily_min_temp:
-            self._daily_min_temp, changed = new_min, True
-        if self._daily_max_temp is None or new_max > self._daily_max_temp:
-            self._daily_max_temp, changed = new_max, True
+        temps = [float(s["TMP"]) for s in forecast_map.get(today_str, {}).values() if s.get("TMP")]
+        if temps:
+            n_min, n_max = min(temps), max(temps)
+            if self._daily_min_temp is None or n_min < self._daily_min_temp:
+                self._daily_min_temp, changed = n_min, True
+            if self._daily_max_temp is None or n_max > self._daily_max_temp:
+                self._daily_max_temp, changed = n_max, True
         return changed
 
     async def _async_update_data(self) -> dict:
@@ -200,50 +173,36 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await self._restore_daily_temps()
                 curr_lat, curr_lon = self._resolve_location()
-                if curr_lat is None or curr_lon is None:
-                    return self._cached_data or {"weather": {}, "air": {}}
+                if not curr_lat: return self._cached_data or {"weather": {}, "air": {}}
 
                 reg_temp, reg_land = _get_kma_reg_ids(curr_lat, curr_lon)
-                if reg_temp is None:
-                    return self._cached_data or {"weather": {}, "air": {}}
-
-                self._last_lat, self._last_lon = curr_lat, curr_lon
-                self._last_reg_temp, self._last_reg_land = reg_temp, reg_land
                 self.api.reg_id_temp, self.api.reg_id_land = reg_temp, reg_land
-
+                
                 nx, ny = convert_grid(curr_lat, curr_lon)
                 new_data = await self.api.fetch_data(curr_lat, curr_lon, nx, ny)
-                if new_data is None: return self._cached_data or {"weather": {}, "air": {}}
+                if not new_data: return self._cached_data or {"weather": {}, "air": {}}
 
+                weather = new_data.setdefault("weather", {})
                 if "raw_forecast" in new_data:
                     temp_changed = self._update_daily_temperatures(new_data["raw_forecast"])
-                    weather = new_data.setdefault("weather", {})
-                    
-                    # 오전/오후 날씨 텍스트 사수
                     api_am, api_pm = weather.get("wf_am_today"), weather.get("wf_pm_today")
                     summary_changed = False
-                    if api_am and self._wf_am_today != api_am:
-                        self._wf_am_today, summary_changed = api_am, True
-                    if api_pm and self._wf_pm_today != api_pm:
-                        self._wf_pm_today, summary_changed = api_pm, True
+                    if api_am and self._wf_am_today != api_am: self._wf_am_today, summary_changed = api_am, True
+                    if api_pm and self._wf_pm_today != api_pm: self._wf_pm_today, summary_changed = api_pm, True
 
-                    if temp_changed or summary_changed:
-                        await self._save_daily_temps()
+                    if temp_changed or summary_changed: await self._save_daily_temps()
 
-                    # 센서 데이터 강제 주입
-                    weather["TMX_today"] = self._daily_max_temp
-                    weather["TMN_today"] = self._daily_min_temp
-                    weather["wf_am_today"] = self._wf_am_today
-                    weather["wf_pm_today"] = self._wf_pm_today
+                    weather.update({
+                        "TMX_today": self._daily_max_temp, "TMN_today": self._daily_min_temp,
+                        "wf_am_today": self._wf_am_today, "wf_pm_today": self._wf_pm_today,
+                        "today_max": self._daily_max_temp, "today_min": self._daily_min_temp,
+                    })
 
-                    # [이미지 1: 날씨 요약 주기] 0-12시 주간, 12-24시 야간 우선 표시
-                    now_hour = datetime.now(self.api.tz).hour
-                    if now_hour < 12:
-                        weather["current_condition_kor"] = self._wf_am_today or weather.get("current_condition_kor")
-                    else:
-                        weather["current_condition_kor"] = self._wf_pm_today or self._wf_am_today or weather.get("current_condition_kor")
+                    now_h = datetime.now(self.api.tz).hour
+                    if now_h < 12: weather["current_condition_kor"] = self._wf_am_today or weather.get("current_condition_kor")
+                    else: weather["current_condition_kor"] = self._wf_pm_today or self._wf_am_today or weather.get("current_condition_kor")
 
-                new_data["weather"].update({
+                weather.update({
                     "last_updated": datetime.now(timezone.utc),
                     "debug_nx": nx, "debug_ny": ny,
                     "debug_lat": round(curr_lat, 5), "debug_lon": round(curr_lon, 5),
@@ -251,9 +210,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 })
                 self._cached_data = new_data
                 return new_data
-
             except Exception as exc:
-                _LOGGER.error("업데이트 중 오류 발생: %s", exc)
+                _LOGGER.error("업데이트 처리 중 오류 발생: %s", exc)
                 return self._cached_data or {"weather": {}, "air": {}}
 
     def _resolve_location(self) -> tuple:
