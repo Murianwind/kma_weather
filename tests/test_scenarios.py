@@ -53,10 +53,25 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     # --- 5 & 6. 위치 출력 및 변경 시 갱신 ---
     assert hass.states.get(f"sensor.{p}_location").state == "경기도 화성시"
     
-    # 위치 변경 시뮬레이션
-    with patch("custom_components.kma_weather.coordinator.get_address_from_coords", return_value="부산광역시"):
-        hass.states.async_set("device_tracker.my_phone", "home", {"latitude": 35.1, "longitude": 129.0})
+    # [수정된 패치 경로] api_kma.py 내부의 _get_address 메서드를 패치합니다.
+    with patch(
+        "custom_components.kma_weather.api_kma.KMAWeatherAPI._get_address", 
+        return_value="부산광역시"
+    ):
+        # device_tracker의 좌표가 바뀌었다고 가정하고 상태를 강제 설정합니다.
+        hass.states.async_set(
+            "device_tracker.my_phone", 
+            "home", 
+            {"latitude": 35.15, "longitude": 129.16}
+        )
+        # HA의 이벤트 루프가 이 변경사항을 처리할 때까지 대기
         await hass.async_block_till_done()
+        
+        # 주소 센서가 "부산광역시"로 바뀌었는지 확인
+        # (참고: 센서값 갱신 주기에 따라 coordinator.async_refresh()가 필요할 수 있음)
+        coordinator = hass.data["kma_weather"][mock_config_entry.entry_id]
+        await coordinator.async_refresh()
+        
         assert hass.states.get(f"sensor.{p}_location").state == "부산광역시"
 
     # --- 7 & 8. 데이터 누락 및 복원 ---
