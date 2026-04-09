@@ -7,12 +7,12 @@ on:
     branches: [ main ]
 
 env:
-  # Node.js 20 경고를 해결하기 위해 Node.js 24 사용 강제
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -20,29 +20,32 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: 'custom_components/kma_weather/manifest.json'
+          python-version: "3.12"
+          cache: "pip"
 
-      - name: Install dependencies
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          REQ_LIST=$(jq -r '.requirements[]' custom_components/kma_weather/manifest.json)
-          pip install $REQ_LIST pytest pytest-homeassistant-custom-component pytest-asyncio pytest-freezegun
+          pip install pytest pytest-asyncio pytest-freezegun \
+                      pytest-homeassistant-custom-component
+
+          if [ -f custom_components/kma_weather/manifest.json ]; then
+            REQ_LIST=$(jq -r '.requirements[]?' custom_components/kma_weather/manifest.json)
+            if [ -n "$REQ_LIST" ]; then
+              pip install $REQ_LIST
+            fi
+          fi
 
       - name: Run Pytest
-        shell: bash
+        run: pytest tests/ --no-header -v --disable-warnings
+
+      - name: Publish Test Summary
+        if: always()
         run: |
-          # --disable-warnings 옵션을 추가하여 불필요한 워닝 출력을 제거하고 
-          # 결과 리포트만 깔끔하게 생성합니다.
-          pytest tests/ --no-header -v --disable-warnings > test_result.txt || true
-          
           echo "### ✅ Pytest Execution Report" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
-          grep "tests/test_" test_result.txt >> $GITHUB_STEP_SUMMARY
+          pytest tests/ --no-header -q 2>&1 | grep "tests/test_" || true >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          
-          # 실패가 있을 경우만 에러 종료
-          if grep -q "FAILED" test_result.txt; then
-            exit 1
-          fi
