@@ -10,18 +10,18 @@ from custom_components.kma_weather.const import convert_grid
 
 # 1. 중기예보 전수 검증 (제외 리스트 반영 및 예외 지역 처리)
 def test_exhaustive_mid_term_ids():
+    """모든 구역 ID 좌표 매칭 검증 (제외 리스트 반영)."""
     for expected_id, (lat, lon) in _TEMP_ID_COORDS.items():
-        # [수정] 검색 제외 대상(독도 등)인 경우 테스트 패스
+        # [수정] 독도(11E00102) 등 검색 제외 대상은 테스트를 건너뜁니다.
         if expected_id in _EXCLUDE_FROM_NEAREST:
             continue
             
         reg_id, land_id = _get_kma_reg_ids(lat, lon)
-        assert reg_id == expected_id, f"❌ ID 매칭 실패: {expected_id}"
+        assert reg_id == expected_id, f"❌ ID 매칭 실패: {expected_id} (실제 반환: {reg_id})"
         
-        # 백령도(11A00101), 울릉도/독도(11E00101) 예외 처리
+        # 백령도(11A00101) 및 특수 지역 코드 예외 처리
         is_exception = land_id in ["11A00101", "11E00101"]
-        assert (land_id.endswith("0000") or is_exception), \
-            f"❌ 육상 코드 형식 오류: {land_id} (ID: {expected_id})"
+        assert (land_id.endswith("0000") or is_exception), f"❌ 형식 오류: {land_id}"
 
 # 2. 센서 키 매칭 전수 검증
 def test_all_sensor_keys_match():
