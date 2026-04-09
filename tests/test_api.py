@@ -48,17 +48,15 @@ def test_api_key_decoding():
 @pytest.mark.asyncio
 async def test_fetch_http_error(caplog):
     """API 호출 중 HTTP 에러 발생 시 프로그램이 멈추지 않고 에러 로그를 남기는지 확인"""
-    # 무조건 에러(Exception)를 뱉는 가짜 세션 생성
     session = MockAiohttpSession(should_raise=True)
     api = KMAWeatherAPI(session, "TEST_KEY", "TEMP", "LAND")
     
     with caplog.at_level(logging.ERROR):
         result = await api._fetch("http://example.com", {})
     
-    # 1. 예외가 밖으로 새어나오지 않고 None으로 안전하게 반환되었는가?
     assert result is None
-    # 2. _LOGGER.error에 실패 로그가 잘 찍혔는가?
-    assert "API 호출 실패" in caplog.text
+    # [수정] api_kma.py의 새로운 로그 문구와 일치시킵니다.
+    assert "알 수 없는 API 오류" in caplog.text or "API 호출 실패" in caplog.text
 
 # --- 3. Nominatim User-Agent 포함 여부 검증 테스트 ---
 @pytest.mark.asyncio
