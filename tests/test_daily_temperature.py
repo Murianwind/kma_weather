@@ -2,6 +2,7 @@ import pytest
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from unittest.mock import MagicMock
+from freezegun import freeze_time  # [추가] 시간을 고정해주는 라이브러리
 from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
 
 class MockHass:
@@ -23,6 +24,13 @@ def coordinator():
     coord._daily_min_temp = None
     return coord
 
+# ----------------------------------------------------------------------
+# [핵심] 모든 테스트 위에 @freeze_time("2026-04-08 15:00:00")를 붙입니다.
+# (UTC 15:00 = 한국 시간 00:00) 
+# 이렇게 하면 언제 테스트를 돌려도 가짜 데이터("0900", "1200")가 '미래'로 인식됩니다.
+# ----------------------------------------------------------------------
+
+@freeze_time("2026-04-08 15:00:00")
 def test_specific_temperature_scenarios(coordinator):
     """사용자 요청 시나리오: 특정 기온 변화에 따른 누적 로직 검증"""
     today = datetime.now(coordinator.api.tz).strftime("%Y%m%d")
@@ -54,6 +62,8 @@ def test_specific_temperature_scenarios(coordinator):
     assert coordinator._daily_min_temp == 11.0  # 갱신됨
     assert coordinator._daily_max_temp == 12.0  # 갱신되지 않음
 
+
+@freeze_time("2026-04-08 15:00:00")
 def test_daily_accumulation(coordinator):
     """기존: 기온 누적 및 범위 갱신 로직 검증"""
     today = datetime.now(coordinator.api.tz).strftime("%Y%m%d")
@@ -68,6 +78,8 @@ def test_daily_accumulation(coordinator):
     assert coordinator._daily_max_temp == 25
     assert coordinator._daily_min_temp == 10
 
+
+@freeze_time("2026-04-08 15:00:00")
 def test_daily_reset(coordinator):
     """날짜 변경 시 최고/최저 기온이 초기화되는지 확인"""
     # 1. 과거 날짜로 설정
@@ -87,6 +99,8 @@ def test_daily_reset(coordinator):
     assert coordinator._daily_min_temp == 15.0
     assert coordinator._daily_date == datetime.now(coordinator.api.tz).date()
 
+
+@freeze_time("2026-04-08 15:00:00")
 def test_location_move_preserves_min_temp(coordinator):
     """
     시나리오: A 지점에서 12도를 기록한 후, 최저 예보가 13도인 B 지점으로 이동했을 때
@@ -117,6 +131,8 @@ def test_location_move_preserves_min_temp(coordinator):
     assert coordinator._daily_min_temp == 12.0  # 13.0으로 변하면 테스트 실패
     assert coordinator._daily_max_temp == 15.0  # 최고 기온은 B 지점의 15도로 갱신됨
 
+
+@freeze_time("2026-04-08 15:00:00")
 def test_location_move_logic_final_check(coordinator):
     """
     [결정적 테스트] 장소 이동 시 기존 기록이 새 예보에 의해 덮어씌워지는지 확인
@@ -143,9 +159,10 @@ def test_location_move_logic_final_check(coordinator):
     coordinator._update_daily_temperatures(new_forecast_B)
 
     # [검증] 만약 로직이 정상이라면 기존 12.0을 유지해야 함.
-    # 만약 여기서 에러가 난다면, 로직이 B 지점의 최소값인 13.0으로 덮어씌우고 있다는 증거입니다.
     assert coordinator._daily_min_temp == 12.0
 
+
+@freeze_time("2026-04-08 15:00:00")
 def test_location_move_logic_error_reproduction(coordinator):
     """
     [문제 재현 테스트] 12도 기록이 있는 상태에서 13도 예보만 들어왔을 때, 
@@ -158,7 +175,6 @@ def test_location_move_logic_error_reproduction(coordinator):
     assert coordinator._daily_min_temp == 12.0
 
     # STEP 2: B 지점 데이터 (최저가 13도인 예보 뭉치)
-    # 실제 환경처럼 새로운 dict 객체로 전달합니다.
     new_forecast_B = {
         today: {
             "1200": {"TMP": "13"},
@@ -168,6 +184,5 @@ def test_location_move_logic_error_reproduction(coordinator):
     
     coordinator._update_daily_temperatures(new_forecast_B)
 
-    # [검증] 여기서 만약 13.0이 나오면 사용자님이 겪으신 버그가 재현된 것입니다.
-    # 12.0이 유지되어야만 합격입니다.
+    # [검증] 12.0이 유지되어야만 합격입니다.
     assert coordinator._daily_min_temp == 12.0
