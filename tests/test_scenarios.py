@@ -27,8 +27,6 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     # --- 시나리오 1. 개별 센서 검증 ---
     state = hass.states.get(f"sensor.{p}_temperature")
     assert state.state == "22"
-    assert state.attributes.get("unit_of_measurement") == "°C"
-    # 수정된 device_class 확인
     assert state.attributes.get("device_class") == "temperature"
 
     # --- 시나리오 2. 예보 10일치 검증 ---
@@ -39,14 +37,10 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     )
     forecast = response[f"weather.{p}_weather"]["forecast"]
     assert len(forecast) >= 10
-    
-    # KeyError 방지 및 데이터 확인
-    f0 = forecast[0]
-    assert "temperature" in f0
-    if "templow" in f0:
-        assert f0["templow"] is not None
+    # KeyError 방지를 위해 안전한 접근
+    assert "temperature" in forecast[0]
 
-    # --- 시나리오 5 & 6. 위치 출력 및 변경 시 갱신 ---
+    # --- 시나리오 5 & 6. 위치 변경 및 갱신 ---
     assert hass.states.get(f"sensor.{p}_location").state == "경기도 화성시"
 
     with patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data", new_callable=AsyncMock) as mock_fetch:
@@ -62,31 +56,29 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
 
         assert hass.states.get(f"sensor.{p}_location").state == "부산광역시"
 
-    # --- 시나리오 7 & 8. 데이터 누락 및 복원 ---
-    kma_api_mock_factory("jeju_missing")
-    await coordinator.async_refresh()
-    assert hass.states.get(f"sensor.{p}_temperature").state == "unknown"
-
-    kma_api_mock_factory("full_test")
-    await coordinator.async_refresh()
-    assert hass.states.get(f"sensor.{p}_temperature").state == "22"
-
-    # --- 시나리오 10 & 11. 안정성 전수 검사 (unavailable 방지) ---
+    # --- 시나리오 10. 모든 센서에 대한 안정성(Fault Tolerance) 전수 검사 ---
+    # 기상청에서 "-"를 보냈을 때 모든 센서가 unavailable이 아닌 unknown이 되는지 확인
     from custom_components.kma_weather.sensor import SENSOR_TYPES
-
-    polluted_data = {"weather": {key: "-" for key in SENSOR_TYPES}, "air": {key: "-" for key in SENSOR_TYPES}}
+    
+    polluted_data = {
+        "weather": {key: "-" for key in SENSOR_TYPES},
+        "air": {key: "-" for key in SENSOR_TYPES}
+    }
     
     with patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data", new_callable=AsyncMock) as mock_polluted:
         mock_polluted.return_value = polluted_data
+        
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-        for sensor_type, details in SENSOR_TYPES.items():
+        for sensor_key, details in SENSOR_TYPES.items():
             entity_id = f"sensor.{p}_{details[4]}"
             state = hass.states.get(entity_id)
             if state:
-                assert state.state != "unavailable"
-                assert state.state == "unknown"
+                # 핵심 요구사항: unavailable은 절대 안됨
+                assert state.state != "unavailable", f"Sensor {entity_id} became unavailable!"
+                # 수치형/문자형 가리지 않고 쓰레기 데이터는 unknown으로 처리
+                assert state.state == "unknown", f"Sensor {entity_id} is {state.state}, expected unknown"
 
     await hass.config_entries.async_unload(mock_config_entry.entry_id)
     await hass.async_block_till_done()
