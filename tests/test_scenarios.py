@@ -23,15 +23,18 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         f"sensor.{p}_humidity": "45",
         f"sensor.{p}_wind_speed": "2.1",
         f"sensor.{p}_wind_direction": "남동",
-        f"sensor.{p}_precipitation_probability": "10",
-        f"sensor.{p}_today_high_temperature": "25",
-        f"sensor.{p}_today_low_temperature": "15",
+        
+        # [주의] sensor.py의 5번째 인자(id_suffix)와 일치시켜야 함
+        f"sensor.{p}_precipitation_prob": "10",      # _probability 아님
+        f"sensor.{p}_today_temp_max": "25",          # _high_temperature 아님
+        f"sensor.{p}_today_temp_min": "15",          # _low_temperature 아님
+        f"sensor.{p}_tomorrow_temp_max": "26",       # _high_temperature 아님
+        
         f"sensor.{p}_pm10": "35",
         f"sensor.{p}_pm10_grade": "좋음",
         f"sensor.{p}_pm25_grade": "좋음",
         f"sensor.{p}_condition": "맑음",
         f"sensor.{p}_apparent_temperature": "23",
-        f"sensor.{p}_tomorrow_high_temperature": "26",
     }
     for eid, val in checks.items():
         assert hass.states.get(eid).state == val
