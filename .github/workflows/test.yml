@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  # Node.js 20 경고를 해결하기 위해 Node.js 24 사용 강제
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -18,30 +22,27 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-          # manifest.json이나 테스트용 의존성이 변했을 때만 캐시 갱신
-          cache-dependency-path: |
-            custom_components/kma_weather/manifest.json
-            requirements_test.txt
+          cache-dependency-path: 'custom_components/kma_weather/manifest.json'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 1. 테스트 도구 및 manifest 의존성을 한 번에 설치 (속도 향상)
-          # jq 결과와 고정 패키지를 합쳐서 한 번의 pip install 명령으로 처리합니다.
           REQ_LIST=$(jq -r '.requirements[]' custom_components/kma_weather/manifest.json)
           pip install $REQ_LIST pytest pytest-homeassistant-custom-component pytest-asyncio pytest-freezegun
 
-      - name: Run Pytest & Generate Summary
+      - name: Run Pytest
         shell: bash
         run: |
-          # 2. --no-header와 -q 옵션으로 로그 출력 최소화 (IO 병목 감소)
-          pytest tests/ --no-header -v > test_result.txt || true
+          # --disable-warnings 옵션을 추가하여 불필요한 워닝 출력을 제거하고 
+          # 결과 리포트만 깔끔하게 생성합니다.
+          pytest tests/ --no-header -v --disable-warnings > test_result.txt || true
           
-          # 3. 이전에 원하셨던 Summary 리포트 자동 생성
           echo "### ✅ Pytest Execution Report" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
           grep "tests/test_" test_result.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           
-          # 실제 테스트 결과에 따라 워크플로우 성공/실패 결정
-          grep -q "FAILED" test_result.txt && exit 1 || exit 0
+          # 실패가 있을 경우만 에러 종료
+          if grep -q "FAILED" test_result.txt; then
+            exit 1
+          fi
