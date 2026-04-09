@@ -32,32 +32,23 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     forecast = response[f"weather.{p}_weather"]["forecast"]
     assert len(forecast) >= 10
 
-    # --- 시나리오 5 & 6. 위치 출력 및 변경 시 갱신 ---
-    # 5. 초기 위치 확인 (conftest의 Mock 데이터 주소)
+    # --- 시나리오 5 & 6. 현재 위치 출력 및 변경 시 갱신 ---
     assert hass.states.get(f"sensor.{p}_location").state == "경기도 화성시"
 
     # 6. 위치 변경 시뮬레이션
-    # api_kma.py의 KMAWeatherAPI 클래스 내부 _get_address 메서드를 비동기 Mock으로 교체
-    with patch(
-        "custom_components.kma_weather.api_kma.KMAWeatherAPI._get_address", 
-        new_callable=AsyncMock
-    ) as mock_addr:
-        mock_addr.return_value = "부산광역시"
-        
-        # device_tracker 좌표 변경 (HA가 위치 변경을 감지함)
-        hass.states.async_set(
-            "device_tracker.my_phone", 
-            "home", 
-            {"latitude": 35.1, "longitude": 129.0}
-        )
+    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    
+    # 클래스가 아닌 코디네이터 내부의 api 인스턴스 메서드를 직접 패치
+    with patch.object(coordinator.api, "_get_address", AsyncMock(return_value="부산광역시")):
+        # 좌표 변경
+        hass.states.async_set("device_tracker.my_phone", "home", {"latitude": 35.1, "longitude": 129.0})
         await hass.async_block_till_done()
 
-        # 코디네이터에게 즉시 업데이트 명령 (여기서 mock_addr이 실행됨)
-        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+        # 데이터 갱신 강제 실행
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-        # 최종 검증
+        # 이제 확실히 부산광역시가 나와야 함
         assert hass.states.get(f"sensor.{p}_location").state == "부산광역시"
 
     # --- 시나리오 7 & 8. 데이터 누락 및 복원 ---
