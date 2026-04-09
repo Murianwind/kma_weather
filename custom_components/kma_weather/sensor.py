@@ -74,9 +74,14 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         w, a = data.get("weather", {}), data.get("air", {})
         val = w.get(self._type) if self._type in w else a.get(self._type)
 
-        if val is not None and self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
+        # 기상청 데이터 특성상 값이 없으면 "-"가 들어올 수 있음
+        # 수치형 센서에서 문자열 "-"는 에러를 유발하므로 None(unknown)으로 변환
+        if val == "-":
+            return None
+
+        if val is not None and self._attr_native_unit_of_measurement is not None:
             try: return int(float(val))
-            except: return val
+            except (ValueError, TypeError): return val
         return val
 
     @property
