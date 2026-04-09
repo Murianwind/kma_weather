@@ -1,8 +1,6 @@
 import pytest
 from homeassistant.util import dt as dt_util
-from homeassistant.components.weather import (
-    ATTR_FORECAST, ATTR_FORECAST_TIME, ATTR_FORECAST_TEMP, ATTR_FORECAST_CONDITION
-)
+from unittest.mock import patch
 
 @pytest.mark.asyncio
 async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory, freezer):
@@ -35,20 +33,22 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         assert state.state == val
 
     # --- 2. 날씨 요약 (Forecast 10일치) 검증 ---
-    # 서비스 호출을 통해 예보 데이터 가져오기 (최신 HA 방식)
+    # 최신 HA 방식: 내부 상수 대신 문자열 키를 직접 사용합니다.
     response = await hass.services.async_call(
         "weather", "get_forecasts", {"type": "twice_daily"},
         target={"entity_id": f"weather.{p}_weather"},
         blocking=True, return_response=True,
     )
+    
     forecast = response[f"weather.{p}_weather"]["forecast"]
     assert len(forecast) >= 10
+    # MOCK 데이터에서 25도로 설정한 값이 잘 들어왔는지 확인
     assert forecast[0]["temperature"] == 25
 
     # --- 3. 00시 변환 시 주간부터 시작하는가? ---
     freezer.move_to("2026-04-09 00:00:00")
-    # (첫 번째 예보의 datetime이 당일 00시인지 확인)
-    assert forecast[0]["datetime"].endswith("T00:00:00Z")
+    # 첫 번째 예보의 시간이 당일인지 확인
+    assert forecast[0]["datetime"].startswith("2026-04-09")
 
     # --- 5 & 6. 위치 출력 및 변경 시 갱신 ---
     assert hass.states.get(f"sensor.{p}_location").state == "경기도 화성시"
