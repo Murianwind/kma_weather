@@ -8,7 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# [수정] 4번째 인자를 명확하게 SensorDeviceClass로 정의
+# SENSOR_TYPES에 적절한 SensorDeviceClass 추가
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -54,7 +54,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = details[0]
         self._attr_native_unit_of_measurement = details[1]
         self._attr_icon = details[2]
-        self._attr_device_class = details[3]  # SensorDeviceClass 할당
+        self._attr_device_class = details[3]
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
         self._attr_entity_category = details[5]
         self._attr_device_info = DeviceInfo(
@@ -75,13 +75,16 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         w, a = data.get("weather", {}), data.get("air", {})
         val = w.get(self._type) if self._type in w else a.get(self._type)
 
-        if val in [None, "-", ""]:
+        # [수정] 값이 "-"인 경우 None(unknown) 반환하여 시스템 보호
+        if val == "-":
             return None
 
-        if self._attr_native_unit_of_measurement is not None:
+        # 수치형 변환 로직 보강
+        if val is not None and self._attr_native_unit_of_measurement is not None:
             try:
                 return int(float(val))
             except (ValueError, TypeError):
+                # 변환 불가능한 값은 None으로 반환하여 unknown 유도
                 return None
         return val
 
@@ -91,6 +94,10 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             w = self.coordinator.data.get("weather", {})
             a = self.coordinator.data.get("air", {})
             return {
+                "short_term_nx": w.get('debug_nx'), 
+                "short_term_ny": w.get('debug_ny'),
+                "mid_term_temp_id": w.get("debug_reg_id_temp"),
+                "mid_term_land_id": w.get("debug_reg_id_land"),
                 "air_korea_station": a.get("station"),
                 "latitude": w.get("debug_lat"),
                 "longitude": w.get("debug_lon")
