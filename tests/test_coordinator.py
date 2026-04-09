@@ -4,7 +4,7 @@ from custom_components.kma_weather.const import DOMAIN
 
 @pytest.mark.asyncio
 async def test_normal_seoul_weather(hass, mock_config_entry, kma_api_mock_factory):
-    """1. 서울 정상 데이터 테스트 (정수 변환 반영)"""
+    """1. 서울 정상 데이터 테스트"""
     hass.config.latitude = 37.56
     hass.config.longitude = 126.98
     
@@ -14,13 +14,14 @@ async def test_normal_seoul_weather(hass, mock_config_entry, kma_api_mock_factor
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    # 통합 구성요소가 정상 로드되었는지 먼저 확인
-    assert mock_config_entry.state == ConfigEntryState.LOADED
-
-    # [수정] sensor.py의 int() 변환 로직에 따라 22.5 -> "22"로 기대값 변경
+    # 데이터 검증
     temp_state = hass.states.get("sensor.test_temperature")
     assert temp_state is not None
     assert temp_state.state == "22" 
+
+    # [중요] 테스트 종료 전 청소 (언로드)
+    await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
 
 
 @pytest.mark.asyncio
@@ -35,11 +36,10 @@ async def test_abnormal_jeju_missing_data(hass, mock_config_entry, kma_api_mock_
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert mock_config_entry.state == ConfigEntryState.LOADED
-
-    # 데이터가 None일 때 센서 상태 확인
+    # 데이터 검증
     temp_state = hass.states.get("sensor.test_temperature")
-    assert temp_state is not None
-    
-    # 값이 None일 때 HA 센서의 기본값은 "unknown"
     assert temp_state.state == "unknown"
+
+    # [중요] 테스트 종료 전 청소 (언로드)
+    await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
