@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch, AsyncMock
 from homeassistant.util import dt as dt_util
 from custom_components.kma_weather.const import DOMAIN
+from .conftest import MOCK_SCENARIOS
 
 @pytest.mark.asyncio
 async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory, freezer):
