@@ -1,68 +1,81 @@
 import pytest
 import logging
-from unittest.mock import AsyncMock
 from urllib.parse import quote
 from custom_components.kma_weather.api_kma import KMAWeatherAPI
 
+# --- aiohttp 통신을 완벽하게 흉내내는 Mock 클래스 ---
+class MockAiohttpResponse:
+    def __init__(self, json_data=None, should_raise=False):
+        self._json_data = json_data or {}
+        self._should_raise = should_raise
+
+    def raise_for_status(self):
+        if self._should_raise:
+            # 에러 발생 상황 시뮬레이션
+            raise Exception("HTTP 500 Internal Server Error")
+
+    async def json(self, *args, **kwargs):
+        return self._json_data
+
+    # async with 구문을 지원하기 위한 필수 메서드
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        pass
+
+class MockAiohttpSession:
+    def __init__(self, json_data=None, should_raise=False):
+        self.json_data = json_data
+        self.should_raise = should_raise
+        self.last_kwargs = {}
+
+    def get(self, url, **kwargs):
+        self.last_kwargs = kwargs
+        return MockAiohttpResponse(json_data=self.json_data, should_raise=self.should_raise)
+
+# =========================================================
+
 # --- 1. API 키 디코딩 검증 테스트 ---
 def test_api_key_decoding():
-    """URL 인코딩된 API 키가 KMAWeatherAPI 초기화 시 정상적으로 디코딩되는지 확인"""
+    """URL 인코딩된 API 키가 정상적으로 디코딩되는지 확인"""
     encoded_key = quote("test_secret_key!@#")
     api = KMAWeatherAPI(None, encoded_key, "TEMP", "LAND")
     
     assert api.api_key == "test_secret_key!@#"
 
-
 # --- 2. HTTP 에러 및 Bare Exception 처리 검증 테스트 ---
 @pytest.mark.asyncio
 async def test_fetch_http_error(caplog):
-    """API 호출 중 HTTP 에러(500 등) 발생 시 크래시 없이 None을 반환하고 로그를 남기는지 확인"""
-    # aiohttp ClientSession Mocking
-    session_mock = AsyncMock()
-    response_mock = AsyncMock()
+    """API 호출 중 HTTP 에러 발생 시 프로그램이 멈추지 않고 에러 로그를 남기는지 확인"""
+    # 무조건 에러(Exception)를 뱉는 가짜 세션 생성
+    session = MockAiohttpSession(should_raise=True)
+    api = KMAWeatherAPI(session, "TEST_KEY", "TEMP", "LAND")
     
-    # raise_for_status() 호출 시 HTTP 예외가 발생하도록 조작
-    response_mock.raise_for_status.side_effect = Exception("HTTP 500 Internal Server Error")
-    session_mock.get.return_value.__aenter__.return_value = response_mock
-
-    api = KMAWeatherAPI(session_mock, "TEST_KEY", "TEMP", "LAND")
-    
-    # 로그를 캡처하여 에러 메시지가 기록되는지 확인 준비
     with caplog.at_level(logging.ERROR):
         result = await api._fetch("http://example.com", {})
     
-    # 검증 1: 예외로 인해 프로그램이 죽지 않고 None을 반환해야 함
+    # 1. 예외가 밖으로 새어나오지 않고 None으로 안전하게 반환되었는가?
     assert result is None
-    # 검증 2: _LOGGER.error를 통해 "API 호출 실패" 문자열이 기록되어야 함
+    # 2. _LOGGER.error에 실패 로그가 잘 찍혔는가?
     assert "API 호출 실패" in caplog.text
-
 
 # --- 3. Nominatim User-Agent 포함 여부 검증 테스트 ---
 @pytest.mark.asyncio
 async def test_nominatim_user_agent():
-    """OpenStreetMap 주소 변환 API 호출 시 헤더에 User-Agent가 정상적으로 포함되는지 확인"""
-    session_mock = AsyncMock()
-    response_mock = AsyncMock()
-    
-    # 주소 API의 정상적인 응답 Mocking
-    response_mock.json.return_value = {
+    """OpenStreetMap 주소 API 호출 시 헤더에 User-Agent가 정상적으로 포함되는지 확인"""
+    # 서울 주소를 반환하는 가짜 세션 생성
+    session = MockAiohttpSession(json_data={
         "address": {"city": "서울특별시", "borough": "강남구"}
-    }
-    session_mock.get.return_value.__aenter__.return_value = response_mock
-
-    api = KMAWeatherAPI(session_mock, "TEST_KEY", "TEMP", "LAND")
+    })
+    api = KMAWeatherAPI(session, "TEST_KEY", "TEMP", "LAND")
     
-    # 주소 변환 실행 (서울 좌표)
     address = await api._get_address(37.56, 126.98)
     
-    # 검증 1: 주소 파싱이 정상적으로 이루어졌는지 확인
+    # 1. Mock 데이터가 제대로 파싱되어 주소 문자열이 나왔는가?
     assert address == "서울특별시 강남구"
     
-    # 검증 2: session.get이 호출될 때 headers가 전달되었고, 그 안에 User-Agent가 있는지 확인
-    call_args = session_mock.get.call_args
-    assert call_args is not None, "session.get 이 호출되지 않았습니다."
-    
-    _, kwargs = call_args
-    assert "headers" in kwargs, "API 호출 시 headers가 누락되었습니다."
-    assert "User-Agent" in kwargs["headers"], "headers에 User-Agent가 없습니다."
-    assert "kma_weather" in kwargs["headers"]["User-Agent"], "User-Agent에 컴포넌트 정보가 누락되었습니다."
+    # 2. session.get이 호출될 때 우리가 지정한 User-Agent가 들어갔는가?
+    assert "headers" in session.last_kwargs
+    assert "User-Agent" in session.last_kwargs["headers"]
+    assert "kma_weather" in session.last_kwargs["headers"]["User-Agent"]
