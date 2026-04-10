@@ -171,7 +171,7 @@ class KMAWeatherAPI:
         weather_data = {
             "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None,
             "TMX_today": None, "TMN_today": None, "TMX_tomorrow": None, "TMN_tomorrow": None,
-            "rain_start_time": None, "forecast_daily": [], "forecast_twice_daily": [], "address": address,
+            "rain_start_time": "강수없음", "forecast_daily": [], "forecast_twice_daily": [], "address": address,
         }
 
         forecast_map = {}
@@ -187,7 +187,7 @@ class KMAWeatherAPI:
                 best_t = next((t for t in times if t >= curr_h), times[-1] if times else None)
                 if best_t: weather_data.update(forecast_map[today_str][best_t])
 
-            # Problem 2 해결: 비 시작 시간 분석
+            # Problem 3 해결: 비 시작 시간 분석
             rain_found = False
             for d_str in sorted(forecast_map.keys()):
                 for t_str in sorted(forecast_map[d_str].keys()):
@@ -206,14 +206,20 @@ class KMAWeatherAPI:
         for i in range(10):
             target_date = now + timedelta(days=i)
             d_str = target_date.strftime("%Y%m%d")
+            
+            # 단기 예보 시간대별 TMP 추출
             tmps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
+            
+            # Problem 4 해결: 중기 예보 키 매핑 및 폴백 로직 강화
+            # i=3이면 taMax3, taMin3 사용. i < 3이면 단기 예보 우선.
             t_max = max(tmps) if tmps else _safe_float(mid_ta.get(f"taMax{i}"))
             t_min = min(tmps) if tmps else _safe_float(mid_ta.get(f"taMin{i}"))
 
+            # 날씨 상태(오전/오후) 추출
             wf_am = self._get_sky_kor(forecast_map.get(d_str, {}).get("0900", {}).get("SKY"), forecast_map.get(d_str, {}).get("0900", {}).get("PTY")) if i < 2 else self._translate_mid_condition_kor(mid_land.get(f"wf{i}Am") or mid_land.get(f"wf{i}"))
             wf_pm = self._get_sky_kor(forecast_map.get(d_str, {}).get("1500", {}).get("SKY"), forecast_map.get(d_str, {}).get("1500", {}).get("PTY")) if i < 2 else self._translate_mid_condition_kor(mid_land.get(f"wf{i}Pm") or mid_land.get(f"wf{i}"))
 
-            # [Problem 2 해결] 오늘/내일 센서용 데이터 매핑
+            # [Problem 2 해결] 개별 센서용 평면 딕셔너리에 데이터 주입
             if i == 0:
                 weather_data["wf_am_today"] = wf_am
                 weather_data["wf_pm_today"] = wf_pm
@@ -223,11 +229,10 @@ class KMAWeatherAPI:
                 weather_data["wf_am_tomorrow"] = wf_am
                 weather_data["wf_pm_tomorrow"] = wf_pm
 
-            # 날씨 카드용 리스트 생성
+            # 날씨 카드용 리스트
             for is_am in [True, False]:
-                hour = 9 if is_am else 21
                 twice_daily.append({
-                    "datetime": target_date.replace(hour=hour, minute=0).isoformat(),
+                    "datetime": target_date.replace(hour=9 if is_am else 21, minute=0).isoformat(),
                     "is_daytime": is_am,
                     "native_temperature": t_max, "native_templow": t_min,
                     "condition": self.kor_to_condition(wf_am if is_am else wf_pm),
