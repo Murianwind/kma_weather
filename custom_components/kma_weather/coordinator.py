@@ -168,6 +168,82 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 self._daily_max_temp, changed = n_max, True
         return changed
 
+    def _sync_today_forecast(self, weather: dict) -> None:
+        """
+        forecast_daily와 forecast_twice_daily의 오늘(i=0)/내일(i=1) 항목을
+        coordinator 누적값 및 weather dict 값으로 동기화한다.
+
+        [오늘 i=0]
+        - native_temperature / native_templow : _daily_max_temp / _daily_min_temp
+        - forecast_daily[0].condition         : current_condition (현재날씨와 동일)
+        - forecast_twice_daily 주간 condition : _wf_am_today (오늘오전날씨센서와 동일)
+        - forecast_twice_daily 야간 condition : _wf_pm_today (오늘오후날씨센서와 동일)
+
+        [내일 i=1]
+        - native_temperature / native_templow : TMX_tomorrow / TMN_tomorrow (내일최고/최저센서와 동일)
+        - forecast_twice_daily 주간 condition : wf_am_tomorrow (내일오전날씨센서와 동일)
+        - forecast_twice_daily 야간 condition : wf_pm_tomorrow (내일오후날씨센서와 동일)
+        - forecast_daily[1].condition         : wf_pm_tomorrow (일별 요약은 오후 날씨)
+        """
+        # ── 오늘 값 ──────────────────────────────────────────────────────
+        today_t_max = self._daily_max_temp
+        today_t_min = self._daily_min_temp
+        # 센서와 동일한 소스: coordinator 누적값, 없으면 weather dict fallback
+        wf_am_today = self._wf_am_today or weather.get("wf_am_today")
+        wf_pm_today = self._wf_pm_today or weather.get("wf_pm_today")
+        # 매일[0].condition = 현재날씨 (current_condition과 동일)
+        current_condition = weather.get("current_condition")
+
+        # ── 내일 값 ──────────────────────────────────────────────────────
+        tmrw_t_max = weather.get("TMX_tomorrow")
+        tmrw_t_min = weather.get("TMN_tomorrow")
+        wf_am_tomorrow = weather.get("wf_am_tomorrow")
+        wf_pm_tomorrow = weather.get("wf_pm_tomorrow")
+
+        # ── forecast_daily 동기화 ─────────────────────────────────────────
+        for entry in weather.get("forecast_daily", []):
+            idx = entry.get("_day_index")
+            if idx == 0:
+                if today_t_max is not None:
+                    entry["native_temperature"] = today_t_max
+                if today_t_min is not None:
+                    entry["native_templow"] = today_t_min
+                # 매일 오늘 날씨 = 현재날씨
+                if current_condition is not None:
+                    entry["condition"] = current_condition
+            elif idx == 1:
+                if tmrw_t_max is not None:
+                    entry["native_temperature"] = tmrw_t_max
+                if tmrw_t_min is not None:
+                    entry["native_templow"] = tmrw_t_min
+                if wf_pm_tomorrow:
+                    entry["condition"] = self.api.kor_to_condition(wf_pm_tomorrow)
+
+        # ── forecast_twice_daily 동기화 ───────────────────────────────────
+        for entry in weather.get("forecast_twice_daily", []):
+            idx = entry.get("_day_index")
+            is_am = entry.get("is_daytime", True)
+
+            if idx == 0:
+                if today_t_max is not None:
+                    entry["native_temperature"] = today_t_max
+                if today_t_min is not None:
+                    entry["native_templow"] = today_t_min
+                if is_am and wf_am_today:
+                    entry["condition"] = self.api.kor_to_condition(wf_am_today)
+                elif not is_am and wf_pm_today:
+                    entry["condition"] = self.api.kor_to_condition(wf_pm_today)
+
+            elif idx == 1:
+                if tmrw_t_max is not None:
+                    entry["native_temperature"] = tmrw_t_max
+                if tmrw_t_min is not None:
+                    entry["native_templow"] = tmrw_t_min
+                if is_am and wf_am_tomorrow:
+                    entry["condition"] = self.api.kor_to_condition(wf_am_tomorrow)
+                elif not is_am and wf_pm_tomorrow:
+                    entry["condition"] = self.api.kor_to_condition(wf_pm_tomorrow)
+
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
             try:
@@ -186,12 +262,18 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
                 if "raw_forecast" in new_data:
                     temp_changed = self._update_daily_temperatures(new_data["raw_forecast"])
-                    api_am, api_pm = weather.get("wf_am_today"), weather.get("wf_pm_today")
+                    # 오늘 오전/오후 날씨 갱신 (API에서 새 값이 왔을 때만)
+                    api_am = weather.get("wf_am_today")
+                    api_pm = weather.get("wf_pm_today")
                     summary_changed = False
-                    if api_am and self._wf_am_today != api_am: self._wf_am_today, summary_changed = api_am, True
-                    if api_pm and self._wf_pm_today != api_pm: self._wf_pm_today, summary_changed = api_pm, True
-                    if temp_changed or summary_changed: await self._save_daily_temps()
+                    if api_am and self._wf_am_today != api_am:
+                        self._wf_am_today, summary_changed = api_am, True
+                    if api_pm and self._wf_pm_today != api_pm:
+                        self._wf_pm_today, summary_changed = api_pm, True
+                    if temp_changed or summary_changed:
+                        await self._save_daily_temps()
 
+                # weather dict에 누적값 반영
                 weather.update({
                     "TMX_today": self._daily_max_temp,
                     "TMN_today": self._daily_min_temp,
@@ -203,8 +285,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     "debug_nx": nx, "debug_ny": ny,
                 })
 
-                # ── [수정] 시간대별 current_condition_kor 갱신 후
-                #          current_condition 을 항상 함께 동기화 ────────────
+                # ── 시간대별 current_condition_kor 갱신 후 current_condition 동기화 ──
                 now_h = datetime.now(self.api.tz).hour
                 if now_h < 12:
                     kor = self._wf_am_today or weather.get("current_condition_kor")
@@ -213,6 +294,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
                 weather["current_condition_kor"] = kor
                 weather["current_condition"] = self.api.kor_to_condition(kor)
+
+                # ── 핵심: forecast_daily/twice_daily의 오늘 항목을 누적값으로 동기화 ──
+                self._sync_today_forecast(weather)
 
                 self._cached_data = new_data
                 return new_data
