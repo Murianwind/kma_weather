@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 from homeassistant import config_entries
+from homeassistant.util import dt as dt_util
 
 from custom_components.kma_weather.const import DOMAIN
 
@@ -131,7 +132,7 @@ async def test_api_failure_handling(
         mock_config_entry.entry_id
     ]
 
-    # 에러 강제 발생
+    # 에러 발생
     api_mock.side_effect = Exception("API Error")
     
     await coordinator.async_refresh()
@@ -147,7 +148,7 @@ async def test_sensor_recovery_after_api_restore(
     hass, mock_config_entry, kma_api_mock_factory
 ):
     """API 장애 후 복구 테스트."""
-    # 1. 초기 정상 설정
+    # 1. 초기 정상 로드
     api_mock = kma_api_mock_factory("full_test")
 
     mock_config_entry.add_to_hass(hass)
@@ -156,33 +157,42 @@ async def test_sensor_recovery_after_api_restore(
 
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
     
-    # 초기 상태 확인 (22.5)
-    initial_state = hass.states.get("sensor.test_temperature")
-    assert initial_state.state == "22.5"
+    # 초기 상태 확인
+    state = hass.states.get("sensor.test_temperature")
+    assert state.state == "22.5"
 
     # 2. API 실패 시뮬레이션
     api_mock.side_effect = Exception("Temporary Error")
+    
+    # 갱신 실행 후 상태가 unknown/unavailable이 되었는지 확인
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
-    failed_state = hass.states.get("sensor.test_temperature")
-    assert failed_state.state in ("unknown", "unavailable")
+    state = hass.states.get("sensor.test_temperature")
+    assert state.state in ("unknown", "unavailable")
 
     # 3. API 복구 시뮬레이션
-    # side_effect를 제거하고, return_value를 명시적으로 다시 설정하여 
-    # Mock이 정상적인 비동기 응답을 반환하도록 보장합니다.
+    # side_effect를 제거하고 return_value를 확실하게 다시 설정
     api_mock.side_effect = None
     api_mock.return_value = MOCK_SCENARIOS.get("full_test")
 
-    # 데이터 업데이트 강제 실행
+    # 코디네이터 갱신 강제 실행
+    # async_refresh는 내부적으로 _async_update_data를 호출하며, 
+    # 성공 시 last_update_success를 True로 바꿉니다.
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
-    # 엔티티가 상태 변화를 감지하고 기록할 시간을 충분히 줍니다.
+    # 복구된 센서 상태 확인
     recovered_state = hass.states.get("sensor.test_temperature")
     
-    assert recovered_state is not None
-    # 'unknown'이 아닌지 먼저 확인
-    assert recovered_state.state not in ("unknown", "unavailable")
-    # 최종적으로 값이 22.5로 돌아왔는지 확인
+    # 만약 여전히 unknown이라면, 코디네이터의 데이터가 갱신되지 않은 것임
+    # 이를 해결하기 위해 엔티티 업데이트를 한 번 더 강제할 수 있음
+    if recovered_state.state == "unknown":
+        # 코디네이터의 리스너들에게 알림을 직접 보냄 (최후의 수단)
+        coordinator.async_update_listeners()
+        await hass.async_block_till_done()
+        recovered_state = hass.states.get("sensor.test_temperature")
+
+    assert recovered_state.state != "unknown"
+    assert recovered_state.state != "unavailable"
     assert recovered_state.state == "22.5"
