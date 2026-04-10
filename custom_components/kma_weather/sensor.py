@@ -33,7 +33,6 @@ SENSOR_TYPES = {
     "TMN_tomorrow":       ["내일최저온도",   UnitOfTemperature.CELSIUS,          "mdi:thermometer-chevron-down",SensorDeviceClass.TEMPERATURE, "tomorrow_temp_min",   None],
     "wf_am_tomorrow":     ["내일오전날씨",   None,                                "mdi:weather-partly-cloudy",   None,                          "tomorrow_condition_am",None],
     "wf_pm_tomorrow":     ["내일오후날씨",   None,                                "mdi:weather-cloudy",          None,                          "tomorrow_condition_pm",None],
-    "weather_summary":    ["날씨 요약",      None,                                "mdi:text-box-outline",        None,                          "summary",             None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -99,8 +98,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             val = self.coordinator._daily_min_temp
         elif self._type == "TMX_today":
             val = self.coordinator._daily_max_temp
-        elif self._type == "weather_summary":
-            val = w.get("current_condition_kor")
         else:
             val = w.get(self._type) if self._type in w else a.get(self._type)
 
@@ -144,14 +141,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
         w = self.coordinator.data.get("weather", {})
         a = self.coordinator.data.get("air", {})
-
-        if self._type == "weather_summary":
-            return {
-                "forecast_daily": w.get("forecast_daily", []),
-                "forecast_twice_daily": w.get("forecast_twice_daily", []),
-                "today_max": self.coordinator._daily_max_temp,
-                "today_min": self.coordinator._daily_min_temp,
-            }
 
         if self._type == "address":
             return {
