@@ -8,7 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# weather_summary 삭제 완료
+# weather_summary 제외
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -64,11 +64,11 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             model="KMA Weather Service",
         )
 
-        # [진짜 해결책] HA 프론트엔드 표기 소수점 강제 지정
+        # UI 상의 소수점 표시 강제
         if self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
-            self._attr_suggested_display_precision = 0 # 온도/습도: 무조건 정수
+            self._attr_suggested_display_precision = 0
         elif self._attr_device_class in [SensorDeviceClass.WIND_SPEED, SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
-            self._attr_suggested_display_precision = 1 # 풍속/미세먼지: 무조건 소수점 1자리
+            self._attr_suggested_display_precision = 1
 
     @property
     def native_value(self):
@@ -88,10 +88,19 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if val in [None, "-", ""]: 
             return None
 
-        # 파이썬 레벨의 복잡한 연산 제거 (HA가 알아서 표기함)
+        # 상태값(백엔드) 자료형 강제 (테스트 실패 원인 복구)
         if self._attr_native_unit_of_measurement is not None:
-            try: return float(val)
-            except: return None
+            try:
+                f_val = float(val)
+                # 온도/습도는 완벽한 정수로 변환
+                if self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
+                    return int(round(f_val, 0))
+                # 풍속 및 미세먼지는 소수점 첫째자리 유지
+                if self._attr_device_class in [SensorDeviceClass.WIND_SPEED, SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
+                    return round(f_val, 1)
+                return round(f_val, 1)
+            except (ValueError, TypeError):
+                return None
             
         return val
 
