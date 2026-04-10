@@ -8,7 +8,8 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# 모든 센서 타입 정의 (총 24종 - weather_summary 추가)
+# 모든 센서 타입 정의 (총 23종)
+# Problem 4 해결: 단위를 'µg/m³'(U+00B5)로 수정하여 HA 표준 Device Class 요구사항을 충족함
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -18,9 +19,9 @@ SENSOR_TYPES = {
     "apparent_temp": ["체감온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-lines", SensorDeviceClass.TEMPERATURE, "apparent_temperature", None],
     "rain_start_time": ["비시작시간", None, "mdi:clock-outline", None, "rain_start", None],
     "current_condition_kor": ["현재날씨", None, "mdi:weather-cloudy", None, "condition", None],
-    "pm10Value": ["미세먼지 농도", "μg/m³", "mdi:blur", SensorDeviceClass.PM10, "pm10", None],
+    "pm10Value": ["미세먼지 농도", "µg/m³", "mdi:blur", SensorDeviceClass.PM10, "pm10", None],
     "pm10Grade": ["미세먼지 등급", None, "mdi:check-circle-outline", None, "pm10_grade", None],
-    "pm25Value": ["초미세먼지 농도", "μg/m³", "mdi:blur-linear", SensorDeviceClass.PM25, "pm25", None],
+    "pm25Value": ["초미세먼지 농도", "µg/m³", "mdi:blur-linear", SensorDeviceClass.PM25, "pm25", None],
     "pm25Grade": ["초미세먼지 등급", None, "mdi:check-circle-outline", None, "pm25_grade", None],
     "address": ["현재 위치", None, "mdi:map-marker", None, "location", EntityCategory.DIAGNOSTIC],
     "last_updated": ["업데이트 시간", None, "mdi:update", SensorDeviceClass.TIMESTAMP, "last_updated", EntityCategory.DIAGNOSTIC],
@@ -33,7 +34,6 @@ SENSOR_TYPES = {
     "TMN_tomorrow": ["내일최저온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", SensorDeviceClass.TEMPERATURE, "tomorrow_temp_min", None],
     "wf_am_tomorrow": ["내일오전날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_condition_am", None],
     "wf_pm_tomorrow": ["내일오후날씨", None, "mdi:weather-cloudy", None, "tomorrow_condition_pm", None],
-    "weather_summary": ["날씨 요약", None, "mdi:text-box-outline", None, "summary", None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -75,7 +75,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         """센서의 현재 상태 값 반환"""
-        # 1. API 잔여일수 계산
         if self._type == "api_expire":
             exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
             try:
@@ -86,32 +85,30 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if not self.coordinator.data:
             return None
 
-        # 2. 데이터 소스 (날씨 및 미세먼지)
         w = self.coordinator.data.get("weather", {})
         a = self.coordinator.data.get("air", {})
         
-        # 오늘 최고/최저 기온은 코디네이터 내부 변수에서 직접 참조 (연동 실패 방지)
+        # Problem 1 해결: 오늘 최고/최저 기온은 코디네이터 내부 변수를 우선 참조하여 연동 보장
         if self._type == "TMN_today":
             val = self.coordinator._daily_min_temp
         elif self._type == "TMX_today":
             val = self.coordinator._daily_max_temp
-        elif self._type == "weather_summary":
-            val = w.get("current_condition_kor")
         else:
             val = w.get(self._type) if self._type in w else a.get(self._type)
 
         if val in [None, "-", ""]:
             return None
 
-        # 3. 수치형 데이터 처리
         if self._attr_native_unit_of_measurement is not None:
             try:
-                # 온도(Celsius) 및 습도(%) 센서는 무조건 정수 처리
+                f_val = float(val)
+                # 온도와 습도는 정수 처리 (사용자 요청 사항)
                 if self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
-                    return int(round(float(val), 0))
+                    return int(round(f_val, 0))
                 
-                # 그 외(풍속 등)는 우선 float 유지 (문제 3번에서 상세 수정 예정)
-                return float(val)
+                # 기존 기능 유지: 그 외 수치형(풍속 등)은 int 처리하여 기존 테스트(test_scenarios.py) 호환성 유지
+                # 풍속의 소수점 첫째자리 출력은 Problem 3 단계에서 관련 테스트 수정과 함께 진행됩니다.
+                return int(f_val)
             except (ValueError, TypeError):
                 return None
 
@@ -119,24 +116,10 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        """센서의 추가 속성 반환 - 기존 기능 유지 및 요약 센서 보강"""
-        if not self.coordinator.data:
-            return None
-
-        w = self.coordinator.data.get("weather", {})
-        a = self.coordinator.data.get("air", {})
-
-        # 날씨 요약 센서에 모든 예보 리스트를 포함하여 카드 UI 유지
-        if self._type == "weather_summary":
-            return {
-                "forecast_daily": w.get("forecast_daily", []),
-                "forecast_twice_daily": w.get("forecast_twice_daily", []),
-                "today_max": self.coordinator._daily_max_temp,
-                "today_min": self.coordinator._daily_min_temp,
-                "address": w.get("address"),
-            }
-        
+        """추가 속성 반환"""
         if self._type == "address":
+            w = (self.coordinator.data or {}).get("weather", {})
+            a = (self.coordinator.data or {}).get("air", {})
             return {
                 "short_term_nx": w.get('debug_nx'),
                 "short_term_ny": w.get('debug_ny'),
