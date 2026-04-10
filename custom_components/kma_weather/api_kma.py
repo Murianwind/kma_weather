@@ -163,7 +163,7 @@ class KMAWeatherAPI:
         mid_ta = mid_res[0].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[0] else {}
         mid_land = mid_res[1].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[1] else {}
 
-                twice_daily, daily_forecast = [], []
+        twice_daily, daily_forecast = [], []
 
         include_daytime_today = now.hour < 12
         today_str = now.strftime("%Y%m%d")
