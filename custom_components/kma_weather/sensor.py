@@ -105,8 +105,8 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self):
         """센서의 추가 속성 반환"""
         if self._type == "address":
-            w = self.coordinator.data.get("weather", {})
-            a = self.coordinator.data.get("air", {})
+            w = (self.coordinator.data or {}).get("weather", {})
+            a = (self.coordinator.data or {}).get("air", {})
             return {
                 "short_term_nx": w.get('debug_nx'), 
                 "short_term_ny": w.get('debug_ny'),
