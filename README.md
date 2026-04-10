@@ -1,5 +1,9 @@
 # 기상청 스마트 날씨 (KMA Weather Smart)
 
+[![Pytest](https://github.com/Murianwind/kma_weather/actions/workflows/pytest.yml/badge.svg)](https://github.com/Murianwind/kma_weather/actions/workflows/pytest.yml)
+[![HACS Validate](https://github.com/Murianwind/kma_weather/actions/workflows/hacs.yml/badge.svg)](https://github.com/Murianwind/kma_weather/actions/workflows/hacs.yml)
+[![codecov](https://codecov.io/gh/Murianwind/kma_weather/branch/main/graph/badge.svg)](https://codecov.io/gh/Murianwind/kma_weather)
+
 기상청(KMA) 및 에어코리아(Air Korea)의 공공 데이터를 활용하여 대한민국 로컬 날씨 정보를 제공합니다. 특히 **이동형 기기(Mobile Device)**의 실시간 위치를 추적하여 해당 지역의 동/읍/면 단위 주소와 날씨를 즉시 갱신하는 기능을 포함하고 있습니다.
 
 ## ✨ 주요 기능
