@@ -553,6 +553,10 @@ async def test_options_flow(hass, mock_config_entry, kma_api_mock_factory):
     hass.config.longitude = 126.98
     kma_api_mock_factory("full_test")
 
+    # OptionsFlow 스키마의 EntitySelector 검증을 통과하려면
+    # hass 상태 레지스트리에 실제 entity_id 가 존재해야 함
+    hass.states.async_set("zone.home", "zoning", {"latitude": 37.56, "longitude": 126.98})
+
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
@@ -562,10 +566,11 @@ async def test_options_flow(hass, mock_config_entry, kma_api_mock_factory):
     assert result["type"] == "form"
     assert result["step_id"] == "init"
 
-    # Options 저장
+    # Options 저장 — location_entity 는 hass 에 등록된 유효한 entity_id 전달
     result2 = await hass.config_entries.options.async_configure(
         result["flow_id"],
         user_input={
+            "location_entity": "zone.home",
             "expire_date": "2026-12-31",
             "apply_date": "2025-01-01",
         },
@@ -663,12 +668,13 @@ def test_haversine_known_distance():
     assert 310 < d < 340
 
 
-@pytest.mark.parametrize("temp_id,expected_land", [
-    ("11B10101", "11B00000"),
-    ("11G00101", "11G00000"),
-    ("11A00101", "11A00101"),   # 특수: 11A → 11A00101
-    ("11E00101", "11E00101"),   # 특수: 11E → 11E00101
-    ("11H10101", "11H10000"),
-])
-def test_land_code_mapping(temp_id, expected_land):
-    assert _land_code(temp_id) == expected_landtest_coverage_boost
+class TestLandCodeMapping:
+    @pytest.mark.parametrize("temp_id,expected_land", [
+        ("11B10101", "11B00000"),
+        ("11G00101", "11G00000"),
+        ("11A00101", "11A00101"),   # 특수: 11A → 11A00101
+        ("11E00101", "11E00101"),   # 특수: 11E → 11E00101
+        ("11H10101", "11H10000"),
+    ])
+    def test_land_code(self, temp_id, expected_land):
+        assert _land_code(temp_id) == expected_land
