@@ -47,5 +47,5 @@ jobs:
         run: |
           echo "### ✅ Pytest Execution Report" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
-          pytest tests/ --no-header -q 2>&1 | grep "tests/test_" || true >> $GITHUB_STEP_SUMMARY
+          pytest tests/ --no-header -q --disable-warnings 2>&1 >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
