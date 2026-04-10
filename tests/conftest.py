@@ -78,10 +78,13 @@ def mock_config_entry():
         entry_id="mock_id_123"
     )
 
+# tests/conftest.py 의 해당 부분 수정 예시
 @pytest.fixture
 def kma_api_mock_factory():
+    from unittest.mock import AsyncMock # 상단에 추가하거나 여기서 임포트
     def _create_mock(scenario_name):
-        mock_fetch = patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data").start()
+        # new_callable=AsyncMock 추가가 핵심입니다.
+        mock_fetch = patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data", new_callable=AsyncMock).start()
         if scenario_name == "error":
             mock_fetch.side_effect = Exception("API Error")
         else:
