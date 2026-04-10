@@ -97,12 +97,12 @@ async def test_kma_full_scenarios(
     assert pm25 is not None
     assert pm25.state == "15"
 
-    # PM10 등급 검증 (동적 계산)
+    # PM10 등급 검증
     expected_pm10_grade = calculate_pm10_grade(int(pm10.state))
     actual_pm10_grade = hass.states.get(f"sensor.{p}_pm10_grade").state
     assert actual_pm10_grade == expected_pm10_grade
 
-    # PM2.5 등급 검증 (동적 계산)
+    # PM2.5 등급 검증
     expected_pm25_grade = calculate_pm25_grade(int(pm25.state))
     actual_pm25_grade = hass.states.get(f"sensor.{p}_pm25_grade").state
     assert actual_pm25_grade == expected_pm25_grade
