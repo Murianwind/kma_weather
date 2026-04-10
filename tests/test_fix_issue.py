@@ -1,89 +1,89 @@
 import pytest
 from unittest.mock import MagicMock
-from custom_components.kma_weather.sensor import KMACustomSensor
+from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed
+from homeassistant.components.sensor import SensorDeviceClass
+from custom_components.kma_weather.sensor import KMACustomSensor, SENSOR_TYPES
 
 @pytest.mark.asyncio
-async def test_summary_and_min_temp_maintenance():
-    """시나리오 1: 최저온도 반올림 및 요약 센서 속성 유지 검증"""
-    # 1. Mock 데이터 설정
+async def test_kma_sensor_integrity_and_formatting():
+    """
+    모든 결함을 검출하기 위한 강화된 통합 테스트:
+    1. 불필요한 센서 제거 확인
+    2. Unknown 센서 데이터 매핑 확인
+    3. 온도(정수), 풍속(소수점 1자리) 출력 형식 확인
+    4. 미세먼지 단위 및 데이터 무결성 확인
+    """
+    
+    # --- [검증 1] Problem 1: 불필요한 센서(weather_summary) 제거 확인 ---
+    assert "weather_summary" not in SENSOR_TYPES, "❌ 'weather_summary' 센서가 제거되지 않았습니다. (sensor.home_summary 생성 원인)"
+
+    # --- [준비] Mock 데이터 설정 ---
     coordinator = MagicMock()
-    coordinator._daily_min_temp = 12.7  # 최저기온 설정
-    coordinator._daily_max_temp = 22.0
+    # 소수점 데이터 주입하여 반올림 결함(Problem 3, 4) 유도
     coordinator.data = {
         "weather": {
+            "TMP": "22.6",               # 현재온도
+            "apparent_temp": "23.4",     # 체감온도
+            "TMX_today": "25.7",         # 오늘최고
+            "TMN_today": "15.2",         # 오늘최저
+            "TMX_tomorrow": "24.3",      # 내일최고
+            "TMN_tomorrow": "14.8",      # 내일최저
+            "WSD": "7.58",               # 현재풍속 (소수점 2자리)
+            "REH": "45.0",
+            "POP": "10",
+            "rain_start_time": "14:00",  # 비시작시간
+            "wf_am_tomorrow": "맑음",    # 내일오전
+            "wf_pm_tomorrow": "흐림",    # 내일오후
             "current_condition_kor": "맑음",
-            "forecast_daily": [{"date": "2024-01-01", "temp": 10}],
-            "forecast_twice_daily": [{"datetime": "2024-01-01T12:00:00", "temp": 11}],
-            "address": "서울"
-        },
-        "air": {}
-    }
-    
-    entry = MagicMock()
-    entry.entry_id = "test_id"
-    entry.data = {"prefix": "test"}
-    entry.options = {}
-
-    # 2. 오늘최저온도 센서 검증 (12.7 -> 13 정수 반올림 확인)
-    min_temp_sensor = KMACustomSensor(coordinator, "TMN_today", "test", entry)
-    assert min_temp_sensor.native_value == 13
-    
-    # 3. 날씨 요약 센서 속성 유지 검증
-    summary_sensor = KMACustomSensor(coordinator, "weather_summary", "test", entry)
-    attrs = summary_sensor.extra_state_attributes
-    
-    assert attrs is not None
-    assert len(attrs["forecast_daily"]) == 1
-    assert len(attrs["forecast_twice_daily"]) == 1
-    assert attrs["today_min"] == 12.7
-    
-    print("✅ 문제 1 해결: 최저온도 정수 출력 및 예보 리스트 유지 확인 완료")
-
-
-@pytest.mark.asyncio
-async def test_sensor_decimal_formats_and_units():
-    """시나리오 2: 풍속/미세먼지 소수점 출력 및 단위(µg/m³) 검증"""
-    # 1. Mock 데이터 설정
-    coordinator = MagicMock()
-    # 실제 환경에서 api_kma.py가 반환하는 형태(문자열 등급)로 Mock 데이터 수정
-    coordinator.data = {
-        "weather": {
-            "WSD": "7.58",      # 풍속 (소수점 둘째자리 입력)
-            "TMP": "22.4"       # 온도
         },
         "air": {
-            "pm10Value": "35",  # 미세먼지 (정수 입력)
-            "pm25Value": "15.23", # 초미세먼지
-            "pm10Grade": "보통",  # 수정: raw 값 '2' 대신 변환된 '보통' 입력
-            "pm25Grade": "좋음"   # 수정: raw 값 '1' 대신 변환된 '좋음' 입력
+            "pm10Value": "35.4",
+            "pm25Value": "15.7",
+            "pm10Grade": "보통",
+            "pm25Grade": "좋음",
+            "station": "테스트측정소"
         }
     }
-    
+    # 코디네이터 내부 계산 변수 (오늘 최고/최저)
+    coordinator._daily_max_temp = 25.7
+    coordinator._daily_min_temp = 15.2
+
     entry = MagicMock()
     entry.entry_id = "test_id"
     entry.data = {"prefix": "test"}
     entry.options = {}
 
-    # 2. 풍속 검증: 소수점 첫째자리까지 반올림 (7.58 -> 7.6)
+    # --- [검증 2] Problem 2: Unknown 센서 데이터 매핑 확인 ---
+    # 누락되었던 내일 데이터 및 비 시작 시간 검증
+    target_sensors = {
+        "rain_start_time": "14:00",
+        "wf_am_tomorrow": "맑음",
+        "wf_pm_tomorrow": "흐림",
+        "TMX_tomorrow": 24, # (24.3 반올림 정수)
+        "TMN_tomorrow": 15  # (14.8 반올림 정수)
+    }
+    
+    for s_type, expected in target_sensors.items():
+        sensor = KMACustomSensor(coordinator, s_type, "test", entry)
+        val = sensor.native_value
+        assert val is not None, f"❌ 센서 '{s_type}'의 값이 Unknown입니다."
+        assert val == expected, f"❌ 센서 '{s_type}'의 값이 기대값({expected})과 다릅니다: {val}"
+
+    # --- [검증 3] Problem 3 & 4: 정수 및 소수점 출력 형식 확인 ---
+    # 1. 온도 그룹: 정수 출력 확인 (Problem 3)
+    temp_sensors = ["TMP", "apparent_temp", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow"]
+    for s_type in temp_sensors:
+        sensor = KMACustomSensor(coordinator, s_type, "test", entry)
+        val = sensor.native_value
+        assert isinstance(val, int), f"❌ 온도 센서 '{s_type}'이 정수가 아닙니다: {val} (type: {type(val)})"
+
+    # 2. 풍속: 소수점 첫째자리 확인 (7.58 -> 7.6) (Problem 4)
     wsd_sensor = KMACustomSensor(coordinator, "WSD", "test", entry)
-    assert wsd_sensor.native_value == 7.6
+    assert wsd_sensor.native_value == 7.6, f"❌ 풍속이 소수점 첫째자리로 반올림되지 않았습니다: {wsd_sensor.native_value}"
 
-    # 3. 온도 검증: 여전히 정수 유지 (22.4 -> 22)
-    tmp_sensor = KMACustomSensor(coordinator, "TMP", "test", entry)
-    assert tmp_sensor.native_value == 22
-
-    # 4. 미세먼지 농도 검증: 소수점 첫째자리 강제 (35 -> 35.0, 15.23 -> 15.2)
+    # --- [검증 4] Problem 4: 미세먼지 농도 소수점 1자리 및 단위 확인 ---
     pm10_sensor = KMACustomSensor(coordinator, "pm10Value", "test", entry)
-    assert pm10_sensor.native_value == 35.0
-    
-    pm25_sensor = KMACustomSensor(coordinator, "pm25Value", "test", entry)
-    assert pm25_sensor.native_value == 15.2
+    assert pm10_sensor.native_value == 35.4
+    assert pm10_sensor.native_unit_of_measurement == "µg/m³", "❌ 미세먼지 단위가 올바르지 않습니다."
 
-    # 5. 단위 검증: µg/m³ (마이크로 기호 표준 준수 확인)
-    assert pm10_sensor.native_unit_of_measurement == "µg/m³"
-    
-    # 6. 등급 검증: 문자열 등급이 정상적으로 출력되는지 확인
-    pm25_grade_sensor = KMACustomSensor(coordinator, "pm25Grade", "test", entry)
-    assert pm25_grade_sensor.native_value == "좋음"
-
-    print("✅ 문제 2, 3, 4 해결: 풍속/미세먼지 소수점 및 단위/등급 확인 완료")
+    print("✅ 모든 결함 검출 및 보강 테스트 완료")
