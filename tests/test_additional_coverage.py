@@ -59,12 +59,12 @@ async def test_weather_entity_and_forecast(
     )
     await hass.async_block_till_done()
 
-    entity_id = "weather.test_weather"
-    state = hass.states.get(entity_id)
+    state = hass.states.get("weather.test_weather")
     assert state is not None
+    assert state.state == "sunny"
 
-    # Weather 엔티티는 온도를 state가 아닌 속성으로 제공하지 않을 수 있음
     attrs = state.attributes
+    assert attrs["temperature"] == 22.5
     assert "temperature_unit" in attrs
     assert "wind_speed_unit" in attrs
     assert "supported_features" in attrs
