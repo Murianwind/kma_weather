@@ -113,21 +113,22 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if self._attr_native_unit_of_measurement is not None:
             try:
                 f_val = float(val)
-                
-                # 1. 온도와 습도는 '정수(int)' 자료형으로 강제 반환
-                if self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
-                    return int(round(f_val, 0))
-                
-                # 2. 풍속 및 미세먼지 농도는 소수점 첫째자리(float)로 반환
-                if self._attr_device_class in [
-                    SensorDeviceClass.WIND_SPEED,
-                    SensorDeviceClass.PM10,
-                    SensorDeviceClass.PM25,
-                ]:
-                   return float(f"{f_val:.1f}")
-                
-                # 3. 그 외 수치형(예: 강수확률)은 정수 유지
-                return int(f_val)
+
+                # 1. 온도 및 습도 → 정수
+                if self._type in ("TMP", "REH", "TMX_today", "TMN_today", "TMX_tomorrow", "TMN_tomorrow", "apparent_temp"):
+                    return int(round(f_val))
+
+                 # 2. 풍속 → 소수점 첫째자리
+                if self._type == "WSD":
+                    return float(f"{f_val:.1f}")
+
+                # 3. 미세먼지 농도 → 소수점 첫째자리
+                if self._type in ("pm10Value", "pm25Value"):
+                     return float(f"{f_val:.1f}")
+
+                # 4. 강수확률 등 기타 값 → 정수
+                return int(round(f_val))
+
             except (ValueError, TypeError):
                 return None
 
