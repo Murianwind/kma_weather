@@ -8,7 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# 모든 센서 타입 정의 (Problem 1: weather_summary 제거)
+# [Problem 1 해결] 불필요한 weather_summary 제거 (총 23종)
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -84,7 +84,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         w = self.coordinator.data.get("weather", {})
         a = self.coordinator.data.get("air", {})
         
-        # 오늘 최고/최저 기온은 코디네이터 내부 계산 변수를 우선 참조
+        # 데이터 매핑 로직 (Problem 2 연동 준비)
         if self._type == "TMN_today":
             val = self.coordinator._daily_min_temp
         elif self._type == "TMX_today":
@@ -95,7 +95,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if val in [None, "-", ""]:
             return None
 
-        # 수치형 데이터 처리 (Problem 3 & 4)
+        # [Problem 3 & 4 해결] 수치형 데이터 처리
         if self._attr_native_unit_of_measurement is not None:
             try:
                 f_val = float(val)
@@ -108,7 +108,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 if self._attr_device_class == SensorDeviceClass.WIND_SPEED:
                     return round(f_val, 1)
                 
-                # 3. 미세먼지 등 기타 수치형은 기존 소수점 1자리 유지 (요청에 따라 풍속만 1자리로 제한)
+                # 3. 미세먼지 농도 등 기타 수치형은 소수점 첫째자리 유지
                 return round(f_val, 1)
             except (ValueError, TypeError):
                 return None
@@ -117,9 +117,13 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
+        if not self.coordinator.data:
+            return None
+            
+        w = self.coordinator.data.get("weather", {})
+        a = self.coordinator.data.get("air", {})
+
         if self._type == "address":
-            w = (self.coordinator.data or {}).get("weather", {})
-            a = (self.coordinator.data or {}).get("air", {})
             return {
                 "short_term_nx": w.get('debug_nx'),
                 "short_term_ny": w.get('debug_ny'),
