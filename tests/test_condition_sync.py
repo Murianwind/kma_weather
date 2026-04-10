@@ -224,13 +224,22 @@ class TestCoordinatorConditionSync:
         self, hass, hour, wf_am, wf_pm, expected_kor
     ):
         """시간대별 갱신 후 두 키가 동일한 상태를 가리키는지 확인합니다."""
+        
+        # ── [추가] HA 테스트 환경에 유효한 한국 좌표 설정 ──
+        hass.config.latitude = 37.56
+        hass.config.longitude = 126.98
+        
         coord = self._make_coordinator(hass, wf_am, wf_pm)
         fake_now = datetime(2025, 6, 1, hour, 0, tzinfo=TZ)
 
+        # API 응답 모킹 (coordinator가 사용할 데이터)
         coord.api.fetch_data = AsyncMock(return_value={
             "weather": {
-                "TMP": 20, "wf_am_today": wf_am, "wf_pm_today": wf_pm,
-                "current_condition_kor": wf_am, "current_condition": KOR_TO_CONDITION[wf_am],
+                "TMP": 20, 
+                "wf_am_today": wf_am, 
+                "wf_pm_today": wf_pm,
+                "current_condition_kor": wf_am, 
+                "current_condition": KOR_TO_CONDITION[wf_am],
                 "forecast_twice_daily": [],
             },
             "air": {},
@@ -242,6 +251,8 @@ class TestCoordinatorConditionSync:
         ) as mock_dt:
             mock_dt.now.return_value = fake_now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            
+            # 이제 위치 정보가 있으므로 정상적으로 로직 끝까지 실행됩니다.
             result = await coord._async_update_data()
 
         w = result["weather"]
