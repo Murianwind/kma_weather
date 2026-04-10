@@ -8,7 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# 모든 센서 타입 정의 (총 24종)
+# 모든 센서 타입 정의 (Problem 1: weather_summary 제거)
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -33,11 +33,9 @@ SENSOR_TYPES = {
     "TMN_tomorrow": ["내일최저온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", SensorDeviceClass.TEMPERATURE, "tomorrow_temp_min", None],
     "wf_am_tomorrow": ["내일오전날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_condition_am", None],
     "wf_pm_tomorrow": ["내일오후날씨", None, "mdi:weather-cloudy", None, "tomorrow_condition_pm", None],
-    "weather_summary": ["날씨 요약", None, "mdi:text-box-outline", None, "summary", None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """센서 엔티티 등록"""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     prefix = entry.options.get(CONF_PREFIX, entry.data.get(CONF_PREFIX, "kma"))
     
@@ -48,7 +46,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(entities)
 
 class KMACustomSensor(CoordinatorEntity, SensorEntity):
-    """기상청 커스텀 센서 클래스"""
     _attr_has_entity_name = True
 
     def __init__(self, coordinator, sensor_type, prefix, entry):
@@ -74,7 +71,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        """센서의 현재 상태 값 반환"""
         if self._type == "api_expire":
             exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
             try:
@@ -93,15 +89,13 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             val = self.coordinator._daily_min_temp
         elif self._type == "TMX_today":
             val = self.coordinator._daily_max_temp
-        elif self._type == "weather_summary":
-            val = w.get("current_condition_kor")
         else:
             val = w.get(self._type) if self._type in w else a.get(self._type)
 
         if val in [None, "-", ""]:
             return None
 
-        # 수치형 데이터 처리
+        # 수치형 데이터 처리 (Problem 3 & 4)
         if self._attr_native_unit_of_measurement is not None:
             try:
                 f_val = float(val)
@@ -110,16 +104,12 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 if self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
                     return int(round(f_val, 0))
                 
-                # 2. 풍속 및 미세먼지 농도는 소수점 첫째자리까지 처리
-                if self._attr_device_class in [
-                    SensorDeviceClass.WIND_SPEED,
-                    SensorDeviceClass.PM10,
-                    SensorDeviceClass.PM25,
-                ]:
+                # 2. 풍속은 소수점 첫째자리까지 처리
+                if self._attr_device_class == SensorDeviceClass.WIND_SPEED:
                     return round(f_val, 1)
                 
-                # 3. 강수확률(POP) 등 기타 수치형은 정수 유지
-                return int(f_val)
+                # 3. 미세먼지 등 기타 수치형은 기존 소수점 1자리 유지 (요청에 따라 풍속만 1자리로 제한)
+                return round(f_val, 1)
             except (ValueError, TypeError):
                 return None
 
@@ -127,23 +117,9 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        """추가 속성 반환"""
-        if not self.coordinator.data:
-            return None
-            
-        w = self.coordinator.data.get("weather", {})
-        a = self.coordinator.data.get("air", {})
-
-        if self._type == "weather_summary":
-            # 카드 UI 유지: 10일치 예보 및 2시간 예보 속성 포함
-            return {
-                "forecast_daily": w.get("forecast_daily", []),
-                "forecast_twice_daily": w.get("forecast_twice_daily", []),
-                "today_max": self.coordinator._daily_max_temp,
-                "today_min": self.coordinator._daily_min_temp,
-            }
-            
         if self._type == "address":
+            w = (self.coordinator.data or {}).get("weather", {})
+            a = (self.coordinator.data or {}).get("air", {})
             return {
                 "short_term_nx": w.get('debug_nx'),
                 "short_term_ny": w.get('debug_ny'),
