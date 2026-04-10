@@ -64,6 +64,14 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_class = details[3]
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
         self._attr_entity_category = details[5]
+
+        if self._attr_device_class == SensorDeviceClass.WIND_SPEED:
+         self._attr_suggested_display_precision = 1
+        elif self._attr_device_class in (
+            SensorDeviceClass.TEMPERATURE,
+            SensorDeviceClass.HUMIDITY,
+        ):
+            self._attr_suggested_display_precision = 0
         
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
