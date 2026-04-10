@@ -1,4 +1,4 @@
-name: Pytest Automation
+name: Codecov
 
 on:
   push:
