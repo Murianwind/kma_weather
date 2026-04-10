@@ -11,21 +11,13 @@ _LOGGER = logging.getLogger(__name__)
 
 def _safe_float(v):
     try:
-        if v == "" or v is None or v == "-":
-            return None
+        if v == "" or v is None or v == "-": return None
         return float(v)
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError): return None
 
-# ── 한글 → HA 표준 영문 매핑 ──────────────────────────────────
 KOR_TO_CONDITION: dict[str, str] = {
-    "맑음":    "sunny",
-    "구름많음": "partlycloudy",
-    "흐림":    "cloudy",
-    "비":      "rainy",
-    "비/눈":   "rainy",
-    "소나기":  "rainy",
-    "눈":      "snowy",
+    "맑음": "sunny", "구름많음": "partlycloudy", "흐림": "cloudy",
+    "비": "rainy", "비/눈": "rainy", "소나기": "rainy", "눈": "snowy",
 }
 
 class KMAWeatherAPI:
@@ -37,13 +29,12 @@ class KMAWeatherAPI:
         self.hass = hass
         self.tz = ZoneInfo("Asia/Seoul")
         self.lat = self.lon = self.nx = self.ny = None
-        self._cached_station = None
-        self._cached_lat_lon = None
-        self._station_cache_time = None
+        self._cached_station = self._cached_lat_lon = self._station_cache_time = None
         self._nominatim_user_agent = self._build_nominatim_user_agent()
 
     def _build_nominatim_user_agent(self):
         base = "HomeAssistant-KMA-Weather"
+        # UUID 로직 복구 (테스트 실패 원인)
         if self.hass:
             try:
                 uuid = getattr(self.hass, "installation_uuid", None)
@@ -59,9 +50,7 @@ class KMAWeatherAPI:
 
     async def _fetch(self, url, params, headers=None, timeout=15):
         try:
-            async with self.session.get(
-                url, params=params, headers=headers, timeout=timeout
-            ) as response:
+            async with self.session.get(url, params=params, headers=headers, timeout=timeout) as response:
                 response.raise_for_status()
                 return await response.json(content_type=None)
         except Exception as err:
@@ -72,58 +61,43 @@ class KMAWeatherAPI:
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
         tasks = [
-            self._get_short_term(now),
-            self._get_mid_term(now),
-            self._get_air_quality(),
-            self._get_address(lat, lon),
+            self._get_short_term(now), self._get_mid_term(now),
+            self._get_air_quality(), self._get_address(lat, lon)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        short_res, mid_res, air_data, address = [
-            r if not isinstance(r, Exception) else None for r in results
-        ]
-        return self._merge_all(now, short_res, mid_res, air_data, address)
+        return self._merge_all(now, *[r if not isinstance(r, Exception) else None for r in results])
 
     async def _get_address(self, lat, lon):
         try:
             url = "https://nominatim.openstreetmap.org/reverse"
-            params = {"format": "json", "lat": lat, "lon": lon, "zoom": 16}
-            headers = {"User-Agent": self._nominatim_user_agent, "Accept-Language": "ko"}
-            d = await self._fetch(url, params=params, headers=headers, timeout=5)
+            d = await self._fetch(url, params={"format": "json", "lat": lat, "lon": lon, "zoom": 16}, headers={"User-Agent": self._nominatim_user_agent, "Accept-Language": "ko"}, timeout=5)
             if d:
                 a = d.get("address", {})
                 parts = [a.get("city", a.get("province", "")), a.get("borough", a.get("county", "")), a.get("suburb", a.get("village", ""))]
                 return " ".join([p for p in parts if p]).strip()
-            return f"{lat:.4f}, {lon:.4f}"
-        except Exception:
-            return f"{lat:.4f}, {lon:.4f}"
+        except: pass
+        return f"{lat:.4f}, {lon:.4f}"
 
     async def _get_air_quality(self):
         try:
             sn = self._cached_station
             if not sn:
                 tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
-                st_json = await self._fetch("https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList", 
-                                            {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"})
+                st_json = await self._fetch("https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList", {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"})
                 items = st_json.get("response", {}).get("body", {}).get("items", []) if st_json else []
                 if not items: return {}
-                sn = items[0].get("stationName")
-                self._cached_station = sn
+                sn = self._cached_station = items[0].get("stationName")
 
-            air_json = await self._fetch("https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
-                                         {"serviceKey": self.api_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"})
-            
+            air_json = await self._fetch("https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty", {"serviceKey": self.api_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"})
             ai_list = air_json.get("response", {}).get("body", {}).get("items", []) if air_json else []
             if not ai_list: return {"station": sn}
 
             ai = ai_list[0]
-            p10_g = ai.get("pm10Grade") or ai.get("pm10Grade1h")
-            p25_g = ai.get("pm25Grade") or ai.get("pm25Grade1h")
-
             return {
                 "pm10Value": ai.get("pm10Value"),
-                "pm10Grade": self._translate_grade(p10_g),
+                "pm10Grade": self._translate_grade(ai.get("pm10Grade") or ai.get("pm10Grade1h")),
                 "pm25Value": ai.get("pm25Value"),
-                "pm25Grade": self._translate_grade(p25_g),
+                "pm25Grade": self._translate_grade(ai.get("pm25Grade") or ai.get("pm25Grade1h")),
                 "station": sn,
             }
         except Exception as e:
@@ -136,14 +110,10 @@ class KMAWeatherAPI:
     async def _get_short_term(self, now):
         adj = now - timedelta(minutes=10)
         hour = adj.hour
-        base_hours = [2, 5, 8, 11, 14, 17, 20, 23]
-        valid_hours = [h for h in base_hours if h <= hour]
+        valid_hours = [h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= hour]
         base_h = max(valid_hours) if valid_hours else 23
         base_d = adj.strftime("%Y%m%d") if valid_hours else (adj - timedelta(days=1)).strftime("%Y%m%d")
-        
-        url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
-        params = {"serviceKey": self.api_key, "dataType": "JSON", "base_date": base_d, "base_time": f"{base_h:02d}00", "nx": self.nx, "ny": self.ny, "numOfRows": 1500}
-        return await self._fetch(url, params=params)
+        return await self._fetch("https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst", {"serviceKey": self.api_key, "dataType": "JSON", "base_date": base_d, "base_time": f"{base_h:02d}00", "nx": self.nx, "ny": self.ny, "numOfRows": 1500})
 
     async def _get_mid_term(self, now):
         base = (now if now.hour >= 18 else (now if now.hour >= 6 else now - timedelta(days=1))).strftime("%Y%m%d") + ("0600" if 6 <= now.hour < 18 else "1800")
@@ -156,10 +126,8 @@ class KMAWeatherAPI:
         t, rh, v = _safe_float(temp), _safe_float(reh), _safe_float(wsd)
         if t is None: return temp
         v_kmh = v * 3.6 if v is not None else 0
-        if t <= 10 and v_kmh >= 4.8:
-            return round(13.12 + 0.6215 * t - 11.37 * (v_kmh ** 0.16) + 0.3965 * t * (v_kmh ** 0.16), 1)
-        if t >= 25 and rh is not None and rh >= 40:
-            return round(0.5 * (t + 61.0 + ((t - 68.0) * 1.2) + (rh * 0.094)), 1)
+        if t <= 10 and v_kmh >= 4.8: return round(13.12 + 0.6215 * t - 11.37 * (v_kmh ** 0.16) + 0.3965 * t * (v_kmh ** 0.16), 1)
+        if t >= 25 and rh is not None and rh >= 40: return round(0.5 * (t + 61.0 + ((t - 68.0) * 1.2) + (rh * 0.094)), 1)
         return t
 
     @staticmethod
@@ -176,70 +144,55 @@ class KMAWeatherAPI:
 
         forecast_map = {}
         if short_res and "response" in short_res:
-            items = short_res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
-            for it in items:
+            for it in short_res.get("response", {}).get("body", {}).get("items", {}).get("item", []):
                 forecast_map.setdefault(it["fcstDate"], {}).setdefault(it["fcstTime"], {})[it["category"]] = it["fcstValue"]
 
-            today_str = now.strftime("%Y%m%d")
-            curr_h = f"{now.hour:02d}00"
+            today_str, curr_h = now.strftime("%Y%m%d"), f"{now.hour:02d}00"
             if today_str in forecast_map:
                 times = sorted(forecast_map[today_str].keys())
                 best_t = next((t for t in times if t >= curr_h), times[-1] if times else None)
                 if best_t: weather_data.update(forecast_map[today_str][best_t])
 
-            # Problem 3 해결: 비 시작 시간 분석
-            rain_found = False
             for d_str in sorted(forecast_map.keys()):
-                for t_str in sorted(forecast_map[d_str].keys()):
-                    if not rain_found and _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0:
-                        weather_data["rain_start_time"] = f"{t_str[:2]}:{t_str[2:]}"
-                        rain_found = True
-                        break
-                if rain_found: break
+                rain_times = [t_str for t_str in sorted(forecast_map[d_str].keys()) if _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0]
+                if rain_times:
+                    t = rain_times[0]
+                    weather_data["rain_start_time"] = f"{t[:2]}:{t[2:]}"
+                    break
 
         mid_ta = mid_res[0].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[0] else {}
         mid_land = mid_res[1].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[1] else {}
 
-        twice_daily = []
-        daily_forecast = []
+        twice_daily, daily_forecast = [], []
 
         for i in range(10):
             target_date = now + timedelta(days=i)
             d_str = target_date.strftime("%Y%m%d")
             
-            # 단기 예보 TMP 데이터 추출
-            tmps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
-            
-            # Problem 4 해결: 중기 예보 키 매핑 (Day 3~10)
-            # i=0(오늘), i=1(내일), i=2(모레)는 단기 예보 우선 참조
+            t_max, t_min = None, None
+            wf_am, wf_pm = "맑음", "맑음"
+
             if i < 3:
+                tmps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
                 t_max = max(tmps) if tmps else _safe_float(mid_ta.get(f"taMax{i}"))
                 t_min = min(tmps) if tmps else _safe_float(mid_ta.get(f"taMin{i}"))
+                wf_am = self._get_sky_kor(forecast_map.get(d_str, {}).get("0900", {}).get("SKY"), forecast_map.get(d_str, {}).get("0900", {}).get("PTY"))
+                wf_pm = self._get_sky_kor(forecast_map.get(d_str, {}).get("1500", {}).get("SKY"), forecast_map.get(d_str, {}).get("1500", {}).get("PTY"))
             else:
-                # 3일차 이후는 중기 예보 API 키(taMax3~taMax10)를 정확히 참조
                 t_max = _safe_float(mid_ta.get(f"taMax{i}"))
                 t_min = _safe_float(mid_ta.get(f"taMin{i}"))
+                wf_am = self._translate_mid_condition_kor(mid_land.get(f"wf{i}Am") or mid_land.get(f"wf{i}"))
+                wf_pm = self._translate_mid_condition_kor(mid_land.get(f"wf{i}Pm") or mid_land.get(f"wf{i}"))
 
-            # 날씨 상태(오전/오후) 추출
-            wf_am = self._get_sky_kor(forecast_map.get(d_str, {}).get("0900", {}).get("SKY"), forecast_map.get(d_str, {}).get("0900", {}).get("PTY")) if i < 2 else self._translate_mid_condition_kor(mid_land.get(f"wf{i}Am") or mid_land.get(f"wf{i}"))
-            wf_pm = self._get_sky_kor(forecast_map.get(d_str, {}).get("1500", {}).get("SKY"), forecast_map.get(d_str, {}).get("1500", {}).get("PTY")) if i < 2 else self._translate_mid_condition_kor(mid_land.get(f"wf{i}Pm") or mid_land.get(f"wf{i}"))
-
-            # [Problem 2 해결] 개별 센서 엔티티용 평면 딕셔너리에 데이터 주입
             if i == 0:
-                weather_data["wf_am_today"] = wf_am
-                weather_data["wf_pm_today"] = wf_pm
+                weather_data["wf_am_today"], weather_data["wf_pm_today"] = wf_am, wf_pm
             elif i == 1:
-                weather_data["TMX_tomorrow"] = t_max
-                weather_data["TMN_tomorrow"] = t_min
-                weather_data["wf_am_tomorrow"] = wf_am
-                weather_data["wf_pm_tomorrow"] = wf_pm
+                weather_data.update({"TMX_tomorrow": t_max, "TMN_tomorrow": t_min, "wf_am_tomorrow": wf_am, "wf_pm_tomorrow": wf_pm})
 
-            # 날씨 카드 리스트 구성 (오전/오후)
             for is_am in [True, False]:
                 twice_daily.append({
                     "datetime": target_date.replace(hour=9 if is_am else 21, minute=0, second=0, microsecond=0).isoformat(),
-                    "is_daytime": is_am,
-                    "native_temperature": t_max, "native_templow": t_min,
+                    "is_daytime": is_am, "native_temperature": t_max, "native_templow": t_min,
                     "condition": self.kor_to_condition(wf_am if is_am else wf_pm),
                 })
 
@@ -250,16 +203,13 @@ class KMAWeatherAPI:
                     "condition": self.kor_to_condition(wf_pm),
                 })
 
-        weather_data["forecast_twice_daily"] = twice_daily
-        weather_data["forecast_daily"] = daily_forecast
-        
+        weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast})
         kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
-        weather_data["current_condition_kor"] = kor_now
-        weather_data["current_condition"] = self.kor_to_condition(kor_now)
-        weather_data["apparent_temp"] = self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD"))
-        
+        weather_data.update({
+            "current_condition_kor": kor_now, "current_condition": self.kor_to_condition(kor_now),
+            "apparent_temp": self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD")),
+        })
         if weather_data.get("VEC"): weather_data["VEC_KOR"] = self._get_vec_kor(weather_data["VEC"])
-
         return {"weather": weather_data, "air": air_data or {}, "raw_forecast": forecast_map}
 
     def _translate_mid_condition_kor(self, wf: str) -> str:
@@ -270,12 +220,6 @@ class KMAWeatherAPI:
         if "흐림" in wf: return "흐림"
         return "맑음"
 
-    def _translate_mid_condition(self, wf):
-        return self.kor_to_condition(self._translate_mid_condition_kor(wf))
-
-    def _get_condition(self, s, p):
-        return self.kor_to_condition(self._get_sky_kor(s, p))
-
     def _get_sky_kor(self, sky, pty):
         p, s = str(pty or "0"), str(sky or "1")
         if p in ["1", "2", "3", "4"]: return {"1":"비","2":"비/눈","3":"눈","4":"소나기"}.get(p, "비")
@@ -285,13 +229,16 @@ class KMAWeatherAPI:
         v = _safe_float(vec)
         if v is None: return None
         if 22.5 <= v < 67.5: return "북동"
-        if 67.5 <= v < 112.5: return "동"
-        if 112.5 <= v < 157.5: return "남동"
-        if 157.5 <= v < 202.5: return "남"
-        if 202.5 <= v < 247.5: return "남서"
-        if 247.5 <= v < 292.5: return "서"
-        if 292.5 <= v < 337.5: return "북서"
+        elif 67.5 <= v < 112.5: return "동"
+        elif 112.5 <= v < 157.5: return "남동"
+        elif 157.5 <= v < 202.5: return "남"
+        elif 202.5 <= v < 247.5: return "남서"
+        elif 247.5 <= v < 292.5: return "서"
+        elif 292.5 <= v < 337.5: return "북서"
         return "북"
+
+    def _translate_mid_condition(self, wf): return self.kor_to_condition(self._translate_mid_condition_kor(wf))
+    def _get_condition(self, s, p): return self.kor_to_condition(self._get_sky_kor(s, p))
 
     def _wgs84_to_tm(self, lat, lon):
         a, f = 6378137.0, 1 / 298.257222101

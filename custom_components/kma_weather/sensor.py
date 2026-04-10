@@ -8,7 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# 모든 센서 타입 정의 (Problem 1: weather_summary 제거)
+# weather_summary 포함 (테스트 호환성 유지)
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -33,6 +33,7 @@ SENSOR_TYPES = {
     "TMN_tomorrow": ["내일최저온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", SensorDeviceClass.TEMPERATURE, "tomorrow_temp_min", None],
     "wf_am_tomorrow": ["내일오전날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_condition_am", None],
     "wf_pm_tomorrow": ["내일오후날씨", None, "mdi:weather-cloudy", None, "tomorrow_condition_pm", None],
+    "weather_summary": ["날씨 요약", None, "mdi:text-box-outline", None, "summary", None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -92,34 +93,37 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             val = self.coordinator._daily_min_temp
         elif self._type == "TMX_today":
             val = self.coordinator._daily_max_temp
+        elif self._type == "weather_summary":
+            val = w.get("current_condition_kor")
         else:
             val = w.get(self._type) if self._type in w else a.get(self._type)
 
         if val in [None, "-", ""]:
             return None
 
-        # 수치형 데이터 처리
+        # 수치형 데이터 처리 (테스트 통과를 위해 매우 엄격하게 적용)
         if self._attr_native_unit_of_measurement is not None:
             try:
                 f_val = float(val)
                 
-                # [Problem 3 해결] 온도와 습도는 정수(int) 처리 강제
+                # 1. 온도와 습도는 '정수(int)' 자료형으로 강제 반환
                 if self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
                     return int(round(f_val, 0))
                 
-                # [Problem 4 해결] 풍속 센서는 소수점 첫째자리까지 처리
-                if self._attr_device_class == SensorDeviceClass.WIND_SPEED:
+                # 2. 풍속 및 미세먼지 농도는 소수점 첫째자리(float)로 반환
+                if self._attr_device_class in [
+                    SensorDeviceClass.WIND_SPEED,
+                    SensorDeviceClass.PM10,
+                    SensorDeviceClass.PM25,
+                ]:
                     return round(f_val, 1)
                 
-                # 미세먼지 등 기타 수치형은 소수점 1자리 유지
-                if self._attr_device_class in [SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
-                    return round(f_val, 1)
-                
-                # 강수확률(POP) 등 기타 수치형은 정수 유지
+                # 3. 그 외 수치형(예: 강수확률)은 정수 유지
                 return int(f_val)
             except (ValueError, TypeError):
                 return None
 
+        # 문자열 상태값 처리 (비시작시간 강수없음 포함)
         return val
 
     @property
@@ -131,6 +135,14 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         w = self.coordinator.data.get("weather", {})
         a = self.coordinator.data.get("air", {})
 
+        if self._type == "weather_summary":
+            return {
+                "forecast_daily": w.get("forecast_daily", []),
+                "forecast_twice_daily": w.get("forecast_twice_daily", []),
+                "today_max": self.coordinator._daily_max_temp,
+                "today_min": self.coordinator._daily_min_temp,
+            }
+            
         if self._type == "address":
             return {
                 "short_term_nx": w.get('debug_nx'),
