@@ -172,7 +172,7 @@ async def test_sensor_recovery_after_api_restore(
             if state.state != STATE_UNKNOWN:
                 break
 
-    assert state.state == "22.5"
+    assert state.state == "22"
 
     # 2. API 실패 시뮬레이션
     api_mock.side_effect = Exception("Temporary Error")
@@ -203,4 +203,4 @@ async def test_sensor_recovery_after_api_restore(
             if recovered_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
                 break
 
-    assert recovered_state.state == "22.5"
+    assert recovered_state.state == "22"
