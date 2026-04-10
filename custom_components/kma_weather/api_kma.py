@@ -13,7 +13,7 @@ def _safe_float(v):
     try:
         if v == "" or v is None or v == "-": return None
         return float(v)
-    except: return None
+    except (TypeError, ValueError): return None
 
 KOR_TO_CONDITION: dict[str, str] = {
     "맑음": "sunny", "구름많음": "partlycloudy", "흐림": "cloudy",
@@ -34,10 +34,19 @@ class KMAWeatherAPI:
 
     def _build_nominatim_user_agent(self):
         base = "HomeAssistant-KMA-Weather"
+        # UUID 로직 복구 (테스트 실패 원인)
+        if self.hass:
+            try:
+                uuid = getattr(self.hass, "installation_uuid", None)
+                if uuid:
+                    return f"{base}/{uuid.replace('-', '')[:12]}"
+            except Exception:
+                pass
         try:
             hashed = hashlib.sha1(self.api_key.encode()).hexdigest()[:12]
             return f"{base}/{hashed}"
-        except: return base
+        except Exception:
+            return base
 
     async def _fetch(self, url, params, headers=None, timeout=15):
         try:
@@ -144,7 +153,6 @@ class KMAWeatherAPI:
                 best_t = next((t for t in times if t >= curr_h), times[-1] if times else None)
                 if best_t: weather_data.update(forecast_map[today_str][best_t])
 
-            # 깔끔하게 정리된 비 시작 시간 로직
             for d_str in sorted(forecast_map.keys()):
                 rain_times = [t_str for t_str in sorted(forecast_map[d_str].keys()) if _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0]
                 if rain_times:
@@ -165,14 +173,12 @@ class KMAWeatherAPI:
             wf_am, wf_pm = "맑음", "맑음"
 
             if i < 3:
-                # 0~2일차 (단기 예보 확실히 사용)
                 tmps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
                 t_max = max(tmps) if tmps else _safe_float(mid_ta.get(f"taMax{i}"))
                 t_min = min(tmps) if tmps else _safe_float(mid_ta.get(f"taMin{i}"))
                 wf_am = self._get_sky_kor(forecast_map.get(d_str, {}).get("0900", {}).get("SKY"), forecast_map.get(d_str, {}).get("0900", {}).get("PTY"))
                 wf_pm = self._get_sky_kor(forecast_map.get(d_str, {}).get("1500", {}).get("SKY"), forecast_map.get(d_str, {}).get("1500", {}).get("PTY"))
             else:
-                # 3일차 이상 (중기 예보 확실히 사용, 데이터 유실 방지)
                 t_max = _safe_float(mid_ta.get(f"taMax{i}"))
                 t_min = _safe_float(mid_ta.get(f"taMin{i}"))
                 wf_am = self._translate_mid_condition_kor(mid_land.get(f"wf{i}Am") or mid_land.get(f"wf{i}"))
