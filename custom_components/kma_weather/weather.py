@@ -37,7 +37,7 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
 
         self.entity_id = f"weather.{prefix}_weather"
         self._attr_name = "날씨 요약"
-        self._attr_unique_id = f"{entry.entry_id}_weather"
+        self._attr_unique_id = f"{entry.entry_id}_weather_summary"
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
