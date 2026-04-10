@@ -335,6 +335,12 @@ class KMAWeatherAPI:
                 })
 
         weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast})
+
+        # 풍속을 소수점 첫째 자리까지 반올림
+        wsd = _safe_float(weather_data.get("WSD"))
+        if wsd is not None:
+            weather_data["WSD"] = round(wsd, 1)
+            
         kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data.update({
             "current_condition_kor": kor_now, "current_condition": self.kor_to_condition(kor_now),
