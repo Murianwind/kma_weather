@@ -123,15 +123,30 @@ class KMAWeatherAPI:
             {"serviceKey": self.api_key, "dataType": "JSON", "base_date": base_d,
              "base_time": f"{base_h:02d}00", "nx": self.nx, "ny": self.ny, "numOfRows": 1500})
 
+    def _get_mid_base_dt(self, now) -> datetime:
+        """
+        스크립트의 get_tmfc_candidates()와 동일한 로직.
+        중기예보 발표 시각(06시/18시) 기준, API 게시 지연 30분 감안.
+        반환값: 실제 사용할 tmFc datetime (Asia/Seoul)
+        """
+        effective = now - timedelta(minutes=30)
+        if effective.hour < 6:
+            return (effective - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+        elif effective.hour < 18:
+            return effective.replace(hour=6, minute=0, second=0, microsecond=0)
+        else:
+            return effective.replace(hour=18, minute=0, second=0, microsecond=0)
+
     async def _get_mid_term(self, now):
-        base = (now if now.hour >= 18 else (now if now.hour >= 6 else now - timedelta(days=1))).strftime("%Y%m%d") + \
-               ("0600" if 6 <= now.hour < 18 else "1800")
-        return await asyncio.gather(
+        tm_fc_dt = self._get_mid_base_dt(now)
+        base = tm_fc_dt.strftime("%Y%m%d%H%M")
+        results = await asyncio.gather(
             self._fetch("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa",
                         {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}),
             self._fetch("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst",
                         {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base})
         )
+        return (results[0], results[1], tm_fc_dt)
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
         t, rh, v = _safe_float(temp), _safe_float(reh), _safe_float(wsd)
@@ -175,17 +190,24 @@ class KMAWeatherAPI:
                     weather_data["rain_start_time"] = f"{t[:2]}:{t[2:]}"
                     break
 
-        mid_ta = mid_res[0].get("response", {}).get("body", {}).get("items", {}).get("item", [{}])[0] \
-            if mid_res and mid_res[0] else {}
-        mid_land = mid_res[1].get("response", {}).get("body", {}).get("items", {}).get("item", [{}])[0] \
-            if mid_res and mid_res[1] else {}
-
-        # ── 중기예보 발표 기준일 계산 ──────────────────────────────────────
-        # tmFc와 동일한 로직: 18시 이상이면 당일, 6~18시면 당일, 6시 미만이면 전일
-        if now.hour >= 6:
-            mid_base_date = now.date()
+        # ── 중기예보 튜플 언패킹 (t_res, l_res, tm_fc_dt) ──────────────────
+        # _get_mid_term()은 (ta응답, land응답, tmFc_datetime) 튜플을 반환한다.
+        # tm_fc_dt: 실제 API 요청에 사용된 발표 기준 datetime (30분 지연 보정 포함)
+        if mid_res and isinstance(mid_res, tuple) and len(mid_res) == 3:
+            mid_ta_res, mid_land_res, tm_fc_dt = mid_res
         else:
-            mid_base_date = (now - timedelta(days=1)).date()
+            mid_ta_res = mid_res[0] if mid_res else None
+            mid_land_res = mid_res[1] if mid_res and len(mid_res) > 1 else None
+            tm_fc_dt = self._get_mid_base_dt(now)
+
+        mid_ta = mid_ta_res.get("response", {}).get("body", {}).get("items", {}).get("item", [{}])[0]             if mid_ta_res else {}
+        mid_land = mid_land_res.get("response", {}).get("body", {}).get("items", {}).get("item", [{}])[0]             if mid_land_res else {}
+
+        # ── 단기예보로 커버된 날짜 추적 (스크립트의 processed_dates와 동일) ──
+        short_covered_dates = {
+            d for d in forecast_map
+            if any("TMP" in v for v in forecast_map[d].values())
+        }
 
         twice_daily, daily_forecast = [], []
 
@@ -196,22 +218,22 @@ class KMAWeatherAPI:
             t_max, t_min = None, None
             wf_am, wf_pm = "맑음", "맑음"
 
-            # 단기예보에 해당 날짜 TMP 데이터가 있으면 단기 우선
-            short_temps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
-
-            if short_temps:
+            if d_str in short_covered_dates:
+                # ── 단기예보 처리 (해당 날짜에 TMP 데이터가 있는 경우) ──────
+                short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
                 t_max = max(short_temps)
                 t_min = min(short_temps)
                 wf_am = self._get_sky_kor(
-                    forecast_map.get(d_str, {}).get("0900", {}).get("SKY"),
-                    forecast_map.get(d_str, {}).get("0900", {}).get("PTY"))
+                    forecast_map[d_str].get("0900", {}).get("SKY"),
+                    forecast_map[d_str].get("0900", {}).get("PTY"))
                 wf_pm = self._get_sky_kor(
-                    forecast_map.get(d_str, {}).get("1500", {}).get("SKY"),
-                    forecast_map.get(d_str, {}).get("1500", {}).get("PTY"))
+                    forecast_map[d_str].get("1500", {}).get("SKY"),
+                    forecast_map[d_str].get("1500", {}).get("PTY"))
             else:
-                # ── 중기예보 키 인덱스: 발표 기준일로부터 며칠째인지 계산 ──
-                # 예) 기준일 4/10, target 4/13 → mid_day_idx=3 → taMax3, wf3Am
-                mid_day_idx = (target_date.date() - mid_base_date).days
+                # ── 중기예보 처리 ────────────────────────────────────────────
+                # 스크립트와 동일: tm_fc_dt + timedelta(days=idx) = target_date
+                # 즉 mid_day_idx = target_date - tm_fc_dt.date()
+                mid_day_idx = (target_date.date() - tm_fc_dt.date()).days
                 t_max = _safe_float(mid_ta.get(f"taMax{mid_day_idx}"))
                 t_min = _safe_float(mid_ta.get(f"taMin{mid_day_idx}"))
                 wf_am = self._translate_mid_condition_kor(
@@ -219,8 +241,8 @@ class KMAWeatherAPI:
                 wf_pm = self._translate_mid_condition_kor(
                     mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}"))
                 _LOGGER.debug(
-                    "중기예보 i=%d date=%s mid_day_idx=%d t_max=%s t_min=%s",
-                    i, d_str, mid_day_idx, t_max, t_min)
+                    "중기예보 i=%d date=%s tm_fc_dt=%s mid_day_idx=%d t_max=%s t_min=%s",
+                    i, d_str, tm_fc_dt.strftime("%Y%m%d%H%M"), mid_day_idx, t_max, t_min)
 
             # 오늘(i=0), 내일(i=1) 날씨 정보 저장
             if i == 0:
