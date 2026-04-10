@@ -9,26 +9,34 @@ except ImportError:
     from conftest import MOCK_SCENARIOS
 
 
-def calculate_pm10_grade(value: int) -> str:
-    """PM10 등급 계산 (통합 로직 기준)."""
-    if value <= 50:
-        return "좋음"
-    elif value <= 100:
-        return "보통"
-    elif value <= 150:
-        return "나쁨"
-    return "매우나쁨"
+def calculate_pm10_grade(value: str) -> str:
+    """PM10 등급 계산 (소수점 문자열 대응)."""
+    try:
+        val = int(float(value))
+        if val <= 50:
+            return "좋음"
+        elif val <= 100:
+            return "보통"
+        elif val <= 150:
+            return "나쁨"
+        return "매우나쁨"
+    except (ValueError, TypeError):
+        return "정보없음"
 
 
-def calculate_pm25_grade(value: int) -> str:
-    """PM2.5 등급 계산 (통합 로직 기준)."""
-    if value <= 15:
-        return "좋음"
-    elif value <= 35:
-        return "보통"
-    elif value <= 75:
-        return "나쁨"
-    return "매우나쁨"
+def calculate_pm25_grade(value: str) -> str:
+    """PM2.5 등급 계산 (소수점 문자열 대응)."""
+    try:
+        val = int(float(value))
+        if val <= 15:
+            return "좋음"
+        elif val <= 35:
+            return "보통"
+        elif val <= 75:
+            return "나쁨"
+        return "매우나쁨"
+    except (ValueError, TypeError):
+        return "정보없음"
 
 
 @pytest.mark.asyncio
@@ -37,7 +45,7 @@ async def test_kma_full_scenarios(
 ):
     """
     통합 시나리오 테스트:
-    1~8번 기본 기능 검증 및 10~11번 모든 센서 안정성(Fault Tolerance) 전수 검사
+    기존 1~11번 모든 시나리오를 유지하며 변경된 출력 형식(정수/소수점)을 검증합니다.
     """
 
     # 0. 기본 설정 및 초기화
@@ -56,15 +64,18 @@ async def test_kma_full_scenarios(
     # --- 시나리오 1. 개별 센서 검증 ---
     state = hass.states.get(f"sensor.{p}_temperature")
     assert state is not None
+    # [요구사항] 온도는 정수 출력
     assert state.state == "22"
     assert state.attributes.get("unit_of_measurement") == "°C"
     assert state.attributes.get("device_class") == "temperature"
 
     state_reh = hass.states.get(f"sensor.{p}_humidity")
     assert state_reh is not None
+    # [요구사항] 습도는 정수 출력
     assert state_reh.state == "45"
 
-    assert hass.states.get(f"sensor.{p}_wind_speed").state == "7"
+    # [요구사항] 풍속은 소수점 첫째자리 출력 (기존 7 -> 7.6)
+    assert hass.states.get(f"sensor.{p}_wind_speed").state == "7.6"
     assert hass.states.get(f"sensor.{p}_precipitation_prob").state == "10"
 
     # --- 시나리오 2. 예보 10일치 검증 ---
@@ -90,24 +101,29 @@ async def test_kma_full_scenarios(
     # --- 시나리오 3. 미세먼지 센서 및 아이콘 검증 ---
     pm10 = hass.states.get(f"sensor.{p}_pm10")
     assert pm10 is not None
-    assert pm10.state == "35"
+    # [요구사항] 미세먼지 농도는 소수점 첫째자리 (35 -> 35.0)
+    assert pm10.state == "35.0"
+    # [요구사항] 미세먼지 단위 경고 해결 (µg/m³)
+    assert pm10.attributes.get("unit_of_measurement") == "µg/m³"
     assert pm10.attributes.get("icon") == "mdi:blur"
 
     pm25 = hass.states.get(f"sensor.{p}_pm25")
     assert pm25 is not None
-    assert pm25.state == "15"
+    # [요구사항] 초미세먼지 농도는 소수점 첫째자리 (15 -> 15.0)
+    assert pm25.state == "15.0"
 
-    # PM10 등급 검증
-    expected_pm10_grade = calculate_pm10_grade(int(pm10.state))
+    # PM10 등급 검증 (문자열 값 대응 수정됨)
+    expected_pm10_grade = calculate_pm10_grade(pm10.state)
     actual_pm10_grade = hass.states.get(f"sensor.{p}_pm10_grade").state
     assert actual_pm10_grade == expected_pm10_grade
 
-    # PM2.5 등급 검증
-    expected_pm25_grade = calculate_pm25_grade(int(pm25.state))
+    # PM2.5 등급 검증 (문자열 값 대응 수정됨)
+    expected_pm25_grade = calculate_pm25_grade(pm25.state)
     actual_pm25_grade = hass.states.get(f"sensor.{p}_pm25_grade").state
     assert actual_pm25_grade == expected_pm25_grade
 
     # --- 시나리오 4. 체감온도 및 추가 속성 검증 ---
+    # [요구사항] 체감온도는 정수
     assert hass.states.get(
         f"sensor.{p}_apparent_temperature"
     ).state == "23"
@@ -115,7 +131,7 @@ async def test_kma_full_scenarios(
     # 위치 진단 센서의 속성 확인
     loc_state = hass.states.get(f"sensor.{p}_location")
     assert loc_state is not None
-   
+    
     # Mock 데이터 기반 검증
     expected_station = MOCK_SCENARIOS["full_test"].get("air", {}).get(
         "stationName",
@@ -227,30 +243,6 @@ async def test_kma_full_scenarios(
                 if details[1] is not None:
                     assert state.state == "unknown"
                 assert state.state != "unavailable"
-
-@pytest.mark.asyncio
-async def test_kma_sensor_formatting(hass, mock_config_entry, kma_api_mock_factory):
-    """센서 출력 형식(정수/소수점) 통합 검증"""
-    kma_api_mock_factory("full_test")
-    mock_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    p = "test"
-    # 1. 온도/습도: 정수 확인
-    assert hass.states.get(f"sensor.{p}_temperature").state == "22"
-    assert hass.states.get(f"sensor.{p}_humidity").state == "45"
-
-    # 2. 풍속: 소수점 첫째자리 확인 (데이터가 7.6일 때)
-    state_wsd = hass.states.get(f"sensor.{p}_wind_speed")
-    assert state_wsd.state == "7.6"
-
-    # 3. 미세먼지 농도: 소수점 첫째자리 확인 (데이터가 15일 때 -> 15.0)
-    state_pm25 = hass.states.get(f"sensor.{p}_pm25")
-    assert state_pm25.state == "15.0"
-    assert state_pm25.attributes.get("unit_of_measurement") == "µg/m³"
-    
-    print("✅ 모든 센서 출력 형식 검증 완료")
 
     # 정리
     await hass.config_entries.async_unload(mock_config_entry.entry_id)
