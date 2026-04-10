@@ -34,7 +34,6 @@ class KMAWeatherAPI:
 
     def _build_nominatim_user_agent(self):
         base = "HomeAssistant-KMA-Weather"
-        # UUID 로직 복구 (테스트 실패 원인)
         if self.hass:
             try:
                 uuid = getattr(self.hass, "installation_uuid", None)
@@ -168,7 +167,7 @@ class KMAWeatherAPI:
         for i in range(10):
             target_date = now + timedelta(days=i)
             d_str = target_date.strftime("%Y%m%d")
-            
+
             t_max, t_min = None, None
             wf_am, wf_pm = "맑음", "맑음"
 
@@ -184,29 +183,47 @@ class KMAWeatherAPI:
                 wf_am = self._translate_mid_condition_kor(mid_land.get(f"wf{i}Am") or mid_land.get(f"wf{i}"))
                 wf_pm = self._translate_mid_condition_kor(mid_land.get(f"wf{i}Pm") or mid_land.get(f"wf{i}"))
 
+            # 오늘(i=0), 내일(i=1) 날씨 정보를 weather_data에 저장
+            # coordinator에서 누적 온도값으로 덮어쓸 수 있도록 분리 저장
             if i == 0:
-                weather_data["wf_am_today"], weather_data["wf_pm_today"] = wf_am, wf_pm
+                weather_data["wf_am_today"] = wf_am
+                weather_data["wf_pm_today"] = wf_pm
+                # 오늘 최고/최저는 coordinator에서 누적값으로 덮어씀 (여기서는 API 원본값만)
+                weather_data["_raw_today_max"] = t_max
+                weather_data["_raw_today_min"] = t_min
             elif i == 1:
-                weather_data.update({"TMX_tomorrow": t_max, "TMN_tomorrow": t_min, "wf_am_tomorrow": wf_am, "wf_pm_tomorrow": wf_pm})
+                weather_data.update({
+                    "TMX_tomorrow": t_max,
+                    "TMN_tomorrow": t_min,
+                    "wf_am_tomorrow": wf_am,
+                    "wf_pm_tomorrow": wf_pm,
+                })
 
+            # forecast_twice_daily: 오늘(i=0)은 coordinator에서 덮어씀, 나머지는 그대로
             for is_am in [True, False]:
                 twice_daily.append({
                     "datetime": target_date.replace(hour=9 if is_am else 21, minute=0, second=0, microsecond=0).isoformat(),
-                    "is_daytime": is_am, "native_temperature": t_max, "native_templow": t_min,
+                    "is_daytime": is_am,
+                    "native_temperature": t_max,
+                    "native_templow": t_min,
                     "condition": self.kor_to_condition(wf_am if is_am else wf_pm),
+                    "_day_index": i,  # coordinator에서 오늘/내일 항목 갱신에 사용
                 })
 
-            if t_max is not None:
-                daily_forecast.append({
-                    "datetime": target_date.replace(hour=12, minute=0, second=0, microsecond=0).isoformat(),
-                    "native_temperature": t_max, "native_templow": t_min,
-                    "condition": self.kor_to_condition(wf_pm),
-                })
+            # forecast_daily: t_max가 None이어도 항목 자체는 포함 (연속성 보장)
+            daily_forecast.append({
+                "datetime": target_date.replace(hour=12, minute=0, second=0, microsecond=0).isoformat(),
+                "native_temperature": t_max,
+                "native_templow": t_min,
+                "condition": self.kor_to_condition(wf_pm),
+                "_day_index": i,  # coordinator에서 오늘/내일 항목 갱신에 사용
+            })
 
         weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast})
         kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data.update({
-            "current_condition_kor": kor_now, "current_condition": self.kor_to_condition(kor_now),
+            "current_condition_kor": kor_now,
+            "current_condition": self.kor_to_condition(kor_now),
             "apparent_temp": self._calculate_apparent_temp(weather_data.get("TMP"), weather_data.get("REH"), weather_data.get("WSD")),
         })
         if weather_data.get("VEC"): weather_data["VEC_KOR"] = self._get_vec_kor(weather_data["VEC"])
