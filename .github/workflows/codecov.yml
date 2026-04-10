@@ -30,7 +30,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-asyncio pytest-freezegun \
-                      pytest-homeassistant-custom-component coverage pytest-cov
+                      pytest-homeassistant-custom-component \
+                      coverage pytest-cov
 
           if [ -f custom_components/kma_weather/manifest.json ]; then
             REQ_LIST=$(jq -r '.requirements[]?' custom_components/kma_weather/manifest.json)
@@ -45,7 +46,16 @@ jobs:
             --cov=custom_components.kma_weather \
             --cov-report=term-missing \
             --cov-report=xml \
-            --no-header -v
+            --cov-report=term \
+            --no-header -v | tee pytest-coverage.txt
+
+      - name: Add Coverage to GitHub Summary
+        if: always()
+        run: |
+          echo "### 📊 Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          grep -E "TOTAL" pytest-coverage.txt >> $GITHUB_STEP_SUMMARY || echo "No coverage data found." >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@v4
