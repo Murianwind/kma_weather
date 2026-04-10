@@ -163,43 +163,174 @@ class KMAWeatherAPI:
         mid_ta = mid_res[0].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[0] else {}
         mid_land = mid_res[1].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[1] else {}
 
-        twice_daily, daily_forecast = [], []
+                twice_daily, daily_forecast = [], []
+
+        include_daytime_today = now.hour < 12
+        today_str = now.strftime("%Y%m%d")
+
+        # 오늘 최고/최저 기온 계산 (센서 동기화)
+        if today_str in forecast_map:
+            tmps_today = [
+                _safe_float(v.get("TMP"))
+                for v in forecast_map[today_str].values()
+                if _safe_float(v.get("TMP")) is not None
+            ]
+            if tmps_today:
+                weather_data["TMX_today"] = max(tmps_today)
+                weather_data["TMN_today"] = min(tmps_today)
 
         for i in range(10):
             target_date = now + timedelta(days=i)
             d_str = target_date.strftime("%Y%m%d")
-            
-            t_max, t_min = None, None
-            wf_am, wf_pm = "맑음", "맑음"
 
-            if i < 3:
-                tmps = [_safe_float(v.get("TMP")) for v in forecast_map.get(d_str, {}).values() if "TMP" in v]
-                t_max = max(tmps) if tmps else _safe_float(mid_ta.get(f"taMax{i}"))
-                t_min = min(tmps) if tmps else _safe_float(mid_ta.get(f"taMin{i}"))
-                wf_am = self._get_sky_kor(forecast_map.get(d_str, {}).get("0900", {}).get("SKY"), forecast_map.get(d_str, {}).get("0900", {}).get("PTY"))
-                wf_pm = self._get_sky_kor(forecast_map.get(d_str, {}).get("1500", {}).get("SKY"), forecast_map.get(d_str, {}).get("1500", {}).get("PTY"))
+            t_max = t_min = None
+            wf_am = wf_pm = None
+
+            # ---------------------------
+            # 0일차: 오늘
+            # ---------------------------
+            if i == 0:
+                t_max = weather_data.get("TMX_today")
+                t_min = weather_data.get("TMN_today")
+
+                wf_am = self._get_sky_kor(
+                    forecast_map.get(d_str, {}).get("0900", {}).get("SKY"),
+                    forecast_map.get(d_str, {}).get("0900", {}).get("PTY"),
+                )
+                wf_pm = self._get_sky_kor(
+                    forecast_map.get(d_str, {}).get("1500", {}).get("SKY"),
+                    forecast_map.get(d_str, {}).get("1500", {}).get("PTY"),
+                )
+
+                weather_data["wf_am_today"] = wf_am
+                weather_data["wf_pm_today"] = wf_pm
+
+            # ---------------------------
+            # 1일차: 내일
+            # ---------------------------
+            elif i == 1:
+                t_max = _safe_float(mid_ta.get("taMax1"))
+                t_min = _safe_float(mid_ta.get("taMin1"))
+
+                wf_am = self._get_sky_kor(
+                    forecast_map.get(d_str, {}).get("0900", {}).get("SKY"),
+                    forecast_map.get(d_str, {}).get("0900", {}).get("PTY"),
+                )
+                wf_pm = self._get_sky_kor(
+                    forecast_map.get(d_str, {}).get("1500", {}).get("SKY"),
+                    forecast_map.get(d_str, {}).get("1500", {}).get("PTY"),
+                )
+
+                weather_data.update({
+                    "TMX_tomorrow": t_max,
+                    "TMN_tomorrow": t_min,
+                    "wf_am_tomorrow": wf_am,
+                    "wf_pm_tomorrow": wf_pm,
+                })
+
+            # ---------------------------
+            # 2~3일차: 단기예보
+            # ---------------------------
+            elif i in (2, 3):
+                tmps = [
+                    _safe_float(v.get("TMP"))
+                    for v in forecast_map.get(d_str, {}).values()
+                    if _safe_float(v.get("TMP")) is not None
+                ]
+                if tmps:
+                    t_max = max(tmps)
+                    t_min = min(tmps)
+
+                wf_am = self._get_sky_kor(
+                    forecast_map.get(d_str, {}).get("0900", {}).get("SKY"),
+                    forecast_map.get(d_str, {}).get("0900", {}).get("PTY"),
+                )
+                wf_pm = self._get_sky_kor(
+                    forecast_map.get(d_str, {}).get("1500", {}).get("SKY"),
+                    forecast_map.get(d_str, {}).get("1500", {}).get("PTY"),
+                )
+
+            # ---------------------------
+            # 4~5일차: 단기 + 중기 비교
+            # ---------------------------
+            elif i in (4, 5):
+                tmps = [
+                    _safe_float(v.get("TMP"))
+                    for v in forecast_map.get(d_str, {}).values()
+                    if _safe_float(v.get("TMP")) is not None
+                ]
+
+                short_max = max(tmps) if tmps else None
+                short_min = min(tmps) if tmps else None
+
+                mid_max = _safe_float(mid_ta.get(f"taMax{i}"))
+                mid_min = _safe_float(mid_ta.get(f"taMin{i}"))
+
+                t_max = short_max if short_max is not None else mid_max
+                t_min = short_min if short_min is not None else mid_min
+
+                wf_am = self._get_sky_kor(
+                    forecast_map.get(d_str, {}).get("0900", {}).get("SKY"),
+                    forecast_map.get(d_str, {}).get("0900", {}).get("PTY"),
+                ) or self._translate_mid_condition_kor(mid_land.get(f"wf{i}Am"))
+
+                wf_pm = self._get_sky_kor(
+                    forecast_map.get(d_str, {}).get("1500", {}).get("SKY"),
+                    forecast_map.get(d_str, {}).get("1500", {}).get("PTY"),
+                ) or self._translate_mid_condition_kor(mid_land.get(f"wf{i}Pm"))
+
+            # ---------------------------
+            # 6~9일차: 중기예보
+            # ---------------------------
             else:
                 t_max = _safe_float(mid_ta.get(f"taMax{i}"))
                 t_min = _safe_float(mid_ta.get(f"taMin{i}"))
-                wf_am = self._translate_mid_condition_kor(mid_land.get(f"wf{i}Am") or mid_land.get(f"wf{i}"))
-                wf_pm = self._translate_mid_condition_kor(mid_land.get(f"wf{i}Pm") or mid_land.get(f"wf{i}"))
+                wf_am = self._translate_mid_condition_kor(
+                    mid_land.get(f"wf{i}Am") or mid_land.get(f"wf{i}")
+                )
+                wf_pm = self._translate_mid_condition_kor(
+                    mid_land.get(f"wf{i}Pm") or mid_land.get(f"wf{i}")
+                )
 
+            # ---------------------------
+            # Twice Daily Forecast
+            # ---------------------------
+            include_daytime = True
             if i == 0:
-                weather_data["wf_am_today"], weather_data["wf_pm_today"] = wf_am, wf_pm
-            elif i == 1:
-                weather_data.update({"TMX_tomorrow": t_max, "TMN_tomorrow": t_min, "wf_am_tomorrow": wf_am, "wf_pm_tomorrow": wf_pm})
+                include_daytime = include_daytime_today
 
-            for is_am in [True, False]:
+            if include_daytime and wf_am is not None:
                 twice_daily.append({
-                    "datetime": target_date.replace(hour=9 if is_am else 21, minute=0, second=0, microsecond=0).isoformat(),
-                    "is_daytime": is_am, "native_temperature": t_max, "native_templow": t_min,
-                    "condition": self.kor_to_condition(wf_am if is_am else wf_pm),
+                    "datetime": target_date.replace(
+                        hour=9, minute=0, second=0, microsecond=0
+                    ).isoformat(),
+                    "is_daytime": True,
+                    "native_temperature": t_max,
+                    "native_templow": t_min,
+                    "condition": self.kor_to_condition(wf_am),
                 })
 
+            if wf_pm is not None:
+                twice_daily.append({
+                    "datetime": target_date.replace(
+                        hour=21, minute=0, second=0, microsecond=0
+                    ).isoformat(),
+                    "is_daytime": False,
+                    "native_temperature": t_max,
+                    "native_templow": t_min,
+                    "condition": self.kor_to_condition(wf_pm),
+                })
+
+            # ---------------------------
+            # Daily Forecast
+            # ---------------------------
             if t_max is not None:
                 daily_forecast.append({
-                    "datetime": target_date.replace(hour=12, minute=0, second=0, microsecond=0).isoformat(),
-                    "native_temperature": t_max, "native_templow": t_min,
+                    "datetime": target_date.replace(
+                        hour=12, minute=0, second=0, microsecond=0
+                    ).isoformat(),
+                    "native_temperature": t_max,
+                    "native_templow": t_min,
                     "condition": self.kor_to_condition(wf_pm),
                 })
 
