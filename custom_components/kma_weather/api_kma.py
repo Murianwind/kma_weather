@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 
 _LOGGER = logging.getLogger(__name__)
 
-
 def _safe_float(v):
     try:
         if v == "" or v is None or v == "-":
@@ -17,7 +16,6 @@ def _safe_float(v):
         return float(v)
     except (TypeError, ValueError):
         return None
-
 
 # ── 한글 → HA 표준 영문 매핑 ──────────────────────────────────
 KOR_TO_CONDITION: dict[str, str] = {
@@ -29,7 +27,6 @@ KOR_TO_CONDITION: dict[str, str] = {
     "소나기":  "rainy",
     "눈":      "snowy",
 }
-
 
 class KMAWeatherAPI:
     def __init__(self, session, api_key, reg_id_temp, reg_id_land, hass=None):
@@ -61,7 +58,6 @@ class KMAWeatherAPI:
             return base
 
     async def _fetch(self, url, params, headers=None, timeout=15):
-        """API 호출 헬퍼 (테스트 호환 로그 적용)"""
         try:
             async with self.session.get(
                 url, params=params, headers=headers, timeout=timeout
@@ -69,7 +65,6 @@ class KMAWeatherAPI:
                 response.raise_for_status()
                 return await response.json(content_type=None)
         except Exception as err:
-            # [수정] test_api.py의 기대값인 'API 호출 실패' 문구 포함
             _LOGGER.error("API 호출 실패 (%s): %s", url, err)
         return None
 
@@ -103,17 +98,14 @@ class KMAWeatherAPI:
             return f"{lat:.4f}, {lon:.4f}"
 
     async def _get_air_quality(self):
-        """에어코리아 미세먼지 데이터 수집 (테스트 호환성 보강)"""
         try:
-            now = datetime.now(self.tz)
             sn = self._cached_station
             if not sn:
                 tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
                 st_json = await self._fetch("https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getNearbyMsrstnList", 
                                             {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"})
                 items = st_json.get("response", {}).get("body", {}).get("items", []) if st_json else []
-                if not items:
-                    return {}  # [수정] test_coverage_boost.py 기대값 대응 (빈 dict)
+                if not items: return {}
                 sn = items[0].get("stationName")
                 self._cached_station = sn
 
@@ -121,11 +113,9 @@ class KMAWeatherAPI:
                                          {"serviceKey": self.api_key, "returnType": "json", "stationName": sn, "dataTerm": "daily", "ver": "1.3"})
             
             ai_list = air_json.get("response", {}).get("body", {}).get("items", []) if air_json else []
-            if not ai_list:
-                return {"station": sn}
+            if not ai_list: return {"station": sn}
 
             ai = ai_list[0]
-            # Problem 2 해결: pm25Grade가 없을 때 pm25Grade1h 참조
             p10_g = ai.get("pm10Grade") or ai.get("pm10Grade1h")
             p25_g = ai.get("pm25Grade") or ai.get("pm25Grade1h")
 
@@ -181,7 +171,7 @@ class KMAWeatherAPI:
         weather_data = {
             "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None,
             "TMX_today": None, "TMN_today": None, "TMX_tomorrow": None, "TMN_tomorrow": None,
-            "forecast_daily": [], "forecast_twice_daily": [], "address": address,
+            "rain_start_time": None, "forecast_daily": [], "forecast_twice_daily": [], "address": address,
         }
 
         forecast_map = {}
@@ -197,6 +187,16 @@ class KMAWeatherAPI:
                 best_t = next((t for t in times if t >= curr_h), times[-1] if times else None)
                 if best_t: weather_data.update(forecast_map[today_str][best_t])
 
+            # Problem 2 해결: 비 시작 시간 분석
+            rain_found = False
+            for d_str in sorted(forecast_map.keys()):
+                for t_str in sorted(forecast_map[d_str].keys()):
+                    if not rain_found and _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0:
+                        weather_data["rain_start_time"] = f"{t_str[:2]}:{t_str[2:]}"
+                        rain_found = True
+                        break
+                if rain_found: break
+
         mid_ta = mid_res[0].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[0] else {}
         mid_land = mid_res[1].get("response",{}).get("body",{}).get("items",{}).get("item",[{}])[0] if mid_res and mid_res[1] else {}
 
@@ -210,25 +210,34 @@ class KMAWeatherAPI:
             t_max = max(tmps) if tmps else _safe_float(mid_ta.get(f"taMax{i}"))
             t_min = min(tmps) if tmps else _safe_float(mid_ta.get(f"taMin{i}"))
 
+            wf_am = self._get_sky_kor(forecast_map.get(d_str, {}).get("0900", {}).get("SKY"), forecast_map.get(d_str, {}).get("0900", {}).get("PTY")) if i < 2 else self._translate_mid_condition_kor(mid_land.get(f"wf{i}Am") or mid_land.get(f"wf{i}"))
+            wf_pm = self._get_sky_kor(forecast_map.get(d_str, {}).get("1500", {}).get("SKY"), forecast_map.get(d_str, {}).get("1500", {}).get("PTY")) if i < 2 else self._translate_mid_condition_kor(mid_land.get(f"wf{i}Pm") or mid_land.get(f"wf{i}"))
+
+            # [Problem 2 해결] 오늘/내일 센서용 데이터 매핑
+            if i == 0:
+                weather_data["wf_am_today"] = wf_am
+                weather_data["wf_pm_today"] = wf_pm
+            elif i == 1:
+                weather_data["TMX_tomorrow"] = t_max
+                weather_data["TMN_tomorrow"] = t_min
+                weather_data["wf_am_tomorrow"] = wf_am
+                weather_data["wf_pm_tomorrow"] = wf_pm
+
+            # 날씨 카드용 리스트 생성
             for is_am in [True, False]:
                 hour = 9 if is_am else 21
-                dt_iso = target_date.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
-                short_hour_data = forecast_map.get(d_str, {}).get(f"{hour:02d}00", {})
-                
-                if short_hour_data or i >= 2:
-                    wf = self._get_sky_kor(short_hour_data.get("SKY"), short_hour_data.get("PTY")) if short_hour_data else self._translate_mid_condition_kor(mid_land.get(f"wf{i}Am" if is_am else f"wf{i}Pm") or mid_land.get(f"wf{i}"))
-                    twice_daily.append({
-                        "datetime": dt_iso, "is_daytime": is_am,
-                        "native_temperature": t_max, "native_templow": t_min,
-                        "condition": self.kor_to_condition(wf),
-                    })
+                twice_daily.append({
+                    "datetime": target_date.replace(hour=hour, minute=0).isoformat(),
+                    "is_daytime": is_am,
+                    "native_temperature": t_max, "native_templow": t_min,
+                    "condition": self.kor_to_condition(wf_am if is_am else wf_pm),
+                })
 
             if t_max is not None:
-                wf_daily = self._get_sky_kor(forecast_map.get(d_str, {}).get("1200", {}).get("SKY"), forecast_map.get(d_str, {}).get("1200", {}).get("PTY")) if i < 2 else self._translate_mid_condition_kor(mid_land.get(f"wf{i}") or mid_land.get(f"wf{i}Pm"))
                 daily_forecast.append({
                     "datetime": target_date.replace(hour=12).isoformat(),
                     "native_temperature": t_max, "native_templow": t_min,
-                    "condition": self.kor_to_condition(wf_daily),
+                    "condition": self.kor_to_condition(wf_pm),
                 })
 
         weather_data["forecast_twice_daily"] = twice_daily
@@ -243,7 +252,6 @@ class KMAWeatherAPI:
 
         return {"weather": weather_data, "air": air_data or {}, "raw_forecast": forecast_map}
 
-    # ── [복구] 기존 테스트 호환성을 위한 래퍼 메서드 ────────────────────────
     def _translate_mid_condition_kor(self, wf: str) -> str:
         wf = str(wf or "맑음")
         if "비" in wf: return "비"
@@ -253,11 +261,9 @@ class KMAWeatherAPI:
         return "맑음"
 
     def _translate_mid_condition(self, wf):
-        """test_coverage_boost.py 호환용 래퍼"""
         return self.kor_to_condition(self._translate_mid_condition_kor(wf))
 
     def _get_condition(self, s, p):
-        """test_coverage_boost.py 호환용 래퍼"""
         return self.kor_to_condition(self._get_sky_kor(s, p))
 
     def _get_sky_kor(self, sky, pty):
