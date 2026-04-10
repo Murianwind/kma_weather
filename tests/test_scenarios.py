@@ -228,6 +228,30 @@ async def test_kma_full_scenarios(
                     assert state.state == "unknown"
                 assert state.state != "unavailable"
 
+@pytest.mark.asyncio
+async def test_kma_sensor_formatting(hass, mock_config_entry, kma_api_mock_factory):
+    """센서 출력 형식(정수/소수점) 통합 검증"""
+    kma_api_mock_factory("full_test")
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    p = "test"
+    # 1. 온도/습도: 정수 확인
+    assert hass.states.get(f"sensor.{p}_temperature").state == "22"
+    assert hass.states.get(f"sensor.{p}_humidity").state == "45"
+
+    # 2. 풍속: 소수점 첫째자리 확인 (데이터가 7.6일 때)
+    state_wsd = hass.states.get(f"sensor.{p}_wind_speed")
+    assert state_wsd.state == "7.6"
+
+    # 3. 미세먼지 농도: 소수점 첫째자리 확인 (데이터가 15일 때 -> 15.0)
+    state_pm25 = hass.states.get(f"sensor.{p}_pm25")
+    assert state_pm25.state == "15.0"
+    assert state_pm25.attributes.get("unit_of_measurement") == "µg/m³"
+    
+    print("✅ 모든 센서 출력 형식 검증 완료")
+
     # 정리
     await hass.config_entries.async_unload(mock_config_entry.entry_id)
     await hass.async_block_till_done()
