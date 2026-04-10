@@ -124,7 +124,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                     SensorDeviceClass.PM10,
                     SensorDeviceClass.PM25,
                 ]:
-                    return round(f_val, 1)
+                   return float(f"{f_val:.1f}")
                 
                 # 3. 그 외 수치형(예: 강수확률)은 정수 유지
                 return int(f_val)
