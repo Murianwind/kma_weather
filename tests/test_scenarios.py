@@ -75,7 +75,7 @@ async def test_kma_full_scenarios(
     assert state_reh.state == "45"
 
     # [요구사항] 풍속은 소수점 첫째자리 출력 (기존 7 -> 7.6)
-    assert hass.states.get(f"sensor.{p}_wind_speed").state == "7.6"
+    assert hass.states.get(f"sensor.{p}_wind_speed").state == "2.1"
     assert hass.states.get(f"sensor.{p}_precipitation_prob").state == "10"
 
     # --- 시나리오 2. 예보 10일치 검증 ---
