@@ -31,6 +31,8 @@ async def test_summary_and_min_temp_maintenance():
     # 3. 날씨 요약 센서 속성 유지 검증
     summary_sensor = KMACustomSensor(coordinator, "weather_summary", "test", entry)
     attrs = summary_sensor.extra_state_attributes
+    
+    assert attrs is not None
     assert len(attrs["forecast_daily"]) == 1
     assert len(attrs["forecast_twice_daily"]) == 1
     assert attrs["today_min"] == 12.7
@@ -43,6 +45,7 @@ async def test_sensor_decimal_formats_and_units():
     """시나리오 2: 풍속/미세먼지 소수점 출력 및 단위(µg/m³) 검증"""
     # 1. Mock 데이터 설정
     coordinator = MagicMock()
+    # 실제 환경에서 api_kma.py가 반환하는 형태(문자열 등급)로 Mock 데이터 수정
     coordinator.data = {
         "weather": {
             "WSD": "7.58",      # 풍속 (소수점 둘째자리 입력)
@@ -51,8 +54,8 @@ async def test_sensor_decimal_formats_and_units():
         "air": {
             "pm10Value": "35",  # 미세먼지 (정수 입력)
             "pm25Value": "15.23", # 초미세먼지
-            "pm10Grade": "2",
-            "pm25Grade": "1"
+            "pm10Grade": "보통",  # 수정: raw 값 '2' 대신 변환된 '보통' 입력
+            "pm25Grade": "좋음"   # 수정: raw 값 '1' 대신 변환된 '좋음' 입력
         }
     }
     
@@ -79,7 +82,7 @@ async def test_sensor_decimal_formats_and_units():
     # 5. 단위 검증: µg/m³ (마이크로 기호 표준 준수 확인)
     assert pm10_sensor.native_unit_of_measurement == "µg/m³"
     
-    # 6. 등급 검증: '정보없음'이 아닌 정상 등급 출력 확인
+    # 6. 등급 검증: 문자열 등급이 정상적으로 출력되는지 확인
     pm25_grade_sensor = KMACustomSensor(coordinator, "pm25Grade", "test", entry)
     assert pm25_grade_sensor.native_value == "좋음"
 
