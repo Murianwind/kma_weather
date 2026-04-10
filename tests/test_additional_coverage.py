@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 from unittest.mock import AsyncMock, patch
 from homeassistant import config_entries
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE
@@ -132,7 +133,6 @@ async def test_api_failure_handling(
         mock_config_entry.entry_id
     ]
 
-    # 에러 발생 시뮬레이션
     api_mock.side_effect = Exception("API Error")
     
     await coordinator.async_refresh()
@@ -148,7 +148,7 @@ async def test_sensor_recovery_after_api_restore(
     hass, mock_config_entry, kma_api_mock_factory
 ):
     """API 장애 후 복구 테스트."""
-    # 1. 초기 정상 로드
+    # 1. 초기 정상 로드 및 설정
     api_mock = kma_api_mock_factory("full_test")
 
     mock_config_entry.add_to_hass(hass)
@@ -157,13 +157,21 @@ async def test_sensor_recovery_after_api_restore(
 
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
 
-    # 센서가 unknown이 아닐 때까지 대기 (데이터 로딩 대기)
+    # [핵심 수정] 센서 상태가 업데이트될 때까지 강제 갱신 유도
+    # 코디네이터의 리스너를 호출하여 센서 엔티티가 상태를 다시 쓰도록 만듭니다.
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+
     state = hass.states.get("sensor.test_temperature")
-    if state.state == STATE_UNKNOWN:
-        await hass.async_block_till_done()
-        state = hass.states.get("sensor.test_temperature")
     
-    # 초기값 검증
+    # 만약 여전히 unknown이라면, 아주 잠시 기다린 후 다시 확인합니다.
+    if state.state == STATE_UNKNOWN:
+        for _ in range(5):
+            await asyncio.sleep(0.1)
+            state = hass.states.get("sensor.test_temperature")
+            if state.state != STATE_UNKNOWN:
+                break
+
     assert state.state == "22.5"
 
     # 2. API 실패 시뮬레이션
@@ -171,26 +179,28 @@ async def test_sensor_recovery_after_api_restore(
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
-    failed_state = hass.states.get("sensor.test_temperature")
-    assert failed_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+    state = hass.states.get("sensor.test_temperature")
+    assert state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE)
 
     # 3. API 복구 시뮬레이션
     api_mock.side_effect = None
-    # AsyncMock의 경우 return_value가 확실히 설정되어 있어야 함
     api_mock.return_value = MOCK_SCENARIOS.get("full_test")
 
-    # 강제 갱신 및 대기
+    # 복구 데이터 반영
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
-    # 복구된 상태 확인
+    # 복구된 상태 확인 (마찬가지로 강제 리스너 업데이트 및 대기 적용)
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    
     recovered_state = hass.states.get("sensor.test_temperature")
     
-    # 상태가 아직 unknown이라면 한 번 더 대기
     if recovered_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-        coordinator.async_update_listeners()
-        await hass.async_block_till_done()
-        recovered_state = hass.states.get("sensor.test_temperature")
+        for _ in range(5):
+            await asyncio.sleep(0.1)
+            recovered_state = hass.states.get("sensor.test_temperature")
+            if recovered_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+                break
 
-    assert recovered_state is not None
     assert recovered_state.state == "22.5"
