@@ -1,65 +1,14 @@
-name: Codecov
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 5%
+    patch:
+      default:
+        target: 70%
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-freezegun \
-                      pytest-homeassistant-custom-component \
-                      coverage pytest-cov
-
-          if [ -f custom_components/kma_weather/manifest.json ]; then
-            REQ_LIST=$(jq -r '.requirements[]?' custom_components/kma_weather/manifest.json)
-            if [ -n "$REQ_LIST" ]; then
-              pip install $REQ_LIST
-            fi
-          fi
-
-      - name: Run Pytest with Coverage
-        run: |
-          pytest tests/ \
-            --cov=custom_components.kma_weather \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-report=term \
-            --no-header -v | tee pytest-coverage.txt
-
-      - name: Add Coverage to GitHub Summary
-        if: always()
-        run: |
-          echo "### 📊 Coverage Report" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          grep -E "TOTAL" pytest-coverage.txt >> $GITHUB_STEP_SUMMARY || echo "No coverage data found." >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload Coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./coverage.xml
-          fail_ci_if_error: true
-          verbose: true
+comment:
+  layout: "header, diff, flags, files"
+  behavior: default
+  require_changes: false
