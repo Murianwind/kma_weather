@@ -131,7 +131,7 @@ async def test_api_failure_handling(
         mock_config_entry.entry_id
     ]
 
-    # 이미 팩토리로 생성된 api_mock의 side_effect를 변경합니다.
+    # 에러 강제 발생
     api_mock.side_effect = Exception("API Error")
     
     await coordinator.async_refresh()
@@ -147,27 +147,21 @@ async def test_sensor_recovery_after_api_restore(
     hass, mock_config_entry, kma_api_mock_factory
 ):
     """API 장애 후 복구 테스트."""
-    # 1. 정상 데이터 로드 시작
+    # 1. 초기 정상 설정
     api_mock = kma_api_mock_factory("full_test")
 
     mock_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(
-        mock_config_entry.entry_id
-    )
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    coordinator = hass.data[DOMAIN][
-        mock_config_entry.entry_id
-    ]
-
-    # 초기 상태 확인 (22.5도가 정상 로드되어야 함)
+    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    
+    # 초기 상태 확인 (22.5)
     initial_state = hass.states.get("sensor.test_temperature")
-    assert initial_state is not None
     assert initial_state.state == "22.5"
 
     # 2. API 실패 시뮬레이션
     api_mock.side_effect = Exception("Temporary Error")
-    
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
@@ -175,13 +169,20 @@ async def test_sensor_recovery_after_api_restore(
     assert failed_state.state in ("unknown", "unavailable")
 
     # 3. API 복구 시뮬레이션
-    # side_effect를 None으로 돌리면 이전에 설정된 return_value(full_test 데이터)를 다시 반환합니다.
+    # side_effect를 제거하고, return_value를 명시적으로 다시 설정하여 
+    # Mock이 정상적인 비동기 응답을 반환하도록 보장합니다.
     api_mock.side_effect = None
+    api_mock.return_value = MOCK_SCENARIOS.get("full_test")
 
+    # 데이터 업데이트 강제 실행
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
+    # 엔티티가 상태 변화를 감지하고 기록할 시간을 충분히 줍니다.
     recovered_state = hass.states.get("sensor.test_temperature")
+    
     assert recovered_state is not None
-    # 다시 정상 값인 22.5로 돌아와야 합니다.
+    # 'unknown'이 아닌지 먼저 확인
+    assert recovered_state.state not in ("unknown", "unavailable")
+    # 최종적으로 값이 22.5로 돌아왔는지 확인
     assert recovered_state.state == "22.5"
