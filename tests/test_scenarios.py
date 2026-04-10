@@ -10,10 +10,10 @@ except ImportError:
 
 
 def calculate_pm10_grade(value: int) -> str:
-    """PM10 등급 계산 (Air Korea 기준)."""
-    if value <= 30:
+    """PM10 등급 계산 (통합 로직 기준)."""
+    if value <= 50:
         return "좋음"
-    elif value <= 80:
+    elif value <= 100:
         return "보통"
     elif value <= 150:
         return "나쁨"
@@ -21,7 +21,7 @@ def calculate_pm10_grade(value: int) -> str:
 
 
 def calculate_pm25_grade(value: int) -> str:
-    """PM2.5 등급 계산 (Air Korea 기준)."""
+    """PM2.5 등급 계산 (통합 로직 기준)."""
     if value <= 15:
         return "좋음"
     elif value <= 35:
