@@ -83,7 +83,6 @@ async def test_weather_entity_and_forecast(
     forecast = response[entity_id].get("forecast", [])
     assert isinstance(forecast, list)
 
-    # 예보 데이터가 존재할 경우만 검증
     if forecast:
         first = forecast[0]
         assert "condition" in first
@@ -132,7 +131,7 @@ async def test_api_failure_handling(
         mock_config_entry.entry_id
     ]
 
-    # 직접 side_effect를 설정하여 에러 발생 유도
+    # 이미 팩토리로 생성된 api_mock의 side_effect를 변경합니다.
     api_mock.side_effect = Exception("API Error")
     
     await coordinator.async_refresh()
@@ -140,7 +139,6 @@ async def test_api_failure_handling(
 
     state = hass.states.get("sensor.test_temperature")
     assert state is not None
-    # 에러 발생 시 상태는 unknown 또는 unavailable이어야 함
     assert state.state in ("unknown", "unavailable")
 
 
@@ -149,7 +147,7 @@ async def test_sensor_recovery_after_api_restore(
     hass, mock_config_entry, kma_api_mock_factory
 ):
     """API 장애 후 복구 테스트."""
-    # 1. 초기 정상 데이터 로드
+    # 1. 정상 데이터 로드 시작
     api_mock = kma_api_mock_factory("full_test")
 
     mock_config_entry.add_to_hass(hass)
@@ -162,22 +160,22 @@ async def test_sensor_recovery_after_api_restore(
         mock_config_entry.entry_id
     ]
 
+    # 초기 상태 확인 (22.5도가 정상 로드되어야 함)
     initial_state = hass.states.get("sensor.test_temperature")
     assert initial_state is not None
-    assert initial_state.state == "22.5" # full_test 시나리오의 TMP 값
+    assert initial_state.state == "22.5"
 
-    # 2. API 실패 시뮬레이션 (side_effect 설정)
+    # 2. API 실패 시뮬레이션
     api_mock.side_effect = Exception("Temporary Error")
     
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
     failed_state = hass.states.get("sensor.test_temperature")
-    assert failed_state is not None
     assert failed_state.state in ("unknown", "unavailable")
 
-    # 3. API 복구 시뮬레이션 (side_effect 제거)
-    # side_effect를 None으로 초기화하면 원래의 return_value(full_test 데이터)가 반환됨
+    # 3. API 복구 시뮬레이션
+    # side_effect를 None으로 돌리면 이전에 설정된 return_value(full_test 데이터)를 다시 반환합니다.
     api_mock.side_effect = None
 
     await coordinator.async_refresh()
@@ -185,8 +183,5 @@ async def test_sensor_recovery_after_api_restore(
 
     recovered_state = hass.states.get("sensor.test_temperature")
     assert recovered_state is not None
-
-    # 복구 성공 검증: unknown이나 unavailable이 아니어야 함
-    assert recovered_state.state not in ("unknown", "unavailable")
-    # 정상 데이터 값인 22.5로 돌아왔는지 확인
+    # 다시 정상 값인 22.5로 돌아와야 합니다.
     assert recovered_state.state == "22.5"
