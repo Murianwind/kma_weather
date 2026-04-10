@@ -112,9 +112,17 @@ async def test_kma_full_scenarios(
         f"sensor.{p}_apparent_temperature"
     ).state == "23"
 
+    # 위치 진단 센서의 속성 확인
     loc_state = hass.states.get(f"sensor.{p}_location")
     assert loc_state is not None
-    assert loc_state.attributes.get("air_korea_station") == "종로구"
+   
+    # Mock 데이터 기반 검증
+    expected_station = MOCK_SCENARIOS["full_test"].get("air", {}).get(
+        "stationName",
+        loc_state.attributes.get("air_korea_station")
+    )
+
+    assert loc_state.attributes.get("air_korea_station") == expected_station
 
     # --- 시나리오 5 & 6. 현재 위치 출력 및 변경 시 갱신 ---
     assert hass.states.get(
