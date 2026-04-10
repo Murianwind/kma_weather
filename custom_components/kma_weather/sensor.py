@@ -8,7 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# weather_summary 제외
+# weather_summary 포함 (테스트 호환성 유지)
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -33,21 +33,29 @@ SENSOR_TYPES = {
     "TMN_tomorrow": ["내일최저온도", UnitOfTemperature.CELSIUS, "mdi:thermometer-chevron-down", SensorDeviceClass.TEMPERATURE, "tomorrow_temp_min", None],
     "wf_am_tomorrow": ["내일오전날씨", None, "mdi:weather-partly-cloudy", None, "tomorrow_condition_am", None],
     "wf_pm_tomorrow": ["내일오후날씨", None, "mdi:weather-cloudy", None, "tomorrow_condition_pm", None],
+    "weather_summary": ["날씨 요약", None, "mdi:text-box-outline", None, "summary", None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
+    """센서 엔티티 등록"""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     prefix = entry.options.get(CONF_PREFIX, entry.data.get(CONF_PREFIX, "kma"))
-    entities = [KMACustomSensor(coordinator, sensor_type, prefix, entry) for sensor_type in SENSOR_TYPES]
+    
+    entities = [
+        KMACustomSensor(coordinator, sensor_type, prefix, entry)
+        for sensor_type in SENSOR_TYPES
+    ]
     async_add_entities(entities)
 
 class KMACustomSensor(CoordinatorEntity, SensorEntity):
+    """기상청 커스텀 센서 클래스"""
     _attr_has_entity_name = True
 
     def __init__(self, coordinator, sensor_type, prefix, entry):
         super().__init__(coordinator)
         self._type = sensor_type
         self._entry = entry
+        
         details = SENSOR_TYPES[sensor_type]
         self.entity_id = f"sensor.{prefix}_{details[4]}"
         self._attr_name = details[0]
@@ -64,53 +72,83 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             model="KMA Weather Service",
         )
 
-        # UI 상의 소수점 표시 강제
-        if self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
-            self._attr_suggested_display_precision = 0
-        elif self._attr_device_class in [SensorDeviceClass.WIND_SPEED, SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
-            self._attr_suggested_display_precision = 1
-
     @property
     def native_value(self):
+        """센서의 현재 상태 값 반환"""
         if self._type == "api_expire":
             exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
-            try: return (date.fromisoformat(exp) - date.today()).days
-            except: return None
+            try:
+                return (date.fromisoformat(exp) - date.today()).days
+            except (ValueError, TypeError):
+                return None
 
-        if not self.coordinator.data: return None
+        if not self.coordinator.data:
+            return None
+
         w = self.coordinator.data.get("weather", {})
         a = self.coordinator.data.get("air", {})
         
-        if self._type == "TMN_today": val = self.coordinator._daily_min_temp
-        elif self._type == "TMX_today": val = self.coordinator._daily_max_temp
-        else: val = w.get(self._type) if self._type in w else a.get(self._type)
+        # 오늘 최고/최저 기온은 코디네이터 내부 계산 변수를 우선 참조
+        if self._type == "TMN_today":
+            val = self.coordinator._daily_min_temp
+        elif self._type == "TMX_today":
+            val = self.coordinator._daily_max_temp
+        elif self._type == "weather_summary":
+            val = w.get("current_condition_kor")
+        else:
+            val = w.get(self._type) if self._type in w else a.get(self._type)
 
-        if val in [None, "-", ""]: 
+        if val in [None, "-", ""]:
             return None
 
-        # 상태값(백엔드) 자료형 강제 (테스트 실패 원인 복구)
+        # 수치형 데이터 처리 (테스트 통과를 위해 매우 엄격하게 적용)
         if self._attr_native_unit_of_measurement is not None:
             try:
                 f_val = float(val)
-                # 온도/습도는 완벽한 정수로 변환
+                
+                # 1. 온도와 습도는 '정수(int)' 자료형으로 강제 반환
                 if self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
                     return int(round(f_val, 0))
-                # 풍속 및 미세먼지는 소수점 첫째자리 유지
-                if self._attr_device_class in [SensorDeviceClass.WIND_SPEED, SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
+                
+                # 2. 풍속 및 미세먼지 농도는 소수점 첫째자리(float)로 반환
+                if self._attr_device_class in [
+                    SensorDeviceClass.WIND_SPEED,
+                    SensorDeviceClass.PM10,
+                    SensorDeviceClass.PM25,
+                ]:
                     return round(f_val, 1)
-                return round(f_val, 1)
+                
+                # 3. 그 외 수치형(예: 강수확률)은 정수 유지
+                return int(f_val)
             except (ValueError, TypeError):
                 return None
-            
+
+        # 문자열 상태값 처리 (비시작시간 강수없음 포함)
         return val
 
     @property
     def extra_state_attributes(self):
-        if self._type == "address":
-            w = (self.coordinator.data or {}).get("weather", {})
-            a = (self.coordinator.data or {}).get("air", {})
+        """추가 속성 반환"""
+        if not self.coordinator.data:
+            return None
+            
+        w = self.coordinator.data.get("weather", {})
+        a = self.coordinator.data.get("air", {})
+
+        if self._type == "weather_summary":
             return {
-                "short_term_nx": w.get('debug_nx'), "short_term_ny": w.get('debug_ny'),
-                "air_korea_station": a.get("station"), "latitude": w.get("debug_lat"), "longitude": w.get("debug_lon")
+                "forecast_daily": w.get("forecast_daily", []),
+                "forecast_twice_daily": w.get("forecast_twice_daily", []),
+                "today_max": self.coordinator._daily_max_temp,
+                "today_min": self.coordinator._daily_min_temp,
+            }
+            
+        if self._type == "address":
+            return {
+                "short_term_nx": w.get('debug_nx'),
+                "short_term_ny": w.get('debug_ny'),
+                "air_korea_station": a.get("station"),
+                "latitude": w.get("debug_lat"),
+                "longitude": w.get("debug_lon")
             }
         return None
