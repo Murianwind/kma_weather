@@ -8,7 +8,7 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# [Problem 1 해결] 불필요한 weather_summary 제거 (총 23종)
+# 모든 센서 타입 정의 (Problem 1: weather_summary 제거)
 SENSOR_TYPES = {
     "TMP": ["현재온도", UnitOfTemperature.CELSIUS, "mdi:thermometer", SensorDeviceClass.TEMPERATURE, "temperature", None],
     "REH": ["현재습도", PERCENTAGE, "mdi:water-percent", SensorDeviceClass.HUMIDITY, "humidity", None],
@@ -36,6 +36,7 @@ SENSOR_TYPES = {
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
+    """센서 엔티티 등록"""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     prefix = entry.options.get(CONF_PREFIX, entry.data.get(CONF_PREFIX, "kma"))
     
@@ -46,6 +47,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(entities)
 
 class KMACustomSensor(CoordinatorEntity, SensorEntity):
+    """기상청 커스텀 센서 클래스"""
     _attr_has_entity_name = True
 
     def __init__(self, coordinator, sensor_type, prefix, entry):
@@ -71,6 +73,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
+        """센서의 현재 상태 값 반환"""
         if self._type == "api_expire":
             exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
             try:
@@ -84,7 +87,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         w = self.coordinator.data.get("weather", {})
         a = self.coordinator.data.get("air", {})
         
-        # 데이터 매핑 로직 (Problem 2 연동 준비)
+        # 오늘 최고/최저 기온은 코디네이터 내부 계산 변수를 우선 참조
         if self._type == "TMN_today":
             val = self.coordinator._daily_min_temp
         elif self._type == "TMX_today":
@@ -95,21 +98,25 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if val in [None, "-", ""]:
             return None
 
-        # [Problem 3 & 4 해결] 수치형 데이터 처리
+        # 수치형 데이터 처리
         if self._attr_native_unit_of_measurement is not None:
             try:
                 f_val = float(val)
                 
-                # 1. 온도와 습도는 정수 처리
+                # [Problem 3 해결] 온도와 습도는 정수(int) 처리 강제
                 if self._attr_native_unit_of_measurement in [UnitOfTemperature.CELSIUS, PERCENTAGE]:
                     return int(round(f_val, 0))
                 
-                # 2. 풍속은 소수점 첫째자리까지 처리
+                # [Problem 4 해결] 풍속 센서는 소수점 첫째자리까지 처리
                 if self._attr_device_class == SensorDeviceClass.WIND_SPEED:
                     return round(f_val, 1)
                 
-                # 3. 미세먼지 농도 등 기타 수치형은 소수점 첫째자리 유지
-                return round(f_val, 1)
+                # 미세먼지 등 기타 수치형은 소수점 1자리 유지
+                if self._attr_device_class in [SensorDeviceClass.PM10, SensorDeviceClass.PM25]:
+                    return round(f_val, 1)
+                
+                # 강수확률(POP) 등 기타 수치형은 정수 유지
+                return int(f_val)
             except (ValueError, TypeError):
                 return None
 
@@ -117,6 +124,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
+        """추가 속성 반환"""
         if not self.coordinator.data:
             return None
             
