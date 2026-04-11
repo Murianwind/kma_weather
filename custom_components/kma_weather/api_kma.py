@@ -259,7 +259,9 @@ class KMAWeatherAPI:
                     "wf_pm_tomorrow": wf_pm,
                 })
 
-            for is_am in [True, False]:
+            for is_am in [True, False]:# ── [여기에 2줄 추가] 현재 12시 이후라면, 오늘(i=0)의 주간(is_am=True) 예보는 건너뜀 ──
+                if i == 0 and is_am and now.hour >= 12:
+                    continue
                 twice_daily.append({
                     "datetime": target_date.replace(hour=9 if is_am else 21, minute=0, second=0, microsecond=0).isoformat(),
                     "is_daytime": is_am,
