@@ -70,33 +70,6 @@ jobs:
             >> $GITHUB_STEP_SUMMARY || echo "No TOTAL data." >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-      - name: Generate Test Result Summary
-        if: always()
-        run: |
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### ✅ Pytest 결과 요약" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          # 최종 summary 행 (passed/failed/error 라인)
-          grep -E "=+ .*(passed|failed|error).* =+" pytest-coverage.txt \
-            >> $GITHUB_STEP_SUMMARY || echo "No summary line." >> $GITHUB_STEP_SUMMARY
-          # 느린 테스트 top 10
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⏱ 가장 느린 테스트 Top 10:" >> $GITHUB_STEP_SUMMARY
-          grep -A 12 "slowest durations" pytest-coverage.txt \
-            >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Show Failed Tests Detail
-        if: failure()
-        run: |
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### ❌ 실패한 테스트 상세" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          grep -A 20 "FAILED\|ERROR\|short test summary" pytest-coverage.txt \
-            >> $GITHUB_STEP_SUMMARY || true
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
