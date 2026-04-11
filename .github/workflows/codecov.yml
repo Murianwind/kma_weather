@@ -47,14 +47,54 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml \
             --cov-report=term \
-            --no-header -v | tee pytest-coverage.txt
+            --no-header -v \
+            --tb=short \
+            --color=yes \
+            --durations=10 | tee pytest-coverage.txt
 
-      - name: Add Coverage to GitHub Summary
+      - name: Generate Detailed Coverage Summary
         if: always()
         run: |
-          echo "### 📊 Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Coverage Report — 파일별 상세" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
-          grep -E "TOTAL" pytest-coverage.txt >> $GITHUB_STEP_SUMMARY || echo "No coverage data found." >> $GITHUB_STEP_SUMMARY
+          echo "파일                                          Stmts   Miss  Cover   누락 라인" >> $GITHUB_STEP_SUMMARY
+          echo "─────────────────────────────────────────────────────────────────────────────" >> $GITHUB_STEP_SUMMARY
+          # term-missing 출력에서 파일별 행 추출 (헤더/구분선/TOTAL 제외)
+          grep -E "^custom_components" pytest-coverage.txt | \
+            awk '{printf "%-45s %6s %6s %6s   %s\n", $1, $2, $3, $4, $5}' \
+            >> $GITHUB_STEP_SUMMARY || echo "No per-file data." >> $GITHUB_STEP_SUMMARY
+          echo "─────────────────────────────────────────────────────────────────────────────" >> $GITHUB_STEP_SUMMARY
+          grep -E "^TOTAL" pytest-coverage.txt | \
+            awk '{printf "%-45s %6s %6s %6s\n", "TOTAL", $2, $3, $4}' \
+            >> $GITHUB_STEP_SUMMARY || echo "No TOTAL data." >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Generate Test Result Summary
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Pytest 결과 요약" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          # 최종 summary 행 (passed/failed/error 라인)
+          grep -E "=+ .*(passed|failed|error).* =+" pytest-coverage.txt \
+            >> $GITHUB_STEP_SUMMARY || echo "No summary line." >> $GITHUB_STEP_SUMMARY
+          # 느린 테스트 top 10
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⏱ 가장 느린 테스트 Top 10:" >> $GITHUB_STEP_SUMMARY
+          grep -A 12 "slowest durations" pytest-coverage.txt \
+            >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Show Failed Tests Detail
+        if: failure()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ❌ 실패한 테스트 상세" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          grep -A 20 "FAILED\|ERROR\|short test summary" pytest-coverage.txt \
+            >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Coverage to Codecov

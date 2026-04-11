@@ -40,12 +40,110 @@ jobs:
           fi
 
       - name: Run Pytest
-        run: pytest tests/ --no-header -v --disable-warnings
+        # --color=no: ANSI 색상 코드 제거 → 이후 파싱 정확
+        run: |
+          set +e
+          pytest tests/ \
+            --no-header \
+            --tb=short \
+            --color=no \
+            --durations=10 \
+            -p no:warnings \
+            -v \
+            2>&1 | tee pytest-output.txt
+          PYTEST_EXIT=${PIPESTATUS[0]}
+          echo "PYTEST_EXIT=$PYTEST_EXIT" >> $GITHUB_ENV
+          exit $PYTEST_EXIT
 
       - name: Publish Test Summary
         if: always()
         run: |
-          echo "### ✅ Pytest Execution Report" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          pytest tests/ --no-header -q --disable-warnings 2>&1 >> $GITHUB_STEP_SUMMARY || true
+          SUMMARY_LINE=$(grep -E "[0-9]+ (passed|failed|error)" pytest-output.txt | tail -1 || true)
+
+          # ── 헤더 + 요약 ──────────────────────────────────────────────────
+          if [ "${PYTEST_EXIT:-0}" = "0" ]; then
+            echo "### ✅ Pytest 결과: 전체 통과" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Pytest 결과: 실패 있음" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**${SUMMARY_LINE}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # ── 실행된 테스트 전체 목록 (접기) ──────────────────────────────
+          # -v 출력 형식: "tests/foo.py::test_name PASSED     [ 10%]"
+          # → 끝의 "[  N%]" 제거, PASSED→✓ 표시
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>📋 실행된 테스트 전체 목록 (클릭하여 펼치기)</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "PASSED|FAILED|ERROR|SKIPPED" pytest-output.txt \
+            | grep "::" \
+            | sed 's/  *\[[ 0-9]*%\]$//' \
+            | sed 's/ PASSED$/  ✓/' \
+            | sed 's/ FAILED$/  ✗  ← FAILED/' \
+            | sed 's/ ERROR$/  !  ← ERROR/' \
+            | sed 's/ SKIPPED$/  (skipped)/' \
+            >> $GITHUB_STEP_SUMMARY || echo "(없음)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # ── 실패 상세 ────────────────────────────────────────────────────
+          FAIL_COUNT=$(grep -cE "^(FAILED|ERROR) " pytest-output.txt 2>/dev/null || echo 0)
+          if [ "$FAIL_COUNT" -gt "0" ]; then
+            echo "---" >> $GITHUB_STEP_SUMMARY
+            echo "### ❌ 실패 상세" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # 실패 테스트 이름 + 에러 요약
+            echo "**실패한 테스트:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "^(FAILED|ERROR) " pytest-output.txt >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Traceback 전체 블록 (파일명:라인 포함)
+            echo "**Traceback (파일:라인):**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            awk '
+              /^_{5,}/ { in_fail=1; print ""; print; next }
+              in_fail && /^={5,}/ { in_fail=0; next }
+              in_fail { print }
+            ' pytest-output.txt >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # 원인 분류: 소스 문제(custom_components/) vs 테스트 문제(tests/)
+            echo "**원인 분류:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            SRC=$(grep -oE "custom_components/[^ ]+\.py:[0-9]+" pytest-output.txt | sort -u || true)
+            TEST=$(grep -oE "tests/[^ ]+\.py:[0-9]+" pytest-output.txt | sort -u || true)
+
+            if [ -n "$SRC" ]; then
+              echo "📦 소스 코드 문제 (custom_components/):" >> $GITHUB_STEP_SUMMARY
+              echo "$SRC" >> $GITHUB_STEP_SUMMARY
+              echo "  → sensor.py / coordinator.py 등 실제 코드 버그일 가능성" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "📦 소스 코드 문제: 없음" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+            if [ -n "$TEST" ]; then
+              echo "🧪 테스트 코드 문제 (tests/):" >> $GITHUB_STEP_SUMMARY
+              echo "$TEST" >> $GITHUB_STEP_SUMMARY
+              echo "  → 테스트 assertion 또는 mock 설정 문제일 가능성" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "🧪 테스트 코드 문제: 없음" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # ── 느린 테스트 Top 10 ───────────────────────────────────────────
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "### ⏱ 가장 느린 테스트 Top 10" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          awk '/slowest [0-9]+ durations/{found=1; next} found && /^$/{exit} found{print}' \
+            pytest-output.txt | head -12 >> $GITHUB_STEP_SUMMARY \
+            || echo "(데이터 없음)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
