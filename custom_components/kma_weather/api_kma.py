@@ -187,9 +187,22 @@ class KMAWeatherAPI:
                               if _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0]
                 if rain_times:
                     t = rain_times[0]
-                    weather_data["rain_start_time"] = f"{t[:2]}:{t[2:]}"
+                    
+                    # d_str(YYYYMMDD)에서 월, 일 추출 (int로 변환하여 04월 -> 4월로 표시)
+                    month = int(d_str[4:6])
+                    day = int(d_str[6:8])
+                    
+                    # t(HHMM)에서 시, 분 추출
+                    hour = int(t[:2])
+                    minute = int(t[2:])
+                    
+                    # 분(minute)이 0보다 크면 분까지 표시, 아니면 시까지만 표시
+                    if minute > 0:
+                        weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시 {minute}분"
+                    else:
+                        weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시"
                     break
-
+                    
         # ── 중기예보 튜플 언패킹 (t_res, l_res, tm_fc_dt) ──────────────────
         # _get_mid_term()은 (ta응답, land응답, tmFc_datetime) 튜플을 반환한다.
         # tm_fc_dt: 실제 API 요청에 사용된 발표 기준 datetime (30분 지연 보정 포함)
