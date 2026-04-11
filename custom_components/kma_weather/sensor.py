@@ -8,7 +8,6 @@ from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
 
 _LOGGER = logging.getLogger(__name__)
 
-# weather_summary 포함 (테스트 호환성 유지)
 SENSOR_TYPES = {
     "TMP":                ["현재온도",       UnitOfTemperature.CELSIUS,          "mdi:thermometer",             SensorDeviceClass.TEMPERATURE, "temperature",         None],
     "REH":                ["현재습도",       PERCENTAGE,                          "mdi:water-percent",           SensorDeviceClass.HUMIDITY,    "humidity",            None],
@@ -65,8 +64,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         self._attr_entity_category = details[5]
 
         # ── 풍속 센서: HA의 단위 자동변환(m/s → km/h 등)을 차단 ──────────
-        # suggested_unit_of_measurement를 명시하면 HA가 해당 단위로 고정 표시한다.
-        # unit_of_measurement는 native_unit과 동일하게 m/s로 유지.
         if sensor_type == "WSD":
             self._attr_suggested_unit_of_measurement = UnitOfSpeed.METERS_PER_SECOND
 
@@ -79,7 +76,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        """센서의 현재 상태 값 반환"""
+        """센서의 현재 상태 값 반환 — API 원본 자릿수 그대로 출력"""
         if self._type == "api_expire":
             exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
             try:
@@ -106,27 +103,14 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
         unit = self._attr_native_unit_of_measurement
 
+        # 수치형 단위가 있는 경우: float 변환 후 원본 자릿수 그대로 반환
         if unit is not None:
             try:
                 f_val = float(val)
-
-                # ── 온도·습도·강수확률: 정수(int) 반환 ─────────────────
-                if unit in (UnitOfTemperature.CELSIUS, PERCENTAGE):
-                    return int(round(f_val))
-
-                # ── 풍속: 소수점 첫째자리 float 반환 (m/s 원본값) ───────
-                # HA가 unit_system에 따라 km/h로 변환하려 해도
-                # suggested_unit_of_measurement=m/s를 명시했으므로 m/s로 고정 표시됨
-                if self._attr_device_class == SensorDeviceClass.WIND_SPEED:
-                    return round(f_val, 1)
-
-                # ── 미세먼지 농도: 소수점 첫째자리 float 반환 ────────────
-                if self._attr_device_class in (SensorDeviceClass.PM10, SensorDeviceClass.PM25):
-                    return round(f_val, 1)
-
-                # ── 그 외 수치형: 정수 반환 ──────────────────────────────
-                return int(f_val)
-
+                # 소수점 이하가 없으면 int, 있으면 float 그대로
+                if f_val == int(f_val):
+                    return int(f_val)
+                return f_val
             except (ValueError, TypeError):
                 return None
 
