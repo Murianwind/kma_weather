@@ -137,13 +137,3 @@ jobs:
             fi
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
-
-          # ── 느린 테스트 Top 10 ───────────────────────────────────────────
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "### ⏱ 가장 느린 테스트 Top 10" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          awk '/slowest [0-9]+ durations/{found=1; next} found && /^$/{exit} found{print}' \
-            pytest-output.txt | head -12 >> $GITHUB_STEP_SUMMARY \
-            || echo "(데이터 없음)" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
