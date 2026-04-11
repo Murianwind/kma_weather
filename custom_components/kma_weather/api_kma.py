@@ -204,9 +204,10 @@ class KMAWeatherAPI:
         mid_land = mid_land_res.get("response", {}).get("body", {}).get("items", {}).get("item", [{}])[0]             if mid_land_res else {}
 
         # ── 단기예보로 커버된 날짜 추적 (스크립트의 processed_dates와 동일) ──
+        short_term_limit = (now + timedelta(days=3)).strftime("%Y%m%d")
         short_covered_dates = {
             d for d in forecast_map
-            if any("TMP" in v for v in forecast_map[d].values())
+            if d <= short_term_limit and any("TMP" in v for v in forecast_map[d].values())
         }
 
         twice_daily, daily_forecast = [], []
