@@ -31,6 +31,14 @@ class KMAWeatherAPI:
         self._cached_station = self._cached_lat_lon = self._station_cache_time = None
         self._nominatim_user_agent = self._build_nominatim_user_agent()
 
+        # ── 데이터 소실 방지용 캐시 ──────────────────────────────────────
+        # API 호출 실패 / 빈 응답 시 직전 성공 데이터를 재사용한다.
+        # tm_fc_dt도 함께 저장해 mid_day_idx 계산 일관성을 보장한다.
+        self._cache_forecast_map: dict = {}          # 단기예보 raw map
+        self._cache_mid_ta: dict = {}                # 중기기온 item[0]
+        self._cache_mid_land: dict = {}              # 중기육상 item[0]
+        self._cache_mid_tm_fc_dt: datetime | None = None  # 중기예보 기준 시각
+
     def _build_nominatim_user_agent(self):
         base = "HomeAssistant-KMA-Weather"
         if self.hass:
@@ -116,8 +124,13 @@ class KMAWeatherAPI:
         adj = now - timedelta(minutes=10)
         hour = adj.hour
         valid_hours = [h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= hour]
-        base_h = max(valid_hours) if valid_hours else 23
-        base_d = adj.strftime("%Y%m%d") if valid_hours else (adj - timedelta(days=1)).strftime("%Y%m%d")
+        if valid_hours:
+            base_h = max(valid_hours)
+            base_d = adj.strftime("%Y%m%d")
+        else:
+            # 자정~01:59: 전날 23시 발표본 사용
+            base_h = 23
+            base_d = (adj - timedelta(days=1)).strftime("%Y%m%d")
         return await self._fetch(
             "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
             {"serviceKey": self.api_key, "dataType": "JSON", "base_date": base_d,
@@ -125,7 +138,6 @@ class KMAWeatherAPI:
 
     def _get_mid_base_dt(self, now) -> datetime:
         """
-        스크립트의 get_tmfc_candidates()와 동일한 로직.
         중기예보 발표 시각(06시/18시) 기준, API 게시 지연 30분 감안.
         반환값: 실제 사용할 tmFc datetime (Asia/Seoul)
         """
@@ -170,57 +182,90 @@ class KMAWeatherAPI:
             "rain_start_time": "강수없음", "forecast_daily": [], "forecast_twice_daily": [], "address": address,
         }
 
-        forecast_map = {}
+        # ── [단기예보] raw 파싱 후 캐시 갱신 ──────────────────────────────
+        # 새로 받은 데이터가 유효한 경우만 캐시를 교체한다.
+        # 실패(None) 또는 빈 응답이면 직전 캐시를 그대로 유지한다.
+        new_forecast_map = {}
         if short_res and "response" in short_res:
             for it in short_res.get("response", {}).get("body", {}).get("items", {}).get("item", []):
-                forecast_map.setdefault(it["fcstDate"], {}).setdefault(it["fcstTime"], {})[it["category"]] = it["fcstValue"]
+                new_forecast_map.setdefault(it["fcstDate"], {}).setdefault(it["fcstTime"], {})[it["category"]] = it["fcstValue"]
 
-            today_str, curr_h = now.strftime("%Y%m%d"), f"{now.hour:02d}00"
-            if today_str in forecast_map:
-                times = sorted(forecast_map[today_str].keys())
-                best_t = next((t for t in times if t >= curr_h), times[-1] if times else None)
-                if best_t:
-                    weather_data.update(forecast_map[today_str][best_t])
+        if new_forecast_map:
+            # 유효한 데이터 수신 → 캐시 갱신
+            self._cache_forecast_map = new_forecast_map
+            _LOGGER.debug("단기예보 캐시 갱신: %d일치", len(new_forecast_map))
+        else:
+            # 실패 또는 빈 응답 → 이전 캐시 재사용
+            _LOGGER.warning("단기예보 수신 실패 또는 빈 응답 → 캐시 재사용 (날짜 수: %d)", len(self._cache_forecast_map))
 
-            for d_str in sorted(forecast_map.keys()):
-                rain_times = [t_str for t_str in sorted(forecast_map[d_str].keys())
-                              if _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0]
-                if rain_times:
-                    t = rain_times[0]
-                    
-                    # d_str(YYYYMMDD)에서 월, 일 추출 (int로 변환하여 04월 -> 4월로 표시)
-                    month = int(d_str[4:6])
-                    day = int(d_str[6:8])
-                    
-                    # t(HHMM)에서 시, 분 추출
-                    hour = int(t[:2])
-                    minute = int(t[2:])
-                    
-                    # 분(minute)이 0보다 크면 분까지 표시, 아니면 시까지만 표시
-                    if minute > 0:
-                        weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시 {minute}분"
-                    else:
-                        weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시"
-                    break
-                    
-        # ── 중기예보 튜플 언패킹 (t_res, l_res, tm_fc_dt) ──────────────────
-        # _get_mid_term()은 (ta응답, land응답, tmFc_datetime) 튜플을 반환한다.
-        # tm_fc_dt: 실제 API 요청에 사용된 발표 기준 datetime (30분 지연 보정 포함)
+        forecast_map = self._cache_forecast_map
+
+        # ── [중기예보] 언패킹 후 캐시 갱신 ───────────────────────────────
+        # mid_res 튜플: (ta응답, land응답, tmFc_datetime)
+        # 두 응답 모두 유효한 경우만 캐시를 교체한다.
         if mid_res and isinstance(mid_res, tuple) and len(mid_res) == 3:
-            mid_ta_res, mid_land_res, tm_fc_dt = mid_res
+            mid_ta_res, mid_land_res, new_tm_fc_dt = mid_res
         else:
             mid_ta_res = mid_res[0] if mid_res else None
             mid_land_res = mid_res[1] if mid_res and len(mid_res) > 1 else None
-            tm_fc_dt = self._get_mid_base_dt(now)
+            new_tm_fc_dt = self._get_mid_base_dt(now)
 
-        mid_ta = mid_ta_res.get("response", {}).get("body", {}).get("items", {}).get("item", [{}])[0]             if mid_ta_res else {}
-        mid_land = mid_land_res.get("response", {}).get("body", {}).get("items", {}).get("item", [{}])[0]             if mid_land_res else {}
+        new_mid_ta = (mid_ta_res.get("response", {}).get("body", {}).get("items", {}).get("item", [{}])[0]
+                      if mid_ta_res else None)
+        new_mid_land = (mid_land_res.get("response", {}).get("body", {}).get("items", {}).get("item", [{}])[0]
+                        if mid_land_res else None)
 
-        # ── 단기예보로 커버된 날짜 추적 (스크립트의 processed_dates와 동일) ──
+        if new_mid_ta and new_mid_land:
+            # 두 응답 모두 유효 → 캐시 갱신 (tm_fc_dt도 함께 저장)
+            self._cache_mid_ta = new_mid_ta
+            self._cache_mid_land = new_mid_land
+            self._cache_mid_tm_fc_dt = new_tm_fc_dt
+            _LOGGER.debug("중기예보 캐시 갱신: tmFc=%s", new_tm_fc_dt.strftime("%Y%m%d%H%M"))
+        else:
+            # 실패 또는 빈 응답 → 이전 캐시 재사용
+            _LOGGER.warning("중기예보 수신 실패 또는 빈 응답 → 캐시 재사용 (tmFc=%s)",
+                            self._cache_mid_tm_fc_dt.strftime("%Y%m%d%H%M") if self._cache_mid_tm_fc_dt else "없음")
+
+        # 이후 로직은 항상 캐시 기반으로 동작
+        mid_ta = self._cache_mid_ta
+        mid_land = self._cache_mid_land
+        # tm_fc_dt: 캐시된 값이 있으면 사용, 없으면 현재 계산값 사용
+        tm_fc_dt = self._cache_mid_tm_fc_dt if self._cache_mid_tm_fc_dt else new_tm_fc_dt
+
+        # ── 현재 날씨 파싱 ────────────────────────────────────────────────
+        today_str, curr_h = now.strftime("%Y%m%d"), f"{now.hour:02d}00"
+        if today_str in forecast_map:
+            times = sorted(forecast_map[today_str].keys())
+            best_t = next((t for t in times if t >= curr_h), times[-1] if times else None)
+            if best_t:
+                weather_data.update(forecast_map[today_str][best_t])
+
+        # ── 강수 시작 시각 ─────────────────────────────────────────────────
+        for d_str in sorted(forecast_map.keys()):
+            rain_times = [t_str for t_str in sorted(forecast_map[d_str].keys())
+                          if _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0]
+            if rain_times:
+                t = rain_times[0]
+                month = int(d_str[4:6])
+                day = int(d_str[6:8])
+                hour = int(t[:2])
+                minute = int(t[2:])
+                if minute > 0:
+                    weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시 {minute}분"
+                else:
+                    weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시"
+                break
+
+        # ── 단기/중기 커버 날짜 결정 ──────────────────────────────────────
+        # 핵심 조건: 09시와 15시 TMP 데이터가 모두 있어야 단기로 처리한다.
+        # 이 두 시각이 없는 날짜(새벽~오전 일부만 있는 경계 날짜)는
+        # 중기예보로 처리하여 최고/최저 기온 오류를 방지한다.
         short_term_limit = (now + timedelta(days=3)).strftime("%Y%m%d")
         short_covered_dates = {
             d for d in forecast_map
-            if d <= short_term_limit and any("TMP" in v for v in forecast_map[d].values())
+            if d <= short_term_limit
+            and "0900" in forecast_map[d] and "TMP" in forecast_map[d]["0900"]
+            and "1500" in forecast_map[d] and "TMP" in forecast_map[d]["1500"]
         }
 
         twice_daily, daily_forecast = [], []
@@ -233,10 +278,11 @@ class KMAWeatherAPI:
             wf_am, wf_pm = "맑음", "맑음"
 
             if d_str in short_covered_dates:
-                # ── 단기예보 처리 (해당 날짜에 TMP 데이터가 있는 경우) ──────
+                # ── 단기예보 처리 ──────────────────────────────────────────
                 short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
-                t_max = max(short_temps)
-                t_min = min(short_temps)
+                valid_temps = [t for t in short_temps if t is not None]
+                t_max = max(valid_temps) if valid_temps else None
+                t_min = min(valid_temps) if valid_temps else None
                 wf_am = self._get_sky_kor(
                     forecast_map[d_str].get("0900", {}).get("SKY"),
                     forecast_map[d_str].get("0900", {}).get("PTY"))
@@ -244,19 +290,47 @@ class KMAWeatherAPI:
                     forecast_map[d_str].get("1500", {}).get("SKY"),
                     forecast_map[d_str].get("1500", {}).get("PTY"))
             else:
-                # ── 중기예보 처리 ────────────────────────────────────────────
-                # 스크립트와 동일: tm_fc_dt + timedelta(days=idx) = target_date
-                # 즉 mid_day_idx = target_date - tm_fc_dt.date()
+                # ── 중기예보 처리 ──────────────────────────────────────────
+                # mid_day_idx: tm_fc_dt 기준 며칠 후인지 계산
+                # target_date는 시각 포함 datetime, tm_fc_dt도 동일하므로
+                # .date() 로 날짜만 비교한다.
                 mid_day_idx = (target_date.date() - tm_fc_dt.date()).days
-                t_max = _safe_float(mid_ta.get(f"taMax{mid_day_idx}"))
-                t_min = _safe_float(mid_ta.get(f"taMin{mid_day_idx}"))
-                wf_am = self._translate_mid_condition_kor(
-                    mid_land.get(f"wf{mid_day_idx}Am") or mid_land.get(f"wf{mid_day_idx}"))
-                wf_pm = self._translate_mid_condition_kor(
-                    mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}"))
-                _LOGGER.debug(
-                    "중기예보 i=%d date=%s tm_fc_dt=%s mid_day_idx=%d t_max=%s t_min=%s",
-                    i, d_str, tm_fc_dt.strftime("%Y%m%d%H%M"), mid_day_idx, t_max, t_min)
+
+                # 중기예보 API 제공 범위: 발표 기준 3~10일
+                # 범위 밖(0~2일)은 단기예보로 처리해야 하는데
+                # short_covered_dates에도 없다면 데이터 공백 상태.
+                # 이 경우 단기 캐시에서 직접 구할 수 있는 값을 사용한다.
+                if mid_day_idx < 3:
+                    # 단기 캐시에서 최선값 추출 (09시/15시 없어도 있는 값으로)
+                    if d_str in forecast_map:
+                        short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
+                        valid_temps = [t for t in short_temps if t is not None]
+                        t_max = max(valid_temps) if valid_temps else None
+                        t_min = min(valid_temps) if valid_temps else None
+                        # 가장 가까운 낮 시각 데이터로 날씨 대표값 결정
+                        rep_t = min(
+                            [t for t in forecast_map[d_str].keys()],
+                            key=lambda t: abs(int(t[:2]) - 12),
+                            default=None
+                        )
+                        if rep_t:
+                            wf_am = self._get_sky_kor(
+                                forecast_map[d_str][rep_t].get("SKY"),
+                                forecast_map[d_str][rep_t].get("PTY"))
+                            wf_pm = wf_am
+                    _LOGGER.debug(
+                        "경계 날짜 단기캐시 사용 i=%d date=%s mid_day_idx=%d t_max=%s t_min=%s",
+                        i, d_str, mid_day_idx, t_max, t_min)
+                else:
+                    t_max = _safe_float(mid_ta.get(f"taMax{mid_day_idx}"))
+                    t_min = _safe_float(mid_ta.get(f"taMin{mid_day_idx}"))
+                    wf_am = self._translate_mid_condition_kor(
+                        mid_land.get(f"wf{mid_day_idx}Am") or mid_land.get(f"wf{mid_day_idx}"))
+                    wf_pm = self._translate_mid_condition_kor(
+                        mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}"))
+                    _LOGGER.debug(
+                        "중기예보 i=%d date=%s tm_fc_dt=%s mid_day_idx=%d t_max=%s t_min=%s",
+                        i, d_str, tm_fc_dt.strftime("%Y%m%d%H%M"), mid_day_idx, t_max, t_min)
 
             # 오늘(i=0), 내일(i=1) 날씨 정보 저장
             if i == 0:
@@ -272,7 +346,8 @@ class KMAWeatherAPI:
                     "wf_pm_tomorrow": wf_pm,
                 })
 
-            for is_am in [True, False]:# ── [여기에 2줄 추가] 현재 12시 이후라면, 오늘(i=0)의 주간(is_am=True) 예보는 건너뜀 ──
+            for is_am in [True, False]:
+                # 오늘 오전: 현재 12시 이후라면 오전 슬롯 스킵
                 if i == 0 and is_am and now.hour >= 12:
                     continue
                 twice_daily.append({
@@ -284,7 +359,6 @@ class KMAWeatherAPI:
                     "_day_index": i,
                 })
 
-            # t_max=None이어도 항목 포함하여 10일 연속성 보장
             daily_forecast.append({
                 "datetime": target_date.replace(hour=12, minute=0, second=0, microsecond=0).isoformat(),
                 "native_temperature": t_max,
