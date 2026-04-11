@@ -40,12 +40,61 @@ jobs:
           fi
 
       - name: Run Pytest
-        run: pytest tests/ --no-header -v --disable-warnings
-
-      - name: Publish Test Summary
-        if: always()
         run: |
-          echo "### ✅ Pytest Execution Report" >> $GITHUB_STEP_SUMMARY
+          pytest tests/ \
+            --no-header -v \
+            --tb=short \
+            --color=yes \
+            --durations=10 \
+            -p no:warnings \
+            2>&1 | tee pytest-output.txt
+          # exit code 전달 (tee가 덮어쓰지 않도록)
+          exit ${PIPESTATUS[0]}
+
+      - name: Publish Test Summary — Passed
+        if: success()
+        run: |
+          echo "### ✅ Pytest — 전체 통과" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
-          pytest tests/ --no-header -q --disable-warnings 2>&1 >> $GITHUB_STEP_SUMMARY || true
+
+          # 성공한 시나리오 목록 (PASSED 라인)
+          echo "▶ 성공한 테스트 목록:" >> $GITHUB_STEP_SUMMARY
+          grep " PASSED" pytest-output.txt | \
+            sed 's/ PASSED/  ✓/' \
+            >> $GITHUB_STEP_SUMMARY || true
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          # 최종 summary
+          grep -E "=+ .*(passed).* =+" pytest-output.txt \
+            >> $GITHUB_STEP_SUMMARY || true
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⏱ 가장 느린 테스트 Top 10:" >> $GITHUB_STEP_SUMMARY
+          grep -A 12 "slowest durations" pytest-output.txt >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Publish Test Summary — Failed
+        if: failure()
+        run: |
+          echo "### ❌ Pytest — 실패 발생" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+
+          # 실패/에러 라인 + 위치 정보
+          echo "▶ 실패한 테스트:" >> $GITHUB_STEP_SUMMARY
+          grep -E " FAILED| ERROR" pytest-output.txt \
+            >> $GITHUB_STEP_SUMMARY || echo "  (없음)" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "▶ 실패 상세 (파일:라인):" >> $GITHUB_STEP_SUMMARY
+          # short traceback에서 파일명:라인 추출
+          grep -E "^(FAILED|ERROR|  File \"|AssertionError|assert )" pytest-output.txt | \
+            head -60 >> $GITHUB_STEP_SUMMARY || true
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          grep -E "=+ .*(failed|error).* =+" pytest-output.txt \
+            >> $GITHUB_STEP_SUMMARY || true
+
           echo '```' >> $GITHUB_STEP_SUMMARY
