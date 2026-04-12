@@ -62,8 +62,9 @@ jobs:
           echo "─────────────────────────────────────────────────────────────────────────────" >> $GITHUB_STEP_SUMMARY
           # term-missing 출력에서 파일별 행 추출 (헤더/구분선/TOTAL 제외)
           grep -E "^custom_components" pytest-coverage.txt | \
+            sed 's/,[[:space:]]*$//' | \
             awk '{printf "%-45s %6s %6s %6s   %s\n", $1, $2, $3, $4, $5}' \
-            >> $GITHUB_STEP_SUMMARY || echo "No per-file data." >> $GITHUB_STEP_SUMMARY
+            >> $GITHUB_STEP_SUMMARY
           echo "─────────────────────────────────────────────────────────────────────────────" >> $GITHUB_STEP_SUMMARY
           grep -E "^TOTAL" pytest-coverage.txt | \
             awk '{printf "%-45s %6s %6s %6s\n", "TOTAL", $2, $3, $4}' \
