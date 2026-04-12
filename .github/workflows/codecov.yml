@@ -42,11 +42,12 @@ jobs:
 
       - name: Run Pytest with Coverage
         run: |
+          # --cov-branch 옵션을 추가하여 분기 커버리지 측정 활성화
           pytest tests/ \
             --cov=custom_components.kma_weather \
+            --cov-branch \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-report=term \
             --no-header -v \
             --tb=short \
             --color=yes \
@@ -58,29 +59,52 @@ jobs:
           echo "### 📊 Coverage Report — 파일별 상세" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
-          echo "파일                                          Stmts   Miss  Cover   누락 라인" >> $GITHUB_STEP_SUMMARY
-          echo "─────────────────────────────────────────────────────────────────────────────" >> $GITHUB_STEP_SUMMARY
-          # term-missing 출력에서 파일별 행 추출 (헤더/구분선/TOTAL 제외)
-          grep -E "^custom_components" pytest-coverage.txt | \
-            sed 's/,[[:space:]]*$//' | \
-            awk '{printf "%-45s %6s %6s %6s   %s\n", $1, $2, $3, $4, $5}' \
-            >> $GITHUB_STEP_SUMMARY
-          echo "─────────────────────────────────────────────────────────────────────────────" >> $GITHUB_STEP_SUMMARY
-          grep -E "^TOTAL" pytest-coverage.txt | \
-            awk '{printf "%-45s %6s %6s %6s\n", "TOTAL", $2, $3, $4}' \
-            >> $GITHUB_STEP_SUMMARY || echo "No TOTAL data." >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-      - name: Generate Coverage Summary
-        run: |
-          TOTAL=$(grep "^TOTAL" pytest-coverage.txt | awk '{print $4}')
-          echo "### 📊 커버리지 요약" >> $GITHUB_STEP_SUMMARY
-          echo "| 측정 방식 | 커버리지 |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| 구문(Statement) | **${TOTAL}** |" >> $GITHUB_STEP_SUMMARY
+          # 표 헤더 수정 (분기 커버리지 포함)
+          echo "파일 경로                                     실행가능  누락  분기  커버리지(%)  누락 라인" >> $GITHUB_STEP_SUMMARY
+          echo "─────────────────────────────────────────────────────────────────────────────────────────────" >> $GITHUB_STEP_SUMMARY
           
+          # term-missing 출력에서 데이터 추출 및 포맷팅
+          # $2: Stmts(실행가능), $3: Miss(누락), $4: Branch(전체분기), $6: Cover(%), $7: Missing(라인)
+          grep -E "^custom_components" pytest-coverage.txt | \
+            awk '{printf "%-45s %8s %5s %5s %11s   %s\n", $1, $2, $3, $4, $6, $7}' \
+            >> $GITHUB_STEP_SUMMARY
+          
+          echo "─────────────────────────────────────────────────────────────────────────────────────────────" >> $GITHUB_STEP_SUMMARY
+          
+          # TOTAL 행 처리
+          grep -E "^TOTAL" pytest-coverage.txt | \
+            awk '{printf "%-45s %8s %5s %5s %11s\n", "TOTAL", $2, $3, $4, $6}' \
+            >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Generate Coverage Summary
+        if: always()
+        run: |
+          # TOTAL 라인에서 구문과 분기 데이터 추출하여 개별 % 계산
+          # pytest-cov 출력 형식: Name Stmts Miss Branch BrPart Cover Missing
+          TOTAL_LINE=$(grep "^TOTAL" pytest-coverage.txt)
+          STMTS=$(echo $TOTAL_LINE | awk '{print $2}')
+          MISS=$(echo $TOTAL_LINE | awk '{print $3}')
+          BRANCH=$(echo $TOTAL_LINE | awk '{print $4}')
+          BR_MISS=$(echo $TOTAL_LINE | awk '{print $5}')
+          COMBINED=$(echo $TOTAL_LINE | awk '{print $6}')
+
+          # 구문 커버리지 % 계산
+          STMT_PER=$(awk "BEGIN {if ($STMTS > 0) printf \"%.2f\", (($STMTS - $MISS) / $STMTS) * 100; else print \"0.00\"}")
+          # 분기 커버리지 % 계산
+          BRANCH_PER=$(awk "BEGIN {if ($BRANCH > 0) printf \"%.2f\", (($BRANCH - $BR_MISS) / $BRANCH) * 100; else print \"0.00\"}")
+
+          echo "### 📈 커버리지 지표 요약" >> $GITHUB_STEP_SUMMARY
+          echo "| 측정 지표 | 커버리지율 | 상세 수치 |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **구문(Statement)** | **${STMT_PER}%** | $(($STMTS - $MISS)) / $STMTS |" >> $GITHUB_STEP_SUMMARY
+          echo "| **분기(Branch)** | **${BRANCH_PER}%** | $(($BRANCH - $BR_MISS)) / $BRANCH |" >> $GITHUB_STEP_SUMMARY
+          echo "| **통합(Combined)** | **${COMBINED}** | (Stmts + Branch 합산) |" >> $GITHUB_STEP_SUMMARY
+
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.xml
           fail_ci_if_error: true
           verbose: true
+          token: ${{ secrets.CODECOV_TOKEN }}
