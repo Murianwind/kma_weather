@@ -15,8 +15,27 @@ def _safe_float(v):
     except (TypeError, ValueError): return None
 
 KOR_TO_CONDITION: dict[str, str] = {
-    "맑음": "sunny", "구름많음": "partlycloudy", "흐림": "cloudy",
-    "비": "rainy", "비/눈": "rainy", "소나기": "rainy", "눈": "snowy",
+    # 기본 단기 상태
+    "맑음": "sunny",
+    "구름많음": "partlycloudy",
+    "흐림": "cloudy",
+    "비": "rainy",
+    "비/눈": "snowy-rainy",  # rainy 대신 snowy-rainy(진눈깨비) 사용
+    "눈": "snowy",
+    "소나기": "pouring",     # rainy 대신 pouring(쏟아지는 비) 사용
+    "빗방울": "rainy",
+    "빗방울/눈날림": "snowy-rainy",
+    "눈날림": "snowy",
+    
+    # 중기예보 복합 상태
+    "구름많고 비": "rainy",
+    "구름많고 눈": "snowy",
+    "구름많고 비/눈": "snowy-rainy",
+    "구름많고 소나기": "pouring",
+    "흐리고 비": "rainy",
+    "흐리고 눈": "snowy",
+    "흐리고 비/눈": "snowy-rainy",
+    "흐리고 소나기": "pouring",
 }
 
 class KMAWeatherAPI:
@@ -152,13 +171,45 @@ class KMAWeatherAPI:
     async def _get_mid_term(self, now):
         tm_fc_dt = self._get_mid_base_dt(now)
         base = tm_fc_dt.strftime("%Y%m%d%H%M")
-        results = await asyncio.gather(
-            self._fetch("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa",
-                        {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": base}),
-            self._fetch("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst",
-                        {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": base})
+        
+        # API 동시 호출을 위한 헬퍼 함수
+        async def _fetch_both(b):
+            return await asyncio.gather(
+                self._fetch("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa",
+                            {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_temp, "tmFc": b}),
+                self._fetch("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst",
+                            {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": b}),
+                return_exceptions=True
+            )
+            
+        results = await _fetch_both(base)
+        
+        # 데이터가 비어있지 않고 유효한지 검증하는 함수
+        def _is_valid(res):
+            if isinstance(res, Exception) or not res: return False
+            items = res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
+            return len(items) > 0
+
+        # 핵심 로직: 기상청 API 지연으로 빈 데이터가 오면 12시간 전 데이터로 재시도
+        if not _is_valid(results[0]) or not _is_valid(results[1]):
+            # 현재 기준이 06시라면 전날 18시로, 18시라면 당일 06시로 되돌림
+            if tm_fc_dt.hour == 6:
+                prev_dt = (tm_fc_dt - timedelta(days=1)).replace(hour=18)
+            else:
+                prev_dt = tm_fc_dt.replace(hour=6)
+                
+            _LOGGER.warning("중기예보 최신(%s) 응답이 비어있습니다. 이전 시각(%s)으로 재시도합니다.", base, prev_dt.strftime("%Y%m%d%H%M"))
+            
+            retry_results = await _fetch_both(prev_dt.strftime("%Y%m%d%H%M"))
+            if _is_valid(retry_results[0]) and _is_valid(retry_results[1]):
+                # 재시도 성공 시, 기준 시각(tm_fc_dt)도 과거 시각으로 맞춰서 반환
+                return (retry_results[0], retry_results[1], prev_dt)
+
+        return (
+            results[0] if not isinstance(results[0], Exception) else None,
+            results[1] if not isinstance(results[1], Exception) else None,
+            tm_fc_dt
         )
-        return (results[0], results[1], tm_fc_dt)
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
         t, rh, v = _safe_float(temp), _safe_float(reh), _safe_float(wsd)
@@ -381,16 +432,29 @@ class KMAWeatherAPI:
 
     def _translate_mid_condition_kor(self, wf: str) -> str:
         wf = str(wf or "맑음")
+        # 1. 사전에 정의된 완벽히 일치하는 단어가 있으면 그대로 반환
+        if wf in KOR_TO_CONDITION:
+            return wf
+            
+        # 2. 예상치 못한 복합 문장이 올 경우를 대비한 유연한 키워드 추출
+        if "비/눈" in wf: return "비/눈"
+        if "소나기" in wf: return "소나기"
         if "비" in wf: return "비"
         if "눈" in wf: return "눈"
-        if "구름많음" in wf: return "구름많음"
-        if "흐림" in wf: return "흐림"
+        if "흐리" in wf or "흐림" in wf: return "흐림"
+        if "구름" in wf: return "구름많음"
         return "맑음"
 
     def _get_sky_kor(self, sky, pty):
         p, s = str(pty or "0"), str(sky or "1")
-        if p in ["1", "2", "3", "4"]:
-            return {"1": "비", "2": "비/눈", "3": "눈", "4": "소나기"}.get(p, "비")
+        # 강수 형태(PTY)가 1~7번 중 하나라면 우선 적용
+        if p in ["1", "2", "3", "4", "5", "6", "7"]:
+            return {
+                "1": "비", "2": "비/눈", "3": "눈", "4": "소나기",
+                "5": "빗방울", "6": "빗방울/눈날림", "7": "눈날림"
+            }.get(p, "비")
+            
+        # 강수 형태가 0(없음)일 경우 하늘 상태(SKY) 적용
         return "맑음" if s == "1" else ("구름많음" if s == "3" else "흐림")
 
     def _get_vec_kor(self, vec):
