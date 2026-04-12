@@ -39,13 +39,13 @@ async def test_select_nearest_future_time():
     now = datetime(2025, 1, 1, 14, 30, tzinfo=ZoneInfo("Asia/Seoul"))
     short_forecast_data = build_short_response({"1200": 10, "1500": 15, "1800": 18})
     
-    # When: 데이터를 병합하고 현재 날씨를 결정할 때
+    # When: 데이터를 병합하고 현재 날씨를 결정할 때 (매개변수 이름 수정)
     result = api._merge_all(
         now=now, 
         short_res=short_forecast_data, 
         mid_res=(None, None), 
-        mid_land_res={}, 
-        location_name="Seoul"
+        air_data={},        # 기존 mid_land_res 대신 air_data 사용
+        address="Seoul"      # 기존 location_name 대신 address 사용
     )
     
     # Then: 14:30과 가장 가까운 미래인 15:00의 기온(15도)이 선택되어야 함
@@ -60,13 +60,13 @@ async def test_select_latest_past_time_when_no_future():
     now = datetime(2025, 1, 1, 23, 30, tzinfo=ZoneInfo("Asia/Seoul"))
     short_forecast_data = build_short_response({"1800": 18, "2100": 21})
     
-    # When: 데이터를 병합할 때
+    # When: 데이터를 병합할 때 (매개변수 이름 수정)
     result = api._merge_all(
         now=now, 
         short_res=short_forecast_data, 
         mid_res=(None, None), 
-        mid_land_res={}, 
-        location_name="Seoul"
+        air_data={}, 
+        address="Seoul"
     )
     
     # Then: 가용한 데이터 중 가장 최신인 21:00의 기온(21도)이 선택되어야 함
