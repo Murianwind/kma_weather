@@ -70,7 +70,14 @@ jobs:
             awk '{printf "%-45s %6s %6s %6s\n", "TOTAL", $2, $3, $4}' \
             >> $GITHUB_STEP_SUMMARY || echo "No TOTAL data." >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-
+      - name: Generate Coverage Summary
+        run: |
+          TOTAL=$(grep "^TOTAL" pytest-coverage.txt | awk '{print $4}')
+          echo "### 📊 커버리지 요약" >> $GITHUB_STEP_SUMMARY
+          echo "| 측정 방식 | 커버리지 |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| 구문(Statement) | **${TOTAL}** |" >> $GITHUB_STEP_SUMMARY
+          
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
