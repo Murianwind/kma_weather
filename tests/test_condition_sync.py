@@ -16,12 +16,14 @@ ALL_CONDITIONS = list(KOR_TO_CONDITION.items())
 TZ = ZoneInfo("Asia/Seoul")
 
 def _short_res(date_str: str, time_str: str, sky: str, pty: str) -> dict:
+    """단기예보 API 응답 Mock 데이터 생성"""
     items = []
     for cat, val in [("TMP","20"),("SKY",sky),("PTY",pty),("REH","50"),("WSD","2"),("VEC","135"),("POP","10")]:
         items.append({"fcstDate": date_str, "fcstTime": time_str, "category": cat, "fcstValue": val})
     return {"response": {"body": {"items": {"item": items}}}}
 
 def _build_coordinator_data(kor: str, eng: str) -> dict:
+    """통합 테스트용 coordinator.data Mock 데이터 생성"""
     now = dt_util.now()
     twice_daily = [
         {
@@ -49,7 +51,7 @@ def _build_coordinator_data(kor: str, eng: str) -> dict:
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. 매핑 테이블 검증
+# 1. 매핑 테이블 검증 (TestKorToConditionMapping)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestKorToConditionMapping:
@@ -60,61 +62,52 @@ class TestKorToConditionMapping:
     }
 
     def test_all_values_are_ha_standard(self):
-        # Given: KOR_TO_CONDITION 매핑 테이블이 정의되어 있을 때
-        mapping = KOR_TO_CONDITION
-
-        # When: 매핑된 영문 상태값들을 추출하여
-        mapped_values = mapping.values()
-
-        # Then: 모든 값은 Home Assistant 표준 상태에 포함되어야 함
-        for eng in mapped_values:
+        # Given: KOR_TO_CONDITION 매핑 테이블이 존재할 때
+        # When: 매핑된 영문 상태값들을 검사하면
+        # Then: 모든 값은 HA 표준 condition에 포함되어야 함
+        for kor, eng in KOR_TO_CONDITION.items():
             assert eng in self.HA_STANDARD_CONDITIONS
 
     def test_no_none_values(self):
-        # Given: 매핑 테이블의 모든 키와 값에 대해
-        # When: 데이터 무결성을 검사하면
-        # Then: 어떠한 항목도 None이어서는 안 됨
+        # Given: 매핑 테이블의 모든 데이터를 순회하며
+        # When: 무결성을 검사할 때
+        # Then: 한글 키나 영문 값에 None이 있어서는 안 됨
         for kor, eng in KOR_TO_CONDITION.items():
             assert kor is not None
             assert eng is not None
 
     def test_required_korean_keys_present(self):
-        # Given: 기상청에서 필수적으로 내려오는 한글 상태 키 목록
+        # Given: 기상청 API에서 필수로 사용되는 한글 상태 목록
         required = {"맑음", "구름많음", "흐림", "비", "비/눈", "소나기", "눈"}
-
-        # When: 현재 매핑 테이블의 키 세트를 가져오면
-        current_keys = set(KOR_TO_CONDITION.keys())
-
-        # Then: 필수 키 중 누락된 것이 없어야 함
-        assert not (required - current_keys)
+        
+        # When: 현재 매핑 테이블의 키 세트를 확인하면
+        # Then: 필수 키가 하나라도 누락되어서는 안 됨
+        missing = required - set(KOR_TO_CONDITION.keys())
+        assert not missing
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. 유틸리티 메서드 단위 테스트
+# 2. 유틸리티 메서드 테스트 (TestKorToConditionMethod)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestKorToConditionMethod:
     @pytest.mark.parametrize("kor,expected_eng", ALL_CONDITIONS)
     def test_known_values(self, kor, expected_eng):
-        # Given: 한글 상태명 'kor'이 주어졌을 때
-        # When: 영문 상태명으로 변환을 시도하면
+        # Given: 한글 기상 상태명 'kor'이 주어졌을 때
+        # When: kor_to_condition 메서드를 통해 변환하면
         actual_eng = KMAWeatherAPI.kor_to_condition(kor)
-
-        # Then: 기대값 'expected_eng'와 일치해야 함
+        
+        # Then: 기대하는 영문명 'expected_eng'와 정확히 일치해야 함
         assert actual_eng == expected_eng
 
     def test_edge_cases(self):
-        # Given: 비정상적인 입력값(None 또는 알 수 없는 문자열)
-        inputs = [None, "알수없음"]
-
-        for val in inputs:
-            # When: 변환 메서드를 호출하면
-            result = KMAWeatherAPI.kor_to_condition(val)
-
-            # Then: 결과는 항상 None을 반환해야 함
-            assert result is None
+        # Given: None 또는 정의되지 않은 문자열 입력값이 주어졌을 때
+        # When: 변환을 시도하면
+        # Then: 결과는 항상 None이어야 함
+        assert KMAWeatherAPI.kor_to_condition(None) is None
+        assert KMAWeatherAPI.kor_to_condition("알수없음") is None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. 데이터 병합 동기화
+# 3. 데이터 병합 동기화 검증 (TestMergeAllSync)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestMergeAllSync:
@@ -130,33 +123,32 @@ class TestMergeAllSync:
         ("1", "4", "소나기", "rainy"),
     ], ids=["맑음","구름많음","흐림","비","비눈","눈","소나기"])
     def test_condition_sync_during_merge(self, sky, pty, expected_kor, expected_eng):
-        # Given: 하늘상태(SKY)와 강수형태(PTY) 코드가 포함된 API 응답
+        # Given: 특정 SKY, PTY 코드를 포함한 API 응답 데이터
         api = self._api()
         now = datetime(2025, 6, 1, 14, 0, tzinfo=TZ)
         short_res = _short_res(now.strftime("%Y%m%d"), "1500", sky, pty)
 
-        # When: API 데이터를 병합하여 기상 정보를 생성하면
-        weather_data = api._merge_all(now, short_res, (None, None), air_data={})["weather"]
+        # When: API 데이터를 병합하여 weather 데이터를 생성하면
+        weather = api._merge_all(now, short_res, (None, None, now), air_data={})["weather"]
 
-        # Then: 한글명과 영문명이 동기화되어 저장되어야 함
-        assert weather_data["current_condition_kor"] == expected_kor
-        assert weather_data["current_condition"] == expected_eng
-        assert KOR_TO_CONDITION[expected_kor] == expected_eng
+        # Then: 한글 키와 영문 키가 모두 올바른 값으로 생성되어야 함
+        assert weather["current_condition_kor"] == expected_kor
+        assert weather["current_condition"] == expected_eng
 
     def test_no_obsolete_key(self):
-        # Given: 정상적인 데이터 수신 상황에서
+        # Given: 정상적인 데이터 수신 상황
         api = self._api()
         now = datetime(2025, 6, 1, 14, 0, tzinfo=TZ)
         short_res = _short_res(now.strftime("%Y%m%d"), "1500", "1", "0")
 
-        # When: 데이터 병합을 완료하면
-        weather_data = api._merge_all(now, short_res, (None, **{}**), air_data={})["weather"]
+        # When: 데이터 병합이 완료된 후 결과에서
+        weather = api._merge_all(now, short_res, (None, None, now), air_data={})["weather"]
 
-        # Then: 구버전 키인 'current_condition_eng'가 존재하지 않아야 함
-        assert "current_condition_eng" not in weather_data
+        # Then: 더 이상 사용하지 않는 'current_condition_eng' 키는 존재하지 않아야 함
+        assert "current_condition_eng" not in weather
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. 코디네이터 업데이트 동기화
+# 4. 코디네이터 동기화 검증 (TestCoordinatorConditionSync)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestCoordinatorConditionSync:
@@ -168,7 +160,7 @@ class TestCoordinatorConditionSync:
         (3,  "비", "맑음", "비"),
     ], ids=["오전9시","오후15시","저녁20시","새벽3시"])
     async def test_coordinator_sync_logic(self, hass, hour, wf_am, wf_pm, expected_kor):
-        # Given: HA 환경 세팅 및 특정 시간대 예보 데이터 준비
+        # Given: HA 환경과 특정 시간대의 예보 데이터가 준비되었을 때
         from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
         hass.config.latitude, hass.config.longitude = 37.56, 126.98
         entry = MagicMock(data={"api_key": "test"}, options={}, entry_id="coord_test")
@@ -181,27 +173,24 @@ class TestCoordinatorConditionSync:
             "air": {}, "raw_forecast": {},
         })
 
-        # When: 코디네이터가 시간대별 데이터 갱신을 수행하면
+        # When: 코디네이터가 시간대별 데이터 업데이트를 수행하면
         with patch("custom_components.kma_weather.coordinator.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2025, 6, 1, hour, 0, tzinfo=TZ)
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             result = await coord._async_update_data()
 
-        # Then: 현재 시각에 맞는 한글/영문 상태가 정확히 동기화되어야 함
-        actual_kor = result["weather"]["current_condition_kor"]
-        actual_eng = result["weather"]["current_condition"]
-        
-        assert actual_kor == expected_kor
-        assert actual_eng == KOR_TO_CONDITION[expected_kor]
+        # Then: 한글 상태와 영문 상태가 현재 시각에 맞춰 동기화되어야 함
+        assert result["weather"]["current_condition_kor"] == expected_kor
+        assert result["weather"]["current_condition"] == KOR_TO_CONDITION[expected_kor]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. 통합 엔티티 상태 동기화
+# 5. 통합 엔티티 동기화 (test_integration_sync)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kor,eng", ALL_CONDITIONS, ids=[k for k, _ in ALL_CONDITIONS])
 async def test_integration_sync(hass, kor, eng):
-    # Given: 통합 구성요소가 설정되고 특정 상태('kor')의 데이터가 주입되었을 때
+    # Given: 특정 기상 상태(kor)를 가진 데이터로 HA 통합 구성요소가 설정되었을 때
     entry = MockConfigEntry(domain=DOMAIN, data={"prefix": "sync"}, entry_id=f"sync_{kor}")
     
     with patch("custom_components.kma_weather.coordinator.KMAWeatherUpdateCoordinator._async_update_data",
@@ -210,14 +199,14 @@ async def test_integration_sync(hass, kor, eng):
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-    # When: 센서 엔티티와 날씨 엔티티의 상태를 각각 조회하면
+    # When: 센서와 날씨 엔티티의 상태를 각각 조회하면
     sensor_state = hass.states.get("sensor.sync_condition").state
     response = await hass.services.async_call("weather", "get_forecasts", {"type": "twice_daily"},
                                               target={"entity_id": "weather.sync_weather"},
                                               blocking=True, return_response=True)
     forecast_condition = response["weather.sync_weather"]["forecast"][0]["condition"]
 
-    # Then: 센서의 한글값과 날씨 카드의 영문값이 매핑 테이블 기준으로 완벽히 일치해야 함
+    # Then: 센서(한글)와 날씨 엔티티(영문)의 상태가 매핑 테이블 기준으로 완벽히 일치해야 함
     assert sensor_state == kor
     assert forecast_condition == eng
     assert KOR_TO_CONDITION[sensor_state] == forecast_condition
