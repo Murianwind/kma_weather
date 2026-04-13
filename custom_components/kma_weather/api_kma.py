@@ -51,12 +51,10 @@ class KMAWeatherAPI:
         self._nominatim_user_agent = self._build_nominatim_user_agent()
 
         # ── 데이터 소실 방지용 캐시 ──────────────────────────────────────
-        # API 호출 실패 / 빈 응답 시 직전 성공 데이터를 재사용한다.
-        # tm_fc_dt도 함께 저장해 mid_day_idx 계산 일관성을 보장한다.
-        self._cache_forecast_map: dict = {}          # 단기예보 raw map
-        self._cache_mid_ta: dict = {}                # 중기기온 item[0]
-        self._cache_mid_land: dict = {}              # 중기육상 item[0]
-        self._cache_mid_tm_fc_dt: datetime | None = None  # 중기예보 기준 시각
+        self._cache_forecast_map: dict = {}
+        self._cache_mid_ta: dict = {}
+        self._cache_mid_land: dict = {}
+        self._cache_mid_tm_fc_dt: datetime | None = None
 
     def _build_nominatim_user_agent(self):
         base = "HomeAssistant-KMA-Weather"
@@ -72,6 +70,15 @@ class KMAWeatherAPI:
             return f"{base}/{hashed}"
         except Exception:
             return base
+
+    def _haversine_simple(self, lat1, lon1, lat2, lon2) -> float:
+        """두 좌표 간 거리를 km 단위로 반환 (Haversine 공식)."""
+        r = 6371.0
+        dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+        a = (math.sin(dlat / 2) ** 2
+             + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+             * math.sin(dlon / 2) ** 2)
+        return r * 2 * math.asin(math.sqrt(a))
 
     async def _fetch(self, url, params, headers=None, timeout=15):
         try:
@@ -108,6 +115,18 @@ class KMAWeatherAPI:
 
     async def _get_air_quality(self):
         try:
+            # ── 위치가 2km 이상 바뀌면 측정소 캐시 무효화 ──────────────
+            if self._cached_station and self._cached_lat_lon:
+                prev_lat, prev_lon = self._cached_lat_lon
+                dist = self._haversine_simple(prev_lat, prev_lon, self.lat, self.lon)
+                if dist > 2.0:
+                    _LOGGER.debug(
+                        "위치 이동 %.2fkm 감지 → 에어코리아 측정소 캐시 무효화 (%s → 재계산)",
+                        dist, self._cached_station
+                    )
+                    self._cached_station = None
+                    self._cached_lat_lon = None
+
             sn = self._cached_station
             if not sn:
                 tm_x, tm_y = self._wgs84_to_tm(self.lat, self.lon)
@@ -116,7 +135,10 @@ class KMAWeatherAPI:
                     {"serviceKey": self.api_key, "returnType": "json", "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"})
                 items = st_json.get("response", {}).get("body", {}).get("items", []) if st_json else []
                 if not items: return {}
-                sn = self._cached_station = items[0].get("stationName")
+                sn = items[0].get("stationName")
+                # ── 측정소와 현재 위치를 함께 캐시 ──────────────────────
+                self._cached_station = sn
+                self._cached_lat_lon = (self.lat, self.lon)
 
             air_json = await self._fetch(
                 "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
@@ -147,7 +169,6 @@ class KMAWeatherAPI:
             base_h = max(valid_hours)
             base_d = adj.strftime("%Y%m%d")
         else:
-            # 자정~01:59: 전날 23시 발표본 사용
             base_h = 23
             base_d = (adj - timedelta(days=1)).strftime("%Y%m%d")
         return await self._fetch(
@@ -156,10 +177,6 @@ class KMAWeatherAPI:
              "base_time": f"{base_h:02d}00", "nx": self.nx, "ny": self.ny, "numOfRows": 1500})
 
     def _get_mid_base_dt(self, now) -> datetime:
-        """
-        중기예보 발표 시각(06시/18시) 기준, API 게시 지연 30분 감안.
-        반환값: 실제 사용할 tmFc datetime (Asia/Seoul)
-        """
         effective = now - timedelta(minutes=30)
         if effective.hour < 6:
             return (effective - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
@@ -172,7 +189,6 @@ class KMAWeatherAPI:
         tm_fc_dt = self._get_mid_base_dt(now)
         base = tm_fc_dt.strftime("%Y%m%d%H%M")
         
-        # API 동시 호출을 위한 헬퍼 함수
         async def _fetch_both(b):
             return await asyncio.gather(
                 self._fetch("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa",
@@ -184,15 +200,12 @@ class KMAWeatherAPI:
             
         results = await _fetch_both(base)
         
-        # 데이터가 비어있지 않고 유효한지 검증하는 함수
         def _is_valid(res):
             if isinstance(res, Exception) or not res: return False
             items = res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
             return len(items) > 0
 
-        # 핵심 로직: 기상청 API 지연으로 빈 데이터가 오면 12시간 전 데이터로 재시도
         if not _is_valid(results[0]) or not _is_valid(results[1]):
-            # 현재 기준이 06시라면 전날 18시로, 18시라면 당일 06시로 되돌림
             if tm_fc_dt.hour == 6:
                 prev_dt = (tm_fc_dt - timedelta(days=1)).replace(hour=18)
             else:
@@ -202,7 +215,6 @@ class KMAWeatherAPI:
             
             retry_results = await _fetch_both(prev_dt.strftime("%Y%m%d%H%M"))
             if _is_valid(retry_results[0]) and _is_valid(retry_results[1]):
-                # 재시도 성공 시, 기준 시각(tm_fc_dt)도 과거 시각으로 맞춰서 반환
                 return (retry_results[0], retry_results[1], prev_dt)
 
         return (
@@ -233,27 +245,19 @@ class KMAWeatherAPI:
             "rain_start_time": "강수없음", "forecast_daily": [], "forecast_twice_daily": [], "address": address,
         }
 
-        # ── [단기예보] raw 파싱 후 캐시 갱신 ──────────────────────────────
-        # 새로 받은 데이터가 유효한 경우만 캐시를 교체한다.
-        # 실패(None) 또는 빈 응답이면 직전 캐시를 그대로 유지한다.
         new_forecast_map = {}
         if short_res and "response" in short_res:
             for it in short_res.get("response", {}).get("body", {}).get("items", {}).get("item", []):
                 new_forecast_map.setdefault(it["fcstDate"], {}).setdefault(it["fcstTime"], {})[it["category"]] = it["fcstValue"]
 
         if new_forecast_map:
-            # 유효한 데이터 수신 → 캐시 갱신
             self._cache_forecast_map = new_forecast_map
             _LOGGER.debug("단기예보 캐시 갱신: %d일치", len(new_forecast_map))
         else:
-            # 실패 또는 빈 응답 → 이전 캐시 재사용
             _LOGGER.warning("단기예보 수신 실패 또는 빈 응답 → 캐시 재사용 (날짜 수: %d)", len(self._cache_forecast_map))
 
         forecast_map = self._cache_forecast_map
 
-        # ── [중기예보] 언패킹 후 캐시 갱신 ───────────────────────────────
-        # mid_res 튜플: (ta응답, land응답, tmFc_datetime)
-        # 두 응답 모두 유효한 경우만 캐시를 교체한다.
         if mid_res and isinstance(mid_res, tuple) and len(mid_res) == 3:
             mid_ta_res, mid_land_res, new_tm_fc_dt = mid_res
         else:
@@ -267,23 +271,18 @@ class KMAWeatherAPI:
                         if mid_land_res else None)
 
         if new_mid_ta and new_mid_land:
-            # 두 응답 모두 유효 → 캐시 갱신 (tm_fc_dt도 함께 저장)
             self._cache_mid_ta = new_mid_ta
             self._cache_mid_land = new_mid_land
             self._cache_mid_tm_fc_dt = new_tm_fc_dt
             _LOGGER.debug("중기예보 캐시 갱신: tmFc=%s", new_tm_fc_dt.strftime("%Y%m%d%H%M"))
         else:
-            # 실패 또는 빈 응답 → 이전 캐시 재사용
             _LOGGER.warning("중기예보 수신 실패 또는 빈 응답 → 캐시 재사용 (tmFc=%s)",
                             self._cache_mid_tm_fc_dt.strftime("%Y%m%d%H%M") if self._cache_mid_tm_fc_dt else "없음")
 
-        # 이후 로직은 항상 캐시 기반으로 동작
         mid_ta = self._cache_mid_ta
         mid_land = self._cache_mid_land
-        # tm_fc_dt: 캐시된 값이 있으면 사용, 없으면 현재 계산값 사용
         tm_fc_dt = self._cache_mid_tm_fc_dt if self._cache_mid_tm_fc_dt else new_tm_fc_dt
 
-        # ── 현재 날씨 파싱 ────────────────────────────────────────────────
         today_str, curr_h = now.strftime("%Y%m%d"), f"{now.hour:02d}00"
         if today_str in forecast_map:
             times = sorted(forecast_map[today_str].keys())
@@ -291,7 +290,6 @@ class KMAWeatherAPI:
             if best_t:
                 weather_data.update(forecast_map[today_str][best_t])
 
-        # ── 강수 시작 시각 ─────────────────────────────────────────────────
         for d_str in sorted(forecast_map.keys()):
             rain_times = [t_str for t_str in sorted(forecast_map[d_str].keys())
                           if _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0]
@@ -307,10 +305,6 @@ class KMAWeatherAPI:
                     weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시"
                 break
 
-        # ── 단기/중기 커버 날짜 결정 ──────────────────────────────────────
-        # 핵심 조건: 09시와 15시 TMP 데이터가 모두 있어야 단기로 처리한다.
-        # 이 두 시각이 없는 날짜(새벽~오전 일부만 있는 경계 날짜)는
-        # 중기예보로 처리하여 최고/최저 기온 오류를 방지한다.
         short_term_limit = (now + timedelta(days=3)).strftime("%Y%m%d")
         short_covered_dates = {
             d for d in forecast_map
@@ -329,7 +323,6 @@ class KMAWeatherAPI:
             wf_am, wf_pm = "맑음", "맑음"
 
             if d_str in short_covered_dates:
-                # ── 단기예보 처리 ──────────────────────────────────────────
                 short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
                 valid_temps = [t for t in short_temps if t is not None]
                 t_max = max(valid_temps) if valid_temps else None
@@ -341,24 +334,14 @@ class KMAWeatherAPI:
                     forecast_map[d_str].get("1500", {}).get("SKY"),
                     forecast_map[d_str].get("1500", {}).get("PTY"))
             else:
-                # ── 중기예보 처리 ──────────────────────────────────────────
-                # mid_day_idx: tm_fc_dt 기준 며칠 후인지 계산
-                # target_date는 시각 포함 datetime, tm_fc_dt도 동일하므로
-                # .date() 로 날짜만 비교한다.
                 mid_day_idx = (target_date.date() - tm_fc_dt.date()).days
 
-                # 중기예보 API 제공 범위: 발표 기준 3~10일
-                # 범위 밖(0~2일)은 단기예보로 처리해야 하는데
-                # short_covered_dates에도 없다면 데이터 공백 상태.
-                # 이 경우 단기 캐시에서 직접 구할 수 있는 값을 사용한다.
                 if mid_day_idx < 3:
-                    # 단기 캐시에서 최선값 추출 (09시/15시 없어도 있는 값으로)
                     if d_str in forecast_map:
                         short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
                         valid_temps = [t for t in short_temps if t is not None]
                         t_max = max(valid_temps) if valid_temps else None
                         t_min = min(valid_temps) if valid_temps else None
-                        # 가장 가까운 낮 시각 데이터로 날씨 대표값 결정
                         rep_t = min(
                             [t for t in forecast_map[d_str].keys()],
                             key=lambda t: abs(int(t[:2]) - 12),
@@ -383,7 +366,6 @@ class KMAWeatherAPI:
                         "중기예보 i=%d date=%s tm_fc_dt=%s mid_day_idx=%d t_max=%s t_min=%s",
                         i, d_str, tm_fc_dt.strftime("%Y%m%d%H%M"), mid_day_idx, t_max, t_min)
 
-            # 오늘(i=0), 내일(i=1) 날씨 정보 저장
             if i == 0:
                 weather_data["wf_am_today"] = wf_am
                 weather_data["wf_pm_today"] = wf_pm
@@ -398,7 +380,6 @@ class KMAWeatherAPI:
                 })
 
             for is_am in [True, False]:
-                # 오늘 오전: 현재 12시 이후라면 오전 슬롯 스킵
                 if i == 0 and is_am and now.hour >= 12:
                     continue
                 twice_daily.append({
@@ -432,11 +413,8 @@ class KMAWeatherAPI:
 
     def _translate_mid_condition_kor(self, wf: str) -> str:
         wf = str(wf or "맑음")
-        # 1. 사전에 정의된 완벽히 일치하는 단어가 있으면 그대로 반환
         if wf in KOR_TO_CONDITION:
             return wf
-            
-        # 2. 예상치 못한 복합 문장이 올 경우를 대비한 유연한 키워드 추출
         if "비/눈" in wf: return "비/눈"
         if "소나기" in wf: return "소나기"
         if "비" in wf: return "비"
@@ -447,14 +425,11 @@ class KMAWeatherAPI:
 
     def _get_sky_kor(self, sky, pty):
         p, s = str(pty or "0"), str(sky or "1")
-        # 강수 형태(PTY)가 1~7번 중 하나라면 우선 적용
         if p in ["1", "2", "3", "4", "5", "6", "7"]:
             return {
                 "1": "비", "2": "비/눈", "3": "눈", "4": "소나기",
                 "5": "빗방울", "6": "빗방울/눈날림", "7": "눈날림"
             }.get(p, "비")
-            
-        # 강수 형태가 0(없음)일 경우 하늘 상태(SKY) 적용
         return "맑음" if s == "1" else ("구름많음" if s == "3" else "흐림")
 
     def _get_vec_kor(self, vec):
