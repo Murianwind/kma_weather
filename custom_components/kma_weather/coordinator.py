@@ -283,6 +283,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     "today_min": self._daily_min_temp,
                     "last_updated": datetime.now(timezone.utc),
                     "debug_nx": nx, "debug_ny": ny,
+                    "debug_lat": curr_lat,"debug_lon": curr_lon,
                 })
 
                 # ── 시간대별 current_condition_kor 갱신 후 current_condition 동기화 ──
