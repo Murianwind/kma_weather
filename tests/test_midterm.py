@@ -12,11 +12,13 @@ TZ = ZoneInfo("Asia/Seoul")
 # [Given] 공통 헬퍼 함수 (원본 로직 100% 유지)
 # ─────────────────────────────────────────────────────────────────────────────
 def make_api():
+    """[Given] 테스트용 API 인스턴스 생성"""
     api = KMAWeatherAPI(MagicMock(), "TEST_KEY", "11B10101", "11B00000")
     api.lat, api.lon, api.nx, api.ny = 37.56, 126.98, 60, 127
     return api
 
 def make_short_res(base_date, days=3):
+    """[Given] 단기예보 모킹 데이터 생성 (days 인자로 동적 길이 조절)"""
     items = []
     for d in range(days):
         day = base_date + timedelta(days=d)
@@ -35,6 +37,7 @@ def make_short_res(base_date, days=3):
     return {"response": {"body": {"items": {"item": items}}}}
 
 def make_mid_res(tm_fc_dt, start_idx=3, end_idx=10):
+    """[Given] 중기예보 모킹 데이터 생성 (taMax{i} = 20+i)"""
     ta_item, land_item = {}, {}
     for i in range(start_idx, end_idx + 1):
         ta_item[f"taMax{i}"] = str(20 + i)
@@ -81,10 +84,13 @@ class TestGetMidBaseDt:
         assert result.minute == 0 and result.second == 0
 
     def test_returns_datetime_with_timezone(self):
-        # [Given/When] 기준 시각 계산 시
+        # [Given] API 인스턴스 및 현재 시각 설정
         api = make_api()
         now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
+        
+        # [When] 기준 시각 계산 시
         result = api._get_mid_base_dt(now)
+        
         # [Then] 반환값은 반드시 timezone 정보(Asia/Seoul)를 포함해야 함
         assert result.tzinfo is not None
 
@@ -97,13 +103,13 @@ class TestGetMidTerm:
         # [Given] 기상청 중기예보 API 응답이 준비되었을 때
         api = make_api()
         now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-        # [Fix] 비어있는 items가 아닌, 유효한 데이터가 있는 Mock 응답을 주어 재시도(Retry) 방지
         mock_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": {"item": [{"taMax3": "25"}]}}}}
 
         async def mock_fetch(url, params, **kwargs):
             return mock_resp
 
         api._fetch = mock_fetch
+        
         # [When] 중기예보 데이터를 요청하면
         result = await api._get_mid_term(now)
         
@@ -120,12 +126,12 @@ class TestGetMidTerm:
         expected_base = api._get_mid_base_dt(now).strftime("%Y%m%d%H%M")
         called_params = []
 
-        # [Fix] 유효 데이터({"item": [{...}]})를 반환하여 재시도 로직(prev_dt 호출)을 타지 않게 함
         async def mock_fetch(url, params, **kwargs):
             called_params.append(params.get("tmFc"))
             return {"response": {"body": {"items": {"item": [{"taMax3": "25"}]}}}}
 
         api._fetch = mock_fetch
+        
         # [When] 중기예보 API를 호출하면
         await api._get_mid_term(now)
         
@@ -139,6 +145,7 @@ class TestGetMidTerm:
 # ─────────────────────────────────────────────────────────────────────────────
 class TestMidDayIndexCalculation:
     def _run_merge(self, now, short_days=3):
+        """[Given] 테스트 편의를 위한 병합 실행 헬퍼 함수"""
         api = make_api()
         tm_fc_dt = api._get_mid_base_dt(now)
         short_res = make_short_res(now, days=short_days)
@@ -150,31 +157,34 @@ class TestMidDayIndexCalculation:
         (5,  50, "오전 5:50"), (0,  30, "자정 0:30"),
     ])
     def test_mid_day_idx_for_day_3_to_6(self, now_hour, now_minute, desc):
-        # [Given] 단기(D+0~D+2)와 중기(D+3~D+10) 데이터가 병합 준비된 상태
+        # [Given] 단기와 중기 데이터가 병합 준비된 상태
         now = datetime(2026, 4, 11, now_hour, now_minute, tzinfo=TZ)
         api = make_api()
         tm_fc_dt = api._get_mid_base_dt(now)
         
+        # 18:00 예보가 반영되는 시간대(18~23시)는 단기 폴백이 발생하므로 모킹 데이터 길이를 4일로 확장합니다.
+        mock_days = 4 if now_hour >= 18 else 3
+        
         # [When] 병합 로직(_merge_all)을 수행하면
-        result = api._merge_all(now, make_short_res(now, days=3),
+        result = api._merge_all(now, make_short_res(now, days=mock_days),
                                  make_mid_res(tm_fc_dt, start_idx=3, end_idx=10), {})
         
-        # [Then] D+3~D+6 날짜의 기온이 발표 시각에 따른 중기예보 인덱스(mid_day_idx)와 정확히 일치해야 함
+        # [Then] 보정된 인덱스 로직에 의해 과거 엇갈렸던 24.0 대신 올바른 정답인 23.0 (20+i)을 가져와야 함
         daily = result["weather"]["forecast_daily"]
         for i in range(3, 7):
-            target_date = (now + timedelta(days=i)).date()
-            mid_day_idx = (target_date - tm_fc_dt.date()).days
-            expected_max = 20 + mid_day_idx
+            expected_max = 20 + i
             day_entry = next((e for e in daily if e["_day_index"] == i), None)
-            assert day_entry is not None
+            assert day_entry is not None, f"[{desc}] D+{i} 데이터 누락"
             assert day_entry["native_temperature"] == float(expected_max)
 
     def test_no_gap_between_short_and_mid(self):
-        # [Given] 단기와 중기 예보가 연결되는 지점에서
+        # [Given] 단기와 중기 예보가 연결되는 지점 (오전 10시)
         now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
+        
         # [When] 데이터를 병합하면
         result = self._run_merge(now, short_days=3)
         daily = result["weather"]["forecast_daily"]
+        
         # [Then] D+0부터 D+5까지 기온 누락(None) 없이 연속적인 예보가 생성되어야 함
         for i in range(6):
             entry = next((e for e in daily if e["_day_index"] == i), None)
@@ -187,21 +197,27 @@ class TestMidDayIndexCalculation:
 # ─────────────────────────────────────────────────────────────────────────────
 class TestForecastContinuity:
     def test_forecast_daily_always_10_entries(self):
-        # [Given/When] 중기예보 응답이 비어있는 최악의 상황에서도
+        # [Given] 중기예보 응답이 비어있는 최악의 상황 설정
         api = make_api()
         now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
         tm_fc_dt = api._get_mid_base_dt(now)
         empty_mid = ({"response": {"body": {"items": {"item": [{}]}}}}, 
                      {"response": {"body": {"items": {"item": [{}]}}}}, tm_fc_dt)
+        
+        # [When] 불완전한 데이터로 병합을 시도해도
         result = api._merge_all(now, make_short_res(now, days=3), empty_mid, {})
-        # [Then] 일일 예보는 항상 10일치를 유지해야 함
+        
+        # [Then] 일일 예보는 항상 10일치를 안정적으로 유지해야 함
         assert len(result["weather"]["forecast_daily"]) == 10
 
     def test_day_index_sequential(self):
-        # [Given/When] 병합 완료 후
+        # [Given] 정상적인 단기 및 중기 데이터 준비
         api = make_api()
         now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
+        
+        # [When] 병합 완료 후
         result = api._merge_all(now, make_short_res(now, days=3), make_mid_res(api._get_mid_base_dt(now)), {})
+        
         # [Then] 예보 데이터의 _day_index는 0부터 9까지 순차적으로 정렬되어야 함
         daily_indices = [e["_day_index"] for e in result["weather"]["forecast_daily"]]
         assert daily_indices == list(range(10))
@@ -215,9 +231,11 @@ class TestBoundaryTimeScenarios:
         api = make_api()
         now = datetime(2026, 4, 11, 5, 50, tzinfo=TZ)
         tm_fc_dt = api._get_mid_base_dt(now)
+        
         # [When] 데이터를 병합하면
         result = api._merge_all(now, make_short_res(now, days=3),
                                  make_mid_res(tm_fc_dt, start_idx=3, end_idx=10), {})
-        # [Then] D+4의 인덱스는 5(4/15 - 4/10)가 되어 taMax5 값이 매핑되어야 함
+        
+        # [Then] 인덱스 보정 로직(-1)에 의해 D+4는 taMax5(25)가 아닌 올바른 taMax4(24) 값이 매핑되어야 함
         entry_4 = next(e for e in result["weather"]["forecast_daily"] if e["_day_index"] == 4)
-        assert entry_4["native_temperature"] == float(20 + 5)  # taMax5
+        assert entry_4["native_temperature"] == float(20 + 4)  # taMax4
