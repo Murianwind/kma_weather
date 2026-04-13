@@ -322,7 +322,6 @@ class KMAWeatherAPI:
             wf_am, wf_pm = "맑음", "맑음"
 
             if d_str in short_covered_dates:
-                # (기존 로직 동일: 단기예보에서 가져옴)
                 short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
                 valid_temps = [t for t in short_temps if t is not None]
                 t_max = max(valid_temps) if valid_temps else None
@@ -330,7 +329,7 @@ class KMAWeatherAPI:
                 wf_am = self._get_sky_kor(
                     forecast_map[d_str].get("0900", {}).get("SKY"),
                     forecast_map[d_str].get("0900", {}).get("PTY"))
-                
+                # 1500이 없으면 가장 가까운 오후 시각으로 대체
                 pm_slot = next(
                     (t for t in ["1500", "1200", "1800"] if t in forecast_map[d_str]),
                     None
@@ -341,12 +340,6 @@ class KMAWeatherAPI:
                 ) if pm_slot else wf_am
             else:
                 mid_day_idx = (target_date.date() - tm_fc_dt.date()).days
-
-                # ── [핵심 추가] 기상청 18시 발표 중기예보 인덱스 보정 ──
-                # 18시 발표는 taMax3이 4일 후를 의미하므로 인덱스를 1 당겨줍니다.
-                if tm_fc_dt.hour == 18:
-                    mid_day_idx -= 1
-                # ──────────────────────────────────────────────────
 
                 if mid_day_idx < 3:
                     if d_str in forecast_map:
@@ -364,23 +357,19 @@ class KMAWeatherAPI:
                                 forecast_map[d_str][rep_t].get("SKY"),
                                 forecast_map[d_str][rep_t].get("PTY"))
                             wf_pm = wf_am
-                        _LOGGER.debug(
-                            "경계 날짜 단기캐시 사용 i=%d date=%s mid_day_idx=%d t_max=%s t_min=%s",
-                            i, d_str, mid_day_idx, t_max, t_min)
+                    _LOGGER.debug(
+                        "경계 날짜 단기캐시 사용 i=%d date=%s mid_day_idx=%d t_max=%s t_min=%s",
+                        i, d_str, mid_day_idx, t_max, t_min)
                 else:
-                    # 보정된 mid_day_idx가 안전한 범위(3~10) 내에 있는지 한 번 더 방어
-                    if 3 <= mid_day_idx <= 10:
-                        t_max = _safe_float(mid_ta.get(f"taMax{mid_day_idx}"))
-                        t_min = _safe_float(mid_ta.get(f"taMin{mid_day_idx}"))
-                        wf_am = self._translate_mid_condition_kor(
-                            mid_land.get(f"wf{mid_day_idx}Am") or mid_land.get(f"wf{mid_day_idx}"))
-                        wf_pm = self._translate_mid_condition_kor(
-                            mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}"))
-                        _LOGGER.debug(
-                            "중기예보 i=%d date=%s tm_fc_dt=%s mid_day_idx=%d t_max=%s t_min=%s",
-                            i, d_str, tm_fc_dt.strftime("%Y%m%d%H%M"), mid_day_idx, t_max, t_min)
-                    else:
-                        t_max = t_min = None
+                    t_max = _safe_float(mid_ta.get(f"taMax{mid_day_idx}"))
+                    t_min = _safe_float(mid_ta.get(f"taMin{mid_day_idx}"))
+                    wf_am = self._translate_mid_condition_kor(
+                        mid_land.get(f"wf{mid_day_idx}Am") or mid_land.get(f"wf{mid_day_idx}"))
+                    wf_pm = self._translate_mid_condition_kor(
+                        mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}"))
+                    _LOGGER.debug(
+                        "중기예보 i=%d date=%s tm_fc_dt=%s mid_day_idx=%d t_max=%s t_min=%s",
+                        i, d_str, tm_fc_dt.strftime("%Y%m%d%H%M"), mid_day_idx, t_max, t_min)
 
             if i == 0:
                 weather_data["wf_am_today"] = wf_am
