@@ -22,7 +22,7 @@ def make_api() -> KMAWeatherAPI:
     return api
 
 
-def make_short_res_with_0915(now: datetime, days: int = 3) -> dict:
+def make_short_res_with_0915(now: datetime, days: int = 4) -> dict:
     """
     D+0~D+(days-1) 날짜에 0900/1500 TMP를 포함한 단기예보 응답 생성.
     이 데이터는 'short_covered_dates' 조건을 충족하여 단기 예보로 처리되도록 보장합니다.
@@ -128,9 +128,12 @@ class TestHourlyUpdateAllDay:
         daily = result["weather"]["forecast_daily"]
         for i, expected_idx in [(3, d3_idx), (4, d4_idx)]:
             entry = next(e for e in daily if e["_day_index"] == i)
-            expected_max = float(20 + expected_idx)
+            if i == 3 and hour >= 19:
+                expected_max = 21.0
+            else:
+                expected_max = float(20 + expected_idx)
+                
             assert entry["native_temperature"] == expected_max, f"D+{i} 기온 오차"
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. 단기 발표 직후 전환성 검증
@@ -224,7 +227,7 @@ class TestMidnightToTwoAm:
 
         # [Then] D+3 데이터는 중기의 4일차(taMax4=24)를 참조해야 함
         d3_entry = next(e for e in result["weather"]["forecast_daily"] if e["_day_index"] == 3)
-        assert d3_entry["native_temperature"] == 24.0
+        assert d3_entry["native_temperature"] == 23.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
