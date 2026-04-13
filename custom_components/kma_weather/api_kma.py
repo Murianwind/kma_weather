@@ -310,7 +310,6 @@ class KMAWeatherAPI:
             d for d in forecast_map
             if d <= short_term_limit
             and "0900" in forecast_map[d] and "TMP" in forecast_map[d]["0900"]
-            and "1500" in forecast_map[d] and "TMP" in forecast_map[d]["1500"]
         }
 
         twice_daily, daily_forecast = [], []
@@ -330,9 +329,15 @@ class KMAWeatherAPI:
                 wf_am = self._get_sky_kor(
                     forecast_map[d_str].get("0900", {}).get("SKY"),
                     forecast_map[d_str].get("0900", {}).get("PTY"))
+                # 1500이 없으면 가장 가까운 오후 시각으로 대체
+                pm_slot = next(
+                    (t for t in ["1500", "1200", "1800"] if t in forecast_map[d_str]),
+                    None
+                )
                 wf_pm = self._get_sky_kor(
-                    forecast_map[d_str].get("1500", {}).get("SKY"),
-                    forecast_map[d_str].get("1500", {}).get("PTY"))
+                    forecast_map[d_str].get(pm_slot, {}).get("SKY") if pm_slot else None,
+                    forecast_map[d_str].get(pm_slot, {}).get("PTY") if pm_slot else None,
+                ) if pm_slot else wf_am
             else:
                 mid_day_idx = (target_date.date() - tm_fc_dt.date()).days
 
