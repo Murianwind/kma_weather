@@ -3,7 +3,7 @@
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from unittest.mock import MagicMock
 
@@ -16,26 +16,16 @@ TZ = ZoneInfo("Asia/Seoul")
 # ─────────────────────────────────────────────────────────────────────────────
 
 def make_api() -> KMAWeatherAPI:
-    """[Given] 테스트용 API 인스턴스 생성 및 위치 설정"""
+    """테스트용 API 인스턴스 생성 및 위치 설정"""
     api = KMAWeatherAPI(MagicMock(), "TEST_KEY", "11B10101", "11B00000")
     api.lat, api.lon, api.nx, api.ny = 37.56, 126.98, 60, 127
     return api
 
 
-def get_mock_days(now: datetime, tm_fc_dt: datetime) -> int:
+def make_short_res_with_0915(now: datetime, days: int = 3) -> dict:
     """
-    [Given] 시나리오에 맞는 단기예보 모킹 일수(days)를 동적으로 결정합니다.
-    18:30 ~ 23:59 구간은 18시 예보 갱신으로 D+3 중기예보가 불가능해 단기 폴백이 발생하므로 4일치를 부여하고,
-    그 외 정상 구간은 중기예보 우선 검증을 위해 3일치만 부여합니다.
-    """
-    if tm_fc_dt.hour == 18 and tm_fc_dt.date() == now.date():
-        return 4
-    return 3
-
-
-def make_short_res_with_0915(now: datetime, days: int) -> dict:
-    """
-    [Given] D+0~D+(days-1) 날짜에 0900/1500 TMP를 포함한 단기예보 응답 생성.
+    D+0~D+(days-1) 날짜에 0900/1500 TMP를 포함한 단기예보 응답 생성.
+    이 데이터는 'short_covered_dates' 조건을 충족하여 단기 예보로 처리되도록 보장합니다.
     """
     items = []
     for d in range(days):
@@ -55,7 +45,7 @@ def make_short_res_with_0915(now: datetime, days: int) -> dict:
 
 
 def make_mid_res(tm_fc_dt: datetime, start_idx: int = 3, end_idx: int = 10) -> tuple:
-    """[Given] tm_fc_dt 기준 기온 및 육상 중기예보 튜플 생성"""
+    """tm_fc_dt 기준 기온 및 육상 중기예보 튜플 생성"""
     ta_item, land_item = {}, {}
     for i in range(start_idx, end_idx + 1):
         ta_item[f"taMax{i}"] = str(20 + i)
@@ -96,13 +86,13 @@ class TestHourlyUpdateAllDay:
     """하루 24시간 매시 10분 업데이트 시나리오 전수 검증"""
 
     @pytest.mark.parametrize("hour,minute,d3_idx,d4_idx,desc", [
-        ( 0, 10, 3, 4, "00:10 tmFc=전날18시"),
-        ( 1, 10, 3, 4, "01:10 tmFc=전날18시"),
-        ( 2, 10, 3, 4, "02:10 tmFc=전날18시 📡단기발표"),
-        ( 3, 10, 3, 4, "03:10 tmFc=전날18시"),
-        ( 4, 10, 3, 4, "04:10 tmFc=전날18시"),
-        ( 5, 10, 3, 4, "05:10 tmFc=전날18시 📡단기발표"),
-        ( 6, 10, 3, 4, "06:10 tmFc=전날18시"),
+        ( 0, 10, 4, 5, "00:10 tmFc=전날18시"),
+        ( 1, 10, 4, 5, "01:10 tmFc=전날18시"),
+        ( 2, 10, 4, 5, "02:10 tmFc=전날18시 📡단기발표"),
+        ( 3, 10, 4, 5, "03:10 tmFc=전날18시"),
+        ( 4, 10, 4, 5, "04:10 tmFc=전날18시"),
+        ( 5, 10, 4, 5, "05:10 tmFc=전날18시 📡단기발표"),
+        ( 6, 10, 4, 5, "06:10 tmFc=전날18시"),
         ( 7, 10, 3, 4, "07:10 tmFc=당일06시 🌐중기06시반영"),
         ( 8, 10, 3, 4, "08:10 tmFc=당일06시 📡단기발표"),
         ( 9, 10, 3, 4, "09:10 tmFc=당일06시"),
@@ -115,41 +105,31 @@ class TestHourlyUpdateAllDay:
         (16, 10, 3, 4, "16:10 tmFc=당일06시"),
         (17, 10, 3, 4, "17:10 tmFc=당일06시 📡단기발표"),
         (18, 10, 3, 4, "18:10 tmFc=당일06시"),
-        (19, 10, 2, 3, "19:10 tmFc=당일18시 🌐중기18시반영"),
-        (20, 10, 2, 3, "20:10 tmFc=당일18시 📡단기발표"),
-        (21, 10, 2, 3, "21:10 tmFc=당일18시"),
-        (22, 10, 2, 3, "22:10 tmFc=당일18시"),
-        (23, 10, 2, 3, "23:10 tmFc=당일18시 📡단기발표"),
+        (19, 10, 3, 4, "19:10 tmFc=당일18시 🌐중기18시반영"),
+        (20, 10, 3, 4, "20:10 tmFc=당일18시 📡단기발표"),
+        (21, 10, 3, 4, "21:10 tmFc=당일18시"),
+        (22, 10, 3, 4, "22:10 tmFc=당일18시"),
+        (23, 10, 3, 4, "23:10 tmFc=당일18시 📡단기발표"),
     ])
     def test_d3_d4_never_none_all_hours(self, hour, minute, d3_idx, d4_idx, desc):
-        # [Given] 특정 시각 설정 및 모킹 데이터 준비
+        # [Given] 특정 시각과 단기/중기 예보 응답이 주어졌을 때
         api = make_api()
         now = datetime(2026, 4, 11, hour, minute, tzinfo=TZ)
         tm_fc_dt = api._get_mid_base_dt(now)
-        
-        mock_days = get_mock_days(now, tm_fc_dt)
-        short_res = make_short_res_with_0915(now, days=mock_days)
+        short_res = make_short_res_with_0915(now, days=3)
         mid_res = make_mid_res(tm_fc_dt, start_idx=3, end_idx=10)
 
-        # [When] 단기/중기 데이터를 병합
+        # [When] 데이터를 병합하면
         result = api._merge_all(now, short_res, mid_res, air_data={})
 
-        # [Then] D+3/D+4 데이터가 누락 없이 존재해야 함
+        # [Then] D+3/D+4 데이터가 누락되지 않아야 하며, 기대한 기온값이 매칭되어야 함
         assert_d3_d4_not_none(result, desc)
         
-        # [Then] 시간대별로 정확한 출처(단기 폴백 vs 중기)의 기온값을 가져와야 함
         daily = result["weather"]["forecast_daily"]
         for i, expected_idx in [(3, d3_idx), (4, d4_idx)]:
             entry = next(e for e in daily if e["_day_index"] == i)
-            
-            if i == 3 and mock_days == 4:
-                # 단기예보 폴백에 의한 D+3 최고온도 검증 (15 + 3*2 = 21.0도)
-                expected_max = 21.0
-            else:
-                # 중기예보 정상 인덱스에 의한 최고온도 검증 (20 + expected_idx)
-                expected_max = float(20 + expected_idx)
-                
-            assert entry["native_temperature"] == expected_max, f"[{desc}] D+{i} 기온 오차. Expected: {expected_max}"
+            expected_max = float(20 + expected_idx)
+            assert entry["native_temperature"] == expected_max, f"D+{i} 기온 오차"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,16 +146,13 @@ class TestShortTermReleaseTransition:
     ])
     def test_d3_d4_across_short_release(self, before_h, after_h, desc):
         for h, label in [(before_h, f"{desc} 직전"), (after_h, f"{desc} 직후")]:
-            # [Given] 단기 발표 전/후 시각 설정 및 모킹
+            # [Given] 발표 시간 기준 전/후 시각 설정
             api = make_api()
             now = datetime(2026, 4, 11, h, 10, tzinfo=TZ)
             tm_fc_dt = api._get_mid_base_dt(now)
-            
-            mock_days = get_mock_days(now, tm_fc_dt)
-            short_res = make_short_res_with_0915(now, days=mock_days)
 
             # [When] 병합 수행
-            result = api._merge_all(now, short_res, make_mid_res(tm_fc_dt), air_data={})
+            result = api._merge_all(now, make_short_res_with_0915(now, days=3), make_mid_res(tm_fc_dt), air_data={})
 
             # [Then] 데이터가 정상 유지되어야 함
             assert_d3_d4_not_none(result, label)
@@ -195,7 +172,7 @@ class TestMidTermTmfcTransition:
         (18, 31, 18, "18:31 — 당일18시 사용"),
     ])
     def test_d3_d4_across_tmfc_transition(self, hour, minute, expected_tmfc_hour, desc):
-        # [Given] 갱신 시점 전후 시각 설정
+        # [Given] 중기 예보 갱신 시점 전후 시각
         api = make_api()
         now = datetime(2026, 4, 11, hour, minute, tzinfo=TZ)
         tm_fc_dt = api._get_mid_base_dt(now)
@@ -203,25 +180,25 @@ class TestMidTermTmfcTransition:
         # [Then - Pre-check] tmFc 시간이 기대와 일치하는지 확인
         assert tm_fc_dt.hour == expected_tmfc_hour
 
-        # [When] 데이터 병합 수행
-        mock_days = get_mock_days(now, tm_fc_dt)
-        result = api._merge_all(now, make_short_res_with_0915(now, days=mock_days), make_mid_res(tm_fc_dt), air_data={})
+        # [When] 병합 수행
+        result = api._merge_all(now, make_short_res_with_0915(now, days=3), make_mid_res(tm_fc_dt), air_data={})
 
-        # [Then] 데이터 정합성 유지 확인
+        # [Then] 데이터 정합성 확인
         assert_d3_d4_not_none(result, desc)
 
     def test_idx_decreases_by_one_at_0631(self):
-        """06:31에 tmFc가 갱신되어 index가 변경될 때의 정합성 확인"""
-        # [Given] 06:29와 06:31 시각 준비
+        """06:31에 tmFc가 갱신되어 index가 줄어들 때의 정합성 확인"""
+        # [Given] 06:29와 06:31의 시각 정보 준비
         api = make_api()
         now_before = datetime(2026, 4, 11, 6, 29, tzinfo=TZ)
         now_after  = datetime(2026, 4, 11, 6, 31, tzinfo=TZ)
         tm_before = api._get_mid_base_dt(now_before)
         tm_after  = api._get_mid_base_dt(now_after)
 
-        # [When] 각각의 시점에서 병합 수행
-        res_before = api._merge_all(now_before, make_short_res_with_0915(now_before, days=get_mock_days(now_before, tm_before)), make_mid_res(tm_before), air_data={})
-        res_after  = api._merge_all(now_after, make_short_res_with_0915(now_after, days=get_mock_days(now_after, tm_after)), make_mid_res(tm_after), air_data={})
+        # [When - Before] 06:29에 병합
+        res_before = api._merge_all(now_before, make_short_res_with_0915(now_before, days=3), make_mid_res(tm_before), air_data={})
+        # [When - After] 06:31에 병합
+        res_after  = api._merge_all(now_after, make_short_res_with_0915(now_after, days=3), make_mid_res(tm_after), air_data={})
 
         # [Then] 두 시점 모두 데이터가 존재해야 함
         assert_d3_d4_not_none(res_before, "06:29")
@@ -237,18 +214,17 @@ class TestMidnightToTwoAm:
 
     @pytest.mark.parametrize("hour,minute", [(0, 10), (0, 50), (1, 30)])
     def test_d3_d4_midnight_range(self, hour, minute):
-        # [Given] 자정~02시 사이 시각
+        # [Given] 자정~02시 사이의 시각
         api = make_api()
         now = datetime(2026, 4, 11, hour, minute, tzinfo=TZ)
         tm_fc_dt = api._get_mid_base_dt(now)
 
-        # [When] 병합 수행 (이 구간은 전날 18시 중기예보를 사용하며, 폴백 조건이 아니므로 days=3)
-        mock_days = get_mock_days(now, tm_fc_dt)
-        result = api._merge_all(now, make_short_res_with_0915(now, days=mock_days), make_mid_res(tm_fc_dt), air_data={})
+        # [When] 병합 수행
+        result = api._merge_all(now, make_short_res_with_0915(now, days=3), make_mid_res(tm_fc_dt), air_data={})
 
-        # [Then] D+3 데이터는 중기의 3일차(taMax3=23.0)를 정확히 참조해야 함
+        # [Then] D+3 데이터는 중기의 4일차(taMax4=24)를 참조해야 함
         d3_entry = next(e for e in result["weather"]["forecast_daily"] if e["_day_index"] == 3)
-        assert d3_entry["native_temperature"] == 23.0
+        assert d3_entry["native_temperature"] == 24.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -259,15 +235,17 @@ class TestBoundaryDatePartialShortData:
     """D+3 날짜의 단기 예보가 불완전할 때 중기 예보로 보완하는지 검증"""
 
     def test_d3_partial_short_falls_back_to_mid(self):
-        # [Given] D+3 새벽 데이터만 있는 불완전 단기 예보 모킹
+        # [Given] D+3에 새벽 데이터만 있는 불완전한 단기 예보
         api = make_api()
         now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
         d3_str = (now + timedelta(days=3)).strftime("%Y%m%d")
         items = []
+        # D+0~D+2는 정상
         for d in range(3):
             day = now + timedelta(days=d)
             for h in ["0900", "1500"]:
                 items.append({"fcstDate": day.strftime("%Y%m%d"), "fcstTime": h, "category": "TMP", "fcstValue": "15"})
+        # D+3은 새벽만
         items.append({"fcstDate": d3_str, "fcstTime": "0600", "category": "TMP", "fcstValue": "5"})
         
         short_res = {"response": {"body": {"items": {"item": items}}}}
@@ -276,7 +254,7 @@ class TestBoundaryDatePartialShortData:
         # [When] 병합 수행
         result = api._merge_all(now, short_res, mid_res, air_data={})
 
-        # [Then] D+3 최고기온은 새벽 온도가 아닌 중기 예보(taMax3=23도)로 보완되어야 함
+        # [Then] D+3 최고기온은 새벽 5도가 아닌 중기 예보의 23도(taMax3)여야 함
         d3_entry = next(e for e in result["weather"]["forecast_daily"] if e["_day_index"] == 3)
         assert d3_entry["native_temperature"] == 23.0
 
@@ -289,31 +267,27 @@ class TestCachePreservesD3D4OnApiFailure:
     """네트워크 오류 등으로 API 응답이 없을 때 기존 데이터를 유지하는지 검증"""
 
     def test_mid_api_failure_uses_cache(self):
-        # [Given] 1차 성공하여 캐시 확보
+        # [Given] 1차 성공하여 캐시가 확보된 상태
         api = make_api()
         now = datetime(2026, 4, 11, 19, 10, tzinfo=TZ)
-        tm_fc_dt = api._get_mid_base_dt(now)
-        mock_days = get_mock_days(now, tm_fc_dt)
-        api._merge_all(now, make_short_res_with_0915(now, days=mock_days), make_mid_res(tm_fc_dt), air_data={})
+        api._merge_all(now, make_short_res_with_0915(now), make_mid_res(api._get_mid_base_dt(now)), air_data={})
 
-        # [When] 2차 호출 시 중기 API 응답 실패(None)
-        result = api._merge_all(now, make_short_res_with_0915(now, days=mock_days), None, air_data={})
+        # [When] 2차 호출에서 중기 API 응답이 None인 경우
+        result = api._merge_all(now, make_short_res_with_0915(now), None, air_data={})
 
-        # [Then] 데이터 보존됨
+        # [Then] 데이터가 보존되어야 함
         assert_d3_d4_not_none(result, "캐시 보존 확인")
 
     def test_short_api_failure_uses_cache(self):
         # [Given] 캐시 확보
         api = make_api()
         now = datetime(2026, 4, 11, 14, 10, tzinfo=TZ)
-        tm_fc_dt = api._get_mid_base_dt(now)
-        mock_days = get_mock_days(now, tm_fc_dt)
-        api._merge_all(now, make_short_res_with_0915(now, days=mock_days), make_mid_res(tm_fc_dt), air_data={})
+        api._merge_all(now, make_short_res_with_0915(now), make_mid_res(api._get_mid_base_dt(now)), air_data={})
 
         # [When] 단기 API 실패
-        result = api._merge_all(now, None, make_mid_res(tm_fc_dt), air_data={})
+        result = api._merge_all(now, None, make_mid_res(api._get_mid_base_dt(now)), air_data={})
 
-        # [Then] 데이터 보존됨
+        # [Then] 데이터 보존
         assert_d3_d4_not_none(result, "단기 실패 캐시 보존")
 
 
@@ -328,11 +302,9 @@ class TestConsecutiveApiFailures:
         # [Given] 최초 정상 데이터 수신
         api = make_api()
         now = datetime(2026, 4, 11, 19, 10, tzinfo=TZ)
-        tm_fc_dt = api._get_mid_base_dt(now)
-        mock_days = get_mock_days(now, tm_fc_dt)
-        api._merge_all(now, make_short_res_with_0915(now, days=mock_days), make_mid_res(tm_fc_dt), air_data={})
+        api._merge_all(now, make_short_res_with_0915(now), make_mid_res(api._get_mid_base_dt(now)), air_data={})
 
-        # [When] 3회 연속 모두 실패
+        # [When] 3회 연속 단기/중기 모두 실패 시
         for _ in range(3):
             result = api._merge_all(now, None, None, air_data={})
             # [Then] 데이터는 여전히 존재해야 함
