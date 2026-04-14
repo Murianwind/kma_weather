@@ -802,37 +802,24 @@ def test_merge_all_rain_start_time_on_the_hour():
 
 
 def test_merge_all_boundary_date_rep_t_sky_kor():
-    # Given: 오늘 날짜에 0600, 1200 데이터만 있어 short_covered에서 제외되며
-    #        tm_fc_dt=오늘 06시로 mid_day_idx=0 < 3인 경계 상황이다
-    # When:  _merge_all을 호출하면
-    # Then:  rep_t로 낮 12시에 가장 가까운 "1200"이 선택되고 SKY=3 → "구름많음"이
-    #        wf_am_today에 설정된다
+    # 기존: mid_day_idx < 3 경계 분기에서 rep_t → SKY=3 → 구름많음 검증
+    # 신규: i=0~3은 단기이므로, 오늘(i=0) 데이터에서 오전 슬롯 SKY 검증으로 변경
     api = KMAWeatherAPI(MagicMock(), "key", "r1", "r2")
     api.lat = api.lon = api.nx = api.ny = None
     now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-    tm_fc_dt = datetime(2026, 4, 11, 6, 0, tzinfo=TZ)
     today = now.strftime("%Y%m%d")
     items = [
-        {"fcstDate": today, "fcstTime": "0600", "category": "TMP", "fcstValue": "12"},
-        {"fcstDate": today, "fcstTime": "0600", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "0600", "category": "PTY", "fcstValue": "0"},
-        {"fcstDate": today, "fcstTime": "1200", "category": "TMP", "fcstValue": "18"},
-        {"fcstDate": today, "fcstTime": "1200", "category": "SKY", "fcstValue": "3"},
-        {"fcstDate": today, "fcstTime": "1200", "category": "PTY", "fcstValue": "0"},
+        {"fcstDate": today, "fcstTime": "0900", "category": "TMP",  "fcstValue": "12"},
+        {"fcstDate": today, "fcstTime": "0900", "category": "SKY",  "fcstValue": "3"},  # 구름많음
+        {"fcstDate": today, "fcstTime": "0900", "category": "PTY",  "fcstValue": "0"},
+        {"fcstDate": today, "fcstTime": "1500", "category": "TMP",  "fcstValue": "18"},
+        {"fcstDate": today, "fcstTime": "1500", "category": "SKY",  "fcstValue": "1"},
+        {"fcstDate": today, "fcstTime": "1500", "category": "PTY",  "fcstValue": "0"},
     ]
     short_res = {"response": {"body": {"items": {"item": items}}}}
-    ta_item = {f"taMax{i}": str(20+i) for i in range(3, 11)}
-    ta_item.update({f"taMin{i}": str(5+i) for i in range(3, 11)})
-    land_item = {f"wf{i}Am": "맑음" for i in range(3, 11)}
-    land_item.update({f"wf{i}Pm": "맑음" for i in range(3, 11)})
-
-    def wrap(item):
-        return {"response": {"body": {"items": {"item": [item]}}}}
-
-    mid_res = (wrap(ta_item), wrap(land_item), tm_fc_dt)
-    result = api._merge_all(now, short_res, mid_res, {})
-    assert result["weather"].get("wf_am_today") is not None
-    assert result["weather"]["wf_am_today"] == "구름많음"
+    result = api._merge_all(now, short_res, None, {})
+    # 오전 슬롯(0900)이 SKY=3이므로 wf_am_today는 구름많음
+    assert result["weather"].get("wf_am_today") == "구름많음"
 
 
 @pytest.mark.asyncio
