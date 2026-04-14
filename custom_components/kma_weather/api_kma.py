@@ -15,19 +15,16 @@ def _safe_float(v):
     except (TypeError, ValueError): return None
 
 KOR_TO_CONDITION: dict[str, str] = {
-    # 기본 단기 상태
     "맑음": "sunny",
     "구름많음": "partlycloudy",
     "흐림": "cloudy",
     "비": "rainy",
-    "비/눈": "snowy-rainy",  # rainy 대신 snowy-rainy(진눈깨비) 사용
+    "비/눈": "snowy-rainy",
     "눈": "snowy",
-    "소나기": "pouring",     # rainy 대신 pouring(쏟아지는 비) 사용
+    "소나기": "pouring",
     "빗방울": "rainy",
     "빗방울/눈날림": "snowy-rainy",
     "눈날림": "snowy",
-    
-    # 중기예보 복합 상태
     "구름많고 비": "rainy",
     "구름많고 눈": "snowy",
     "구름많고 비/눈": "snowy-rainy",
@@ -50,7 +47,6 @@ class KMAWeatherAPI:
         self._cached_station = self._cached_lat_lon = self._station_cache_time = None
         self._nominatim_user_agent = self._build_nominatim_user_agent()
 
-        # ── 데이터 소실 방지용 캐시 ──────────────────────────────────────
         self._cache_forecast_map: dict = {}
         self._cache_mid_ta: dict = {}
         self._cache_mid_land: dict = {}
@@ -72,7 +68,6 @@ class KMAWeatherAPI:
             return base
 
     def _haversine_simple(self, lat1, lon1, lat2, lon2) -> float:
-        """두 좌표 간 거리를 km 단위로 반환 (Haversine 공식)."""
         r = 6371.0
         dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
         a = (math.sin(dlat / 2) ** 2
@@ -115,7 +110,6 @@ class KMAWeatherAPI:
 
     async def _get_air_quality(self):
         try:
-            # ── 위치가 2km 이상 바뀌면 측정소 캐시 무효화 ──────────────
             if self._cached_station and self._cached_lat_lon:
                 prev_lat, prev_lon = self._cached_lat_lon
                 dist = self._haversine_simple(prev_lat, prev_lon, self.lat, self.lon)
@@ -136,7 +130,6 @@ class KMAWeatherAPI:
                 items = st_json.get("response", {}).get("body", {}).get("items", []) if st_json else []
                 if not items: return {}
                 sn = items[0].get("stationName")
-                # ── 측정소와 현재 위치를 함께 캐시 ──────────────────────
                 self._cached_station = sn
                 self._cached_lat_lon = (self.lat, self.lon)
 
@@ -188,7 +181,7 @@ class KMAWeatherAPI:
     async def _get_mid_term(self, now):
         tm_fc_dt = self._get_mid_base_dt(now)
         base = tm_fc_dt.strftime("%Y%m%d%H%M")
-        
+
         async def _fetch_both(b):
             return await asyncio.gather(
                 self._fetch("https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa",
@@ -197,9 +190,9 @@ class KMAWeatherAPI:
                             {"serviceKey": self.api_key, "dataType": "JSON", "regId": self.reg_id_land, "tmFc": b}),
                 return_exceptions=True
             )
-            
+
         results = await _fetch_both(base)
-        
+
         def _is_valid(res):
             if isinstance(res, Exception) or not res: return False
             items = res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
@@ -210,9 +203,9 @@ class KMAWeatherAPI:
                 prev_dt = (tm_fc_dt - timedelta(days=1)).replace(hour=18)
             else:
                 prev_dt = tm_fc_dt.replace(hour=6)
-                
+
             _LOGGER.warning("중기예보 최신(%s) 응답이 비어있습니다. 이전 시각(%s)으로 재시도합니다.", base, prev_dt.strftime("%Y%m%d%H%M"))
-            
+
             retry_results = await _fetch_both(prev_dt.strftime("%Y%m%d%H%M"))
             if _is_valid(retry_results[0]) and _is_valid(retry_results[1]):
                 return (retry_results[0], retry_results[1], prev_dt)
@@ -238,6 +231,27 @@ class KMAWeatherAPI:
         if kor is None: return None
         return KOR_TO_CONDITION.get(kor)
 
+    def _get_short_ampm(self, day_data: dict) -> tuple[str, str]:
+        """단기예보 데이터에서 오전(06~11시)/오후(12~17시) 대표 날씨를 반환"""
+        def rep_slot(hours):
+            skies, ptys = [], []
+            for t in hours:
+                if t in day_data:
+                    td = day_data[t]
+                    if "SKY" in td: skies.append(td["SKY"])
+                    if "PTY" in td: ptys.append(td["PTY"])
+            if not skies and not ptys:
+                return None
+            pty_rep = max(set(ptys), key=ptys.count) if ptys else "0"
+            sky_rep = max(set(skies), key=skies.count) if skies else "1"
+            return self._get_sky_kor(sky_rep, pty_rep)
+
+        am_hours = [f"{h:02d}00" for h in range(6, 12)]
+        pm_hours = [f"{h:02d}00" for h in range(12, 18)]
+        wf_am = rep_slot(am_hours) or "맑음"
+        wf_pm = rep_slot(pm_hours) or wf_am
+        return wf_am, wf_pm
+
     def _merge_all(self, now, short_res, mid_res, air_data, address=None):
         weather_data = {
             "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None,
@@ -245,6 +259,7 @@ class KMAWeatherAPI:
             "rain_start_time": "강수없음", "forecast_daily": [], "forecast_twice_daily": [], "address": address,
         }
 
+        # ── 단기예보 캐시 갱신 ──────────────────────────────────────────────
         new_forecast_map = {}
         if short_res and "response" in short_res:
             for it in short_res.get("response", {}).get("body", {}).get("items", {}).get("item", []):
@@ -258,6 +273,7 @@ class KMAWeatherAPI:
 
         forecast_map = self._cache_forecast_map
 
+        # ── 중기예보 캐시 갱신 ──────────────────────────────────────────────
         if mid_res and isinstance(mid_res, tuple) and len(mid_res) == 3:
             mid_ta_res, mid_land_res, new_tm_fc_dt = mid_res
         else:
@@ -283,6 +299,7 @@ class KMAWeatherAPI:
         mid_land = self._cache_mid_land
         tm_fc_dt = self._cache_mid_tm_fc_dt if self._cache_mid_tm_fc_dt else new_tm_fc_dt
 
+        # ── 현재 날씨 업데이트 ──────────────────────────────────────────────
         today_str, curr_h = now.strftime("%Y%m%d"), f"{now.hour:02d}00"
         if today_str in forecast_map:
             times = sorted(forecast_map[today_str].keys())
@@ -290,6 +307,7 @@ class KMAWeatherAPI:
             if best_t:
                 weather_data.update(forecast_map[today_str][best_t])
 
+        # ── 강수 시작 시간 ──────────────────────────────────────────────────
         for d_str in sorted(forecast_map.keys()):
             rain_times = [t_str for t_str in sorted(forecast_map[d_str].keys())
                           if _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0]
@@ -305,13 +323,7 @@ class KMAWeatherAPI:
                     weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시"
                 break
 
-        short_term_limit = (now + timedelta(days=3)).strftime("%Y%m%d")
-        short_covered_dates = {
-            d for d in forecast_map
-            if d <= short_term_limit
-            and "0900" in forecast_map[d] and "TMP" in forecast_map[d]["0900"]
-        }
-
+        # ── 10일 예보 생성 ──────────────────────────────────────────────────
         twice_daily, daily_forecast = [], []
 
         for i in range(10):
@@ -321,56 +333,60 @@ class KMAWeatherAPI:
             t_max, t_min = None, None
             wf_am, wf_pm = "맑음", "맑음"
 
-            if d_str in short_covered_dates:
-                short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
-                valid_temps = [t for t in short_temps if t is not None]
-                t_max = max(valid_temps) if valid_temps else None
-                t_min = min(valid_temps) if valid_temps else None
-                wf_am = self._get_sky_kor(
-                    forecast_map[d_str].get("0900", {}).get("SKY"),
-                    forecast_map[d_str].get("0900", {}).get("PTY"))
-                # 1500이 없으면 가장 가까운 오후 시각으로 대체
-                pm_slot = next(
-                    (t for t in ["1500", "1200", "1800"] if t in forecast_map[d_str]),
-                    None
-                )
-                wf_pm = self._get_sky_kor(
-                    forecast_map[d_str].get(pm_slot, {}).get("SKY") if pm_slot else None,
-                    forecast_map[d_str].get(pm_slot, {}).get("PTY") if pm_slot else None,
-                ) if pm_slot else wf_am
+            if i <= 3:
+                # ── 0~3일차: 단기예보 ────────────────────────────────────────
+                if d_str in forecast_map:
+                    short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
+                    valid_temps = [t for t in short_temps if t is not None]
+                    t_max = max(valid_temps) if valid_temps else None
+                    t_min = min(valid_temps) if valid_temps else None
+
+                    # 오전: 0900, 오후: 1500 우선, 없으면 가장 가까운 슬롯
+                    am_slot = "0900" if "0900" in forecast_map[d_str] else next(
+                        (t for t in sorted(forecast_map[d_str].keys()) if t < "1200"), None)
+                    pm_slot = next(
+                        (t for t in ["1500", "1200", "1800"] if t in forecast_map[d_str]), None)
+
+                    if am_slot:
+                        wf_am = self._get_sky_kor(
+                            forecast_map[d_str][am_slot].get("SKY"),
+                            forecast_map[d_str][am_slot].get("PTY"))
+                    if pm_slot:
+                        wf_pm = self._get_sky_kor(
+                            forecast_map[d_str][pm_slot].get("SKY"),
+                            forecast_map[d_str][pm_slot].get("PTY"))
+                    else:
+                        wf_pm = wf_am
+
+                _LOGGER.debug("단기예보 i=%d date=%s t_max=%s t_min=%s", i, d_str, t_max, t_min)
+
             else:
+                # ── 4~9일차: 중기 우선, 없으면 단기 폴백 (4~5일차만 해당) ──
                 mid_day_idx = (target_date.date() - tm_fc_dt.date()).days
+                t_max_mid = _safe_float(mid_ta.get(f"taMax{mid_day_idx}")) if mid_ta else None
+                t_min_mid = _safe_float(mid_ta.get(f"taMin{mid_day_idx}")) if mid_ta else None
+                wf_am_mid = self._translate_mid_condition_kor(
+                    mid_land.get(f"wf{mid_day_idx}Am") or mid_land.get(f"wf{mid_day_idx}")) if mid_land else None
+                wf_pm_mid = self._translate_mid_condition_kor(
+                    mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}")) if mid_land else None
 
-                if mid_day_idx < 3:
-                    if d_str in forecast_map:
-                        short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
-                        valid_temps = [t for t in short_temps if t is not None]
-                        t_max = max(valid_temps) if valid_temps else None
-                        t_min = min(valid_temps) if valid_temps else None
-                        rep_t = min(
-                            [t for t in forecast_map[d_str].keys()],
-                            key=lambda t: abs(int(t[:2]) - 12),
-                            default=None
-                        )
-                        if rep_t:
-                            wf_am = self._get_sky_kor(
-                                forecast_map[d_str][rep_t].get("SKY"),
-                                forecast_map[d_str][rep_t].get("PTY"))
-                            wf_pm = wf_am
-                    _LOGGER.debug(
-                        "경계 날짜 단기캐시 사용 i=%d date=%s mid_day_idx=%d t_max=%s t_min=%s",
-                        i, d_str, mid_day_idx, t_max, t_min)
-                else:
-                    t_max = _safe_float(mid_ta.get(f"taMax{mid_day_idx}"))
-                    t_min = _safe_float(mid_ta.get(f"taMin{mid_day_idx}"))
-                    wf_am = self._translate_mid_condition_kor(
-                        mid_land.get(f"wf{mid_day_idx}Am") or mid_land.get(f"wf{mid_day_idx}"))
-                    wf_pm = self._translate_mid_condition_kor(
-                        mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}"))
-                    _LOGGER.debug(
-                        "중기예보 i=%d date=%s tm_fc_dt=%s mid_day_idx=%d t_max=%s t_min=%s",
-                        i, d_str, tm_fc_dt.strftime("%Y%m%d%H%M"), mid_day_idx, t_max, t_min)
+                if t_max_mid is not None and t_min_mid is not None:
+                    # 중기 데이터 있음
+                    t_max, t_min = t_max_mid, t_min_mid
+                    wf_am = wf_am_mid or "맑음"
+                    wf_pm = wf_pm_mid or "맑음"
+                    _LOGGER.debug("중기예보 i=%d date=%s mid_day_idx=%d t_max=%s t_min=%s",
+                                  i, d_str, mid_day_idx, t_max, t_min)
+                elif i <= 5 and d_str in forecast_map:
+                    # 4~5일차: 단기 폴백
+                    short_temps = [_safe_float(v.get("TMP")) for v in forecast_map[d_str].values() if "TMP" in v]
+                    valid_temps = [t for t in short_temps if t is not None]
+                    t_max = max(valid_temps) if valid_temps else None
+                    t_min = min(valid_temps) if valid_temps else None
+                    wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
+                    _LOGGER.debug("단기폴백 i=%d date=%s t_max=%s t_min=%s", i, d_str, t_max, t_min)
 
+            # ── i=0,1: 센서 연동용 값 저장 (기존 로직 완전 유지) ────────────
             if i == 0:
                 weather_data["wf_am_today"] = wf_am
                 weather_data["wf_pm_today"] = wf_pm
