@@ -110,6 +110,7 @@ class KMAWeatherAPI:
 
     async def _get_air_quality(self):
         try:
+            # ── 위치가 2km 이상 바뀌면 측정소 캐시 무효화 ──────────────────
             if self._cached_station and self._cached_lat_lon:
                 prev_lat, prev_lon = self._cached_lat_lon
                 dist = self._haversine_simple(prev_lat, prev_lon, self.lat, self.lon)
@@ -300,12 +301,27 @@ class KMAWeatherAPI:
         tm_fc_dt = self._cache_mid_tm_fc_dt if self._cache_mid_tm_fc_dt else new_tm_fc_dt
 
         # ── 현재 날씨 업데이트 ──────────────────────────────────────────────
+        # [수정 1] 오늘 날짜 데이터가 없는 경우(자정~02시 등) 직전 날짜 마지막 슬롯으로 fallback
+        # 기상청 단기예보는 3시간 간격이라 자정 이후 새 날짜의 첫 슬롯은 0200부터 시작함
+        # → 00:00~01:50 구간에 오늘 날짜 키가 없어 TMP/REH/WSD/POP 등이 통째로 None이 되는 버그 수정
         today_str, curr_h = now.strftime("%Y%m%d"), f"{now.hour:02d}00"
         if today_str in forecast_map:
             times = sorted(forecast_map[today_str].keys())
             best_t = next((t for t in times if t >= curr_h), times[-1] if times else None)
             if best_t:
                 weather_data.update(forecast_map[today_str][best_t])
+        else:
+            # 오늘 날짜 슬롯이 아직 없음 → 직전 날짜의 마지막 슬롯(2300) 값 유지
+            past_dates = sorted(d for d in forecast_map if d < today_str)
+            if past_dates:
+                last_date = past_dates[-1]
+                times = sorted(forecast_map[last_date].keys())
+                if times:
+                    weather_data.update(forecast_map[last_date][times[-1]])
+                    _LOGGER.debug(
+                        "오늘(%s) 날짜 데이터 없음 → 직전(%s) 마지막 슬롯(%s) 사용",
+                        today_str, last_date, times[-1]
+                    )
 
         # ── 강수 시작 시간 ──────────────────────────────────────────────────
         for d_str in sorted(forecast_map.keys()):
@@ -331,7 +347,11 @@ class KMAWeatherAPI:
             d_str = target_date.strftime("%Y%m%d")
 
             t_max, t_min = None, None
-            wf_am, wf_pm = "맑음", "맑음"
+            # [수정 2] 기본값을 "맑음"이 아닌 None으로 설정
+            # d_str이 forecast_map에 없을 때(자정 직후 i=0 등) wf_am/pm이 "맑음"으로
+            # coordinator._wf_am/pm_today를 잘못 덮어쓰는 버그 수정
+            # → None이면 coordinator에서 `if api_am and ...` 조건에 걸려 기존 누적값 보존
+            wf_am, wf_pm = None, None
 
             if i <= 3:
                 # ── 0~3일차: 단기예보 ────────────────────────────────────────
@@ -341,9 +361,10 @@ class KMAWeatherAPI:
                     t_max = max(valid_temps) if valid_temps else None
                     t_min = min(valid_temps) if valid_temps else None
 
-                    # 오전: 0900, 오후: 1500 우선, 없으면 가장 가까운 슬롯
+                    # 오전: 0900 우선, 없으면 1200 이전 첫 슬롯
                     am_slot = "0900" if "0900" in forecast_map[d_str] else next(
                         (t for t in sorted(forecast_map[d_str].keys()) if t < "1200"), None)
+                    # 오후: 1500 우선, 없으면 1200 또는 1800
                     pm_slot = next(
                         (t for t in ["1500", "1200", "1800"] if t in forecast_map[d_str]), None)
 
@@ -357,6 +378,7 @@ class KMAWeatherAPI:
                             forecast_map[d_str][pm_slot].get("PTY"))
                     else:
                         wf_pm = wf_am
+                # d_str이 없으면 wf_am/wf_pm은 None 유지 → coordinator 누적값 보존
 
                 _LOGGER.debug("단기예보 i=%d date=%s t_max=%s t_min=%s", i, d_str, t_max, t_min)
 
@@ -371,7 +393,6 @@ class KMAWeatherAPI:
                     mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}")) if mid_land else None
 
                 if t_max_mid is not None and t_min_mid is not None:
-                    # 중기 데이터 있음
                     t_max, t_min = t_max_mid, t_min_mid
                     wf_am = wf_am_mid or "맑음"
                     wf_pm = wf_pm_mid or "맑음"
@@ -386,7 +407,7 @@ class KMAWeatherAPI:
                     wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
                     _LOGGER.debug("단기폴백 i=%d date=%s t_max=%s t_min=%s", i, d_str, t_max, t_min)
 
-            # ── i=0,1: 센서 연동용 값 저장 (기존 로직 완전 유지) ────────────
+            # ── i=0,1: 센서 연동용 값 저장 ──────────────────────────────────
             if i == 0:
                 weather_data["wf_am_today"] = wf_am
                 weather_data["wf_pm_today"] = wf_pm
