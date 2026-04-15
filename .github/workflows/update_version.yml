@@ -1,0 +1,56 @@
+name: Update Manifest Version
+
+on:
+  release:
+    types: [published]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  update-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # 태그에서 버전 추출 (v1.3.1 → 1.3.1)
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "태그: $TAG → 버전: $VERSION"
+
+      - name: Update manifest.json version
+        run: |
+          MANIFEST="custom_components/kma_weather/manifest.json"
+          VERSION="${{ steps.version.outputs.VERSION }}"
+
+          # jq로 version 필드만 교체
+          jq --arg v "$VERSION" '.version = $v' "$MANIFEST" > tmp.json
+          mv tmp.json "$MANIFEST"
+
+          echo "manifest.json version → $VERSION"
+          cat "$MANIFEST"
+
+      - name: Commit and push
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add custom_components/kma_weather/manifest.json
+
+          if git diff --cached --quiet; then
+            echo "변경 사항 없음 (이미 동일한 버전)"
+          else
+            git commit -m "chore: bump version to $VERSION"
+            git push origin main
+          fi
