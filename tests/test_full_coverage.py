@@ -1237,7 +1237,7 @@ def test_merge_all_rep_t_none_when_empty_forecast_keys():
     api._cache_mid_ta = {}
     api._cache_mid_land = {}
     result = api._merge_all(now, None, None, {})
-    assert result["weather"].get("wf_am_today") == "맑음"
+    assert result["weather"].get("wf_am_today") is None
     assert len(result["weather"]["forecast_daily"]) == 10
 
 
