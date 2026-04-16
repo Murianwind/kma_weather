@@ -634,8 +634,7 @@ async def test_config_flow_step_user_with_state_name(hass):
     flow._async_current_entries = lambda: []
     with patch.object(flow, "async_set_unique_id", return_value=None), \
          patch.object(flow, "_abort_if_unique_id_configured"), \
-         patch("custom_components.kma_weather.config_flow._validate_api_key",
-               return_value=None):  # ← None = 검증 통과
+         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None):  # ← None = 검증 통과
         result = await flow.async_step_user({
             "api_key": "KEY_WITH_STATE",
             "prefix": "home2",
@@ -656,8 +655,8 @@ async def test_config_flow_step_user_entity_no_state(hass):
     flow.context = {"source": "user"}
     flow._async_current_entries = lambda: []
     with patch.object(flow, "async_set_unique_id", return_value=None), \
-         patch.object(flow, "_abort_if_unique_id_configured"):
-         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None)
+         patch.object(flow, "_abort_if_unique_id_configured"), \
+         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None):
         result = await flow.async_step_user({
             "api_key": "KEY_NO_STATE",
             "prefix": "nostate",
@@ -678,8 +677,8 @@ async def test_config_flow_step_user_no_entity(hass):
     flow.context = {"source": "user"}
     flow._async_current_entries = lambda: []
     with patch.object(flow, "async_set_unique_id", return_value=None), \
-         patch.object(flow, "_abort_if_unique_id_configured"):
-         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None)
+         patch.object(flow, "_abort_if_unique_id_configured"), \
+         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None):
         result = await flow.async_step_user({
             "api_key": "KEY_NO_ENTITY",
             "prefix": "noent",
