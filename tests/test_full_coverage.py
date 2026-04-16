@@ -625,9 +625,6 @@ async def test_async_unload_entry_ok_false(hass, mock_config_entry, kma_api_mock
 
 @pytest.mark.asyncio
 async def test_config_flow_step_user_with_state_name(hass):
-    # Given: hass에 "zone.home" 엔티티가 등록되어 있고 state에 name이 있다
-    # When:  async_step_user에 api_key, prefix, location_entity를 입력하면
-    # Then:  config_entry가 생성되고 title에 "기상청 날씨:"가 포함된다
     from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
     hass.states.async_set("zone.home", "zoning",
                           {"latitude": 37.56, "longitude": 126.98, "friendly_name": "우리집"})
@@ -636,7 +633,9 @@ async def test_config_flow_step_user_with_state_name(hass):
     flow.context = {"source": "user"}
     flow._async_current_entries = lambda: []
     with patch.object(flow, "async_set_unique_id", return_value=None), \
-         patch.object(flow, "_abort_if_unique_id_configured"):
+         patch.object(flow, "_abort_if_unique_id_configured"), \
+         patch("custom_components.kma_weather.config_flow._validate_api_key",
+               return_value=None):  # ← None = 검증 통과
         result = await flow.async_step_user({
             "api_key": "KEY_WITH_STATE",
             "prefix": "home2",
@@ -658,6 +657,7 @@ async def test_config_flow_step_user_entity_no_state(hass):
     flow._async_current_entries = lambda: []
     with patch.object(flow, "async_set_unique_id", return_value=None), \
          patch.object(flow, "_abort_if_unique_id_configured"):
+         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None)
         result = await flow.async_step_user({
             "api_key": "KEY_NO_STATE",
             "prefix": "nostate",
@@ -679,6 +679,7 @@ async def test_config_flow_step_user_no_entity(hass):
     flow._async_current_entries = lambda: []
     with patch.object(flow, "async_set_unique_id", return_value=None), \
          patch.object(flow, "_abort_if_unique_id_configured"):
+         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None)
         result = await flow.async_step_user({
             "api_key": "KEY_NO_ENTITY",
             "prefix": "noent",
@@ -1366,6 +1367,21 @@ async def test_async_update_246_summary_pm_changed(hass):
         await coord._async_update_data()
     assert coord._wf_pm_today == "비"
 
+@pytest.mark.asyncio
+async def test_config_flow_invalid_api_key(hass):
+    from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
+    flow = KMAWeatherConfigFlow()
+    flow.hass = hass
+    flow.context = {"source": "user"}
+    with patch("custom_components.kma_weather.config_flow._validate_api_key",
+               return_value="invalid_api_key"):  # ← 검증 실패
+        result = await flow.async_step_user({
+            "api_key": "INVALID_KEY",
+            "prefix": "test",
+        })
+    # 폼으로 돌아오고 에러가 담겨있어야 함
+    assert result["type"] == "form"
+    assert result["errors"]["api_key"] == "invalid_api_key"
 
 @pytest.mark.asyncio
 async def test_async_update_248_temp_changed_saves(hass):
@@ -1401,7 +1417,6 @@ async def test_async_update_248_temp_changed_saves(hass):
         await coord._async_update_data()
     assert len(saved) > 0
     assert coord._daily_max_temp == 28.0
-
 
 def test_resolve_location_entity_valid_korean_coords():
     # Given: device_tracker.phone 엔티티의 state에 대전 좌표(36.35, 127.38)가 있다
