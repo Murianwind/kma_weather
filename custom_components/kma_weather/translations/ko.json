@@ -12,6 +12,13 @@
         }
       }
     },
+    "error": {
+      "invalid_api_key": "등록되지 않았거나 만료된 API 키입니다. 공공데이터포털에서 키를 확인해주세요.",
+      "api_quota_exceeded": "일일 요청 한도를 초과했습니다. 내일 다시 시도해주세요.",
+      "api_access_denied": "서비스 접근이 거부되었습니다. API 키 권한을 확인해주세요.",
+      "api_error": "API 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+      "cannot_connect": "API 서버에 연결할 수 없습니다. 네트워크를 확인해주세요."
+    },
     "options": {
       "step": {
         "init": {
