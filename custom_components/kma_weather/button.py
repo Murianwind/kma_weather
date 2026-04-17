@@ -1,6 +1,5 @@
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.helpers.entity import DeviceInfo
 from datetime import datetime, timedelta
 import logging
 # CONF_LOCATION_ENTITY 추가 임포트
