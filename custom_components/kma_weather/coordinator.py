@@ -148,8 +148,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     self._wf_am_today = stored.get("wf_am")
                     self._wf_pm_today = stored.get("wf_pm")
                     _LOGGER.info("✅ 저장소 데이터 복구 성공")
-                except:
-                    pass
+                except Exception as e:
+                    _LOGGER.debug("저장소 데이터 복구 실패 (무시): %s", e)
         self._store_loaded = True
 
     async def _save_daily_temps(self):
@@ -262,8 +262,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     "TMN_today": self._daily_min_temp,
                     "wf_am_today": self._wf_am_today,
                     "wf_pm_today": self._wf_pm_today,
-                    "today_max": self._daily_max_temp,
-                    "today_min": self._daily_min_temp,
                     "last_updated": datetime.now(timezone.utc),
                     "debug_nx": nx,
                     "debug_ny": ny,
@@ -300,8 +298,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     lat, lon = float(lat_attr), float(lon_attr)
                     if _is_valid_korean_coord(lat, lon):
+                        self._last_lat, self._last_lon = lat, lon  # ← 성공 시 캐시 갱신
                         return lat, lon
-                except:
+                except Exception:
                     pass
         if self._last_lat is not None:
             return self._last_lat, self._last_lon
@@ -309,6 +308,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             lat, lon = float(self.hass.config.latitude), float(self.hass.config.longitude)
             if _is_valid_korean_coord(lat, lon):
                 return lat, lon
-        except:
+        except Exception:
             pass
         return None, None
