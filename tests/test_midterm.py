@@ -8,16 +8,12 @@ from custom_components.kma_weather.api_kma import KMAWeatherAPI
 
 TZ = ZoneInfo("Asia/Seoul")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# [Given] 공통 헬퍼 함수
-# ─────────────────────────────────────────────────────────────────────────────
 def make_api():
-    api = KMAWeatherAPI(MagicMock(), "TEST_KEY", "11B10101", "11B00000")
+    api = KMAWeatherAPI(MagicMock(), "TEST_KEY")  # reg_id 제거
     api.lat, api.lon, api.nx, api.ny = 37.56, 126.98, 60, 127
     return api
 
 def make_short_res(base_date, days=4):
-    """D+0~D+(days-1)까지 단기예보 생성. 새 로직은 D+3까지 단기이므로 기본 4일치."""
     items = []
     for d in range(days):
         day = base_date + timedelta(days=d)
@@ -48,9 +44,7 @@ def make_mid_res(tm_fc_dt, start_idx=3, end_idx=10):
         return {"response": {"body": {"items": {"item": [item]}}}}
     return (wrap(ta_item), wrap(land_item), tm_fc_dt)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. TestGetMidBaseDt: 중기예보 기준 시각(tmFc) 산출 로직
-# ─────────────────────────────────────────────────────────────────────────────
+
 class TestGetMidBaseDt:
     @pytest.mark.parametrize("hour,minute,expected_date_offset,expected_hour,desc", [
         (5,  59, -1, 18, "06시 발표 30분 전 → 전날 18시"),
@@ -64,16 +58,13 @@ class TestGetMidBaseDt:
     def test_tmfc_calculation(self, hour, minute, expected_date_offset, expected_hour, desc):
         api = make_api()
         now = datetime(2026, 4, 11, hour, minute, tzinfo=TZ)
-
         result = api._get_mid_base_dt(now)
-
         if hour == 0 and minute == 30:
             expected_date = now.date() - timedelta(days=1)
         elif hour == 5 and minute == 59:
             expected_date = now.date() - timedelta(days=1)
         else:
             expected_date = (now - timedelta(minutes=30)).date() + timedelta(days=expected_date_offset)
-
         assert result.hour == expected_hour, f"[{desc}] 기대={expected_hour}, 실제={result.hour}"
         assert result.date() == expected_date, f"[{desc}] 기대={expected_date}, 실제={result.date()}"
         assert result.minute == 0 and result.second == 0
@@ -84,9 +75,7 @@ class TestGetMidBaseDt:
         result = api._get_mid_base_dt(now)
         assert result.tzinfo is not None
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. TestGetMidTerm: 중기예보 데이터 수집 로직
-# ─────────────────────────────────────────────────────────────────────────────
+
 class TestGetMidTerm:
     @pytest.mark.asyncio
     async def test_returns_three_tuple(self):
@@ -99,7 +88,6 @@ class TestGetMidTerm:
 
         api._fetch = mock_fetch
         result = await api._get_mid_term(now)
-
         assert isinstance(result, tuple) and len(result) == 3
         _, _, tm_fc_dt = result
         assert isinstance(tm_fc_dt, datetime) and tm_fc_dt.tzinfo is not None
@@ -117,14 +105,11 @@ class TestGetMidTerm:
 
         api._fetch = mock_fetch
         await api._get_mid_term(now)
-
         assert len(called_params) == 2
         for p in called_params:
             assert p == expected_base
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. TestMidDayIndexCalculation: 단기-중기 데이터 병합 인덱스 검증
-# ─────────────────────────────────────────────────────────────────────────────
+
 class TestMidDayIndexCalculation:
     def _run_merge(self, now, short_days=4):
         api = make_api()
@@ -138,20 +123,14 @@ class TestMidDayIndexCalculation:
         (5,  50, "오전 5:50"), (0,  30, "자정 0:30"),
     ])
     def test_mid_day_idx_for_day_4_to_6(self, now_hour, now_minute, desc):
-        """D+4~D+6 날짜의 중기예보 인덱스 검증 (새 로직: D+4부터 중기)"""
         now = datetime(2026, 4, 11, now_hour, now_minute, tzinfo=TZ)
         api = make_api()
         tm_fc_dt = api._get_mid_base_dt(now)
-
         result = api._merge_all(now, make_short_res(now, days=4),
                                  make_mid_res(tm_fc_dt, start_idx=3, end_idx=10), {})
-
         daily = result["weather"]["forecast_daily"]
-        # D+3은 단기 확인
         d3 = next((e for e in daily if e["_day_index"] == 3), None)
         assert d3 is not None and d3["native_temperature"] is not None, f"D+3 단기 데이터 없음 ({desc})"
-
-        # D+4~D+6은 중기 확인
         for i in range(4, 7):
             target_date = (now + timedelta(days=i)).date()
             mid_day_idx = (target_date - tm_fc_dt.date()).days
@@ -162,7 +141,6 @@ class TestMidDayIndexCalculation:
                 f"D+{i} 기온 오차 ({desc}): 기대={expected_max}, 실제={day_entry['native_temperature']}"
 
     def test_no_gap_between_short_and_mid(self):
-        """D+0~D+5 연속 데이터 확인 (D+3까지 단기, D+4~D+5 중기)"""
         now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
         result = self._run_merge(now, short_days=4)
         daily = result["weather"]["forecast_daily"]
@@ -172,9 +150,7 @@ class TestMidDayIndexCalculation:
             assert entry["native_temperature"] is not None, f"D+{i} 기온 None"
             assert entry["native_templow"] is not None, f"D+{i} 최저기온 None"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. TestForecastContinuity: 예보 항목 개수 및 순서 안정성
-# ─────────────────────────────────────────────────────────────────────────────
+
 class TestForecastContinuity:
     def test_forecast_daily_always_10_entries(self):
         api = make_api()
@@ -193,19 +169,14 @@ class TestForecastContinuity:
         daily_indices = [e["_day_index"] for e in result["weather"]["forecast_daily"]]
         assert daily_indices == list(range(10))
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. TestBoundaryTimeScenarios: 시각 경계 조건에서의 무결성
-# ─────────────────────────────────────────────────────────────────────────────
+
 class TestBoundaryTimeScenarios:
     def test_day4_temperature_matches_expected_mid_key(self):
-        """오전 5:50 (전날 18시 tmFc)에서 D+4 중기 인덱스 검증"""
         api = make_api()
         now = datetime(2026, 4, 11, 5, 50, tzinfo=TZ)
-        tm_fc_dt = api._get_mid_base_dt(now)  # 전날(4/10) 18시
+        tm_fc_dt = api._get_mid_base_dt(now)
         result = api._merge_all(now, make_short_res(now, days=4),
                                  make_mid_res(tm_fc_dt, start_idx=3, end_idx=10), {})
-
-        # D+4 날짜(4/15)와 tm_fc_dt(4/10 18시) 기준 mid_day_idx = 5
         target_date = (now + timedelta(days=4)).date()
         mid_day_idx = (target_date - tm_fc_dt.date()).days
         entry_4 = next(e for e in result["weather"]["forecast_daily"] if e["_day_index"] == 4)
