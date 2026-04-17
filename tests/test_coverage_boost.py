@@ -121,8 +121,8 @@ async def test_air_quality_cache_hit():
     api.lat, api.lon = 37.56, 126.98
     now = datetime.now(ZoneInfo("Asia/Seoul"))
     api._cached_station = "화성"
-    api._cached_lat_lon = (37.56, 126.98)
-    api._station_cache_time = now
+    api._cached_station_lat = 37.56
+    api._cached_station_lon = 126.98
 
     air_json = {
         "response": {"body": {"items": [{
@@ -136,7 +136,7 @@ async def test_air_quality_cache_hit():
         return air_json
 
     api._fetch = mock_fetch
-    result = await api._get_air_quality(37.56, 126.98)
+    result = await api._get_air_quality()
     assert result["station"] == "화성"
     assert result["pm10Grade"] == "보통"
 
@@ -151,7 +151,7 @@ async def test_air_quality_no_station_items():
         return {}
 
     api._fetch = mock_fetch
-    result = await api._get_air_quality(37.56, 126.98)
+    result = await api._get_air_quality()
     assert result == {}
 
 @pytest.mark.asyncio
@@ -165,7 +165,7 @@ async def test_air_quality_no_air_data_items():
         return {"response": {"body": {"items": []}}}
 
     api._fetch = mock_fetch
-    result = await api._get_air_quality(37.56, 126.98)
+    result = await api._get_air_quality()
     assert result == {"station": "중구"}
 
 @pytest.mark.asyncio
@@ -177,7 +177,7 @@ async def test_air_quality_fetch_returns_none():
         return None
 
     api._fetch = mock_fetch
-    result = await api._get_air_quality(37.56, 126.98)
+    result = await api._get_air_quality()
     assert result == {}
 
 # ─────────────────────────────────────────────────────────────────────────────
