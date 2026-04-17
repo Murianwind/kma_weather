@@ -25,9 +25,10 @@ class MockAiohttpSession:
         return MockAiohttpResponse(json_data=self.json_data, should_raise=self.should_raise)
 
 def test_api_key_decoding():
-    encoded_key = quote("test_secret_key!@#")
+    original_key = "test_secret_key!@#"
+    encoded_key = quote(original_key)
     api = KMAWeatherAPI(None, encoded_key)
-    assert api.api_key == "test_secret_key!@#"
+    assert api.api_key == original_key
 
 @pytest.mark.asyncio
 async def test_fetch_http_error(caplog):
