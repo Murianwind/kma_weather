@@ -166,8 +166,8 @@ class KMAWeatherAPI:
         self,
         lat: float, lon: float,
         nx: int, ny: int,
-        reg_id_temp: str | None = None, reg_id_land: str | None = None,
-        warn_area_code: str | None = None,
+        reg_id_temp: str, reg_id_land: str,
+        warn_area_code: str | None,
     ) -> dict | None:
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
@@ -209,13 +209,8 @@ class KMAWeatherAPI:
         return f"{lat:.4f}, {lon:.4f}"
 
     # ── 에어코리아 (측정소 캐시는 API 내부에서 좌표 기준 관리) ─────────────
-    async def _get_air_quality(self, lat: float | None = None, lon: float | None = None) -> dict:
+    async def _get_air_quality(self, lat: float, lon: float) -> dict:
         try:
-            if lat is None or lon is None:
-                lat, lon = self.lat, self.lon
-            if lat is None or lon is None:
-                return {}
-
             # 2km 이상 이동 시 측정소 캐시 무효화
             if (self._cached_station
                     and self._cached_station_lat is not None
@@ -313,15 +308,10 @@ class KMAWeatherAPI:
             return effective.replace(hour=18, minute=0, second=0, microsecond=0)
 
     async def _get_mid_term(
-        self,
-        now: datetime,
-        reg_id_temp: str | None = None,
-        reg_id_land: str | None = None,
+        self, now: datetime, reg_id_temp: str, reg_id_land: str
     ) -> tuple:
         tm_fc_dt = self._get_mid_base_dt(now)
         base = tm_fc_dt.strftime("%Y%m%d%H%M")
-        reg_id_temp = reg_id_temp or ""
-        reg_id_land = reg_id_land or ""
 
         async def _fetch_both(b):
             return await asyncio.gather(
