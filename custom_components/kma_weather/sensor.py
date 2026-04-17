@@ -68,6 +68,10 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if sensor_type == "WSD":
             self._attr_suggested_unit_of_measurement = UnitOfSpeed.METERS_PER_SECOND
 
+        # ── 수치형 단위가 있는 센서에 STATE_CLASS 설정 (HA 장기 통계 지원) ──
+        if details[1] is not None and sensor_type not in ("api_expire",):
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
