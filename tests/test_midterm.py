@@ -87,7 +87,7 @@ class TestGetMidTerm:
             return mock_resp
 
         api._fetch = mock_fetch
-        result = await api._get_mid_term(now)
+        result = await api._get_mid_term(now, "11B10101", "11B00000")
         assert isinstance(result, tuple) and len(result) == 3
         _, _, tm_fc_dt = result
         assert isinstance(tm_fc_dt, datetime) and tm_fc_dt.tzinfo is not None
@@ -104,7 +104,7 @@ class TestGetMidTerm:
             return {"response": {"body": {"items": {"item": [{"taMax3": "25"}]}}}}
 
         api._fetch = mock_fetch
-        await api._get_mid_term(now)
+        await api._get_mid_term(now, "11B10101", "11B00000")
         assert len(called_params) == 2
         for p in called_params:
             assert p == expected_base
