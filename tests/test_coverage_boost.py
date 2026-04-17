@@ -136,7 +136,7 @@ async def test_air_quality_cache_hit():
         return air_json
 
     api._fetch = mock_fetch
-    result = await api._get_air_quality()
+    result = await api._get_air_quality(37.56, 126.98)
     assert result["station"] == "화성"
     assert result["pm10Grade"] == "보통"
 
@@ -151,7 +151,7 @@ async def test_air_quality_no_station_items():
         return {}
 
     api._fetch = mock_fetch
-    result = await api._get_air_quality()
+    result = await api._get_air_quality(37.56, 126.98)
     assert result == {}
 
 @pytest.mark.asyncio
@@ -165,7 +165,7 @@ async def test_air_quality_no_air_data_items():
         return {"response": {"body": {"items": []}}}
 
     api._fetch = mock_fetch
-    result = await api._get_air_quality()
+    result = await api._get_air_quality(37.56, 126.98)
     assert result == {"station": "중구"}
 
 @pytest.mark.asyncio
@@ -177,7 +177,7 @@ async def test_air_quality_fetch_returns_none():
         return None
 
     api._fetch = mock_fetch
-    result = await api._get_air_quality()
+    result = await api._get_air_quality(37.56, 126.98)
     assert result == {}
 
 # ─────────────────────────────────────────────────────────────────────────────
