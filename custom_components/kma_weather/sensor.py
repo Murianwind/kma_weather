@@ -32,6 +32,7 @@ SENSOR_TYPES = {
     "TMN_tomorrow":       ["내일최저온도",   UnitOfTemperature.CELSIUS,          "mdi:thermometer-chevron-down",SensorDeviceClass.TEMPERATURE, "tomorrow_temp_min",   None],
     "wf_am_tomorrow":     ["내일오전날씨",   None,                                "mdi:weather-partly-cloudy",   None,                          "tomorrow_condition_am",None],
     "wf_pm_tomorrow":     ["내일오후날씨",   None,                                "mdi:weather-cloudy",          None,                          "tomorrow_condition_pm",None],
+    "warning":            ["기상특보",       None,                                "mdi:alert-outline",           None,                          "warning",             None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -114,7 +115,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             except (ValueError, TypeError):
                 return None
 
-        # 문자열 상태값 (날씨, 비시작시간 등)
+        # 문자열 상태값 (날씨, 비시작시간, 기상특보 등)
         return val
 
     @property
