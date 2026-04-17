@@ -39,7 +39,7 @@ async def test_fetch_data_full_path():
     api._get_mid_term = AsyncMock(return_value=(None, None, datetime(2026, 4, 11, 6, 0, tzinfo=TZ)))
     api._get_air_quality = AsyncMock(return_value={"pm10Value": "30"})
     api._get_address = AsyncMock(return_value="서울시")
-    result = await api.fetch_data(37.56, 126.98, 60, 127)
+    result = await api.fetch_data(37.56, 126.98, 60, 127, "11B10101", "11B00000", "4111100000")
     assert result is not None
     assert "weather" in result
     assert result["weather"]["address"] == "서울시"
@@ -52,7 +52,7 @@ async def test_fetch_data_with_exception_in_task():
     api._get_mid_term = AsyncMock(return_value=(None, None, datetime(2026, 4, 11, 6, 0, tzinfo=TZ)))
     api._get_air_quality = AsyncMock(return_value={})
     api._get_address = AsyncMock(return_value="서울시")
-    result = await api.fetch_data(37.56, 126.98, 60, 127)
+    result = await api.fetch_data(37.56, 126.98, 60, 127, "11B10101", "11B00000", "4111100000")
     assert result is not None
 
 
@@ -82,7 +82,7 @@ async def test_air_quality_exception_returns_empty():
         raise Exception("connection error")
 
     api._fetch = bad_fetch
-    result = await api._get_air_quality()
+    result = await api._get_air_quality(37.56, 126.98)
     assert result == {}
 
 
