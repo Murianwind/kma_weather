@@ -1,6 +1,6 @@
 """단기·중기 예보 연결 로직 검증 테스트"""
 import pytest
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from unittest.mock import MagicMock
 
