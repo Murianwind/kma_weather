@@ -1,6 +1,6 @@
 import pytest
-from datetime import datetime, date
-from unittest.mock import patch, MagicMock
+from datetime import datetime
+from unittest.mock import patch
 from custom_components.kma_weather.coordinator import (
     _TEMP_ID_COORDS,
     _calc_reg_ids,          # 변경: _get_kma_reg_ids → _calc_reg_ids
