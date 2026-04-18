@@ -267,11 +267,11 @@ class TestUnsubscribedApiHandling:
 
     @pytest.mark.asyncio
     async def test_warning_returns_none_on_unsubscribed(self):
-        """기상특보 미신청 시 '없음'을 반환함"""
+        """기상특보 미신청 시 None을 반환함 (센서 unknown)"""
         api = self._make_api()
         api._fetch = AsyncMock(return_value=self._unsubscribed_response())
         result = await api._get_warning("L1100200")
-        assert result == "없음"
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_notification_sent_exactly_once_across_multiple_calls(self):
@@ -582,7 +582,7 @@ class TestGetWarning:
     @pytest.mark.asyncio
     async def test_no_area_code_returns_none(self):
         api = self._make_api()
-        assert await api._get_warning(None) == "없음"
+        assert await api._get_warning(None) is None
 
     @pytest.mark.asyncio
     async def test_ended_warning_excluded(self):
@@ -591,7 +591,7 @@ class TestGetWarning:
             "command": "2", "cancel": "0", "endTime": "202604171700",
             "warnVar": "4", "warnStress": "0",
         }]))
-        assert await api._get_warning("L1100200") == "없음"
+        assert await api._get_warning("L1100200") == "특보없음"
 
     @pytest.mark.asyncio
     async def test_multiple_warnings_combined(self):
@@ -618,4 +618,4 @@ class TestGetWarning:
     async def test_fetch_none_returns_none(self):
         api = self._make_api()
         api._fetch = AsyncMock(return_value=None)
-        assert await api._get_warning("L1100200") == "없음"
+        assert await api._get_warning("L1100200") is None
