@@ -9,15 +9,13 @@
   - sensor.py: "warning" 센서 추가
 """
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock
 
 from custom_components.kma_weather.api_kma import (
     KMAWeatherAPI,
-    _WARN_TYPE_MAP,
     _API_SERVICES,
-    _UNSUBSCRIBED_CODES,
 )
 from custom_components.kma_weather.coordinator import (
     KMAWeatherUpdateCoordinator,
@@ -27,8 +25,6 @@ from custom_components.kma_weather.coordinator import (
     _WARN_AREA,
     _calc_reg_ids,
     _calc_warn_area_code,
-    _haversine,
-    _is_valid_korean_coord,
 )
 from custom_components.kma_weather.sensor import SENSOR_TYPES
 
