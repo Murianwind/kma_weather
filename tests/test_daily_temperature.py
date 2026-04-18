@@ -17,7 +17,6 @@ class MockHass:
 @pytest.fixture
 def coordinator():
     hass = MockHass()
-    entry = MagicMock()
     coord = KMAWeatherUpdateCoordinator.__new__(KMAWeatherUpdateCoordinator)
     coord.hass = hass
     coord.api = MagicMock()
