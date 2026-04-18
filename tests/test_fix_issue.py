@@ -7,7 +7,7 @@
 """
 import pytest
 from unittest.mock import MagicMock
-from custom_components.kma_weather.sensor import KMACustomSensor, SENSOR_TYPES
+from custom_components.kma_weather.sensor import KMACustomSensor
 
 
 @pytest.mark.asyncio
