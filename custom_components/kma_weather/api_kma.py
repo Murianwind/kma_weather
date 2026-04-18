@@ -184,8 +184,6 @@ class KMAWeatherAPI:
         short_res, mid_res, air_data, address, warning = [
             r if not isinstance(r, Exception) else None for r in results
         ]
-        if warning is None:
-            warning = "없음"
         return self._merge_all(now, short_res, mid_res, air_data, address, warning)
 
     # ── 주소 (Nominatim) ────────────────────────────────────────────────────
@@ -366,16 +364,16 @@ class KMAWeatherAPI:
         )
 
     # ── 기상특보 (warn_area_code를 파라미터로 수신) ─────────────────────────
-    async def _get_warning(self, warn_area_code: str | None) -> str:
+    async def _get_warning(self, warn_area_code: str | None) -> str | None:
         if not warn_area_code:
-            return "없음"
+            return None
         try:
             now = datetime.now(self.tz)
             from_tm = (now - timedelta(days=5)).strftime("%Y%m%d")
             to_tm = now.strftime("%Y%m%d")
 
             data = await self._fetch(
-                "https://apis.data.go.kr/1360000/WthrWrnInfoService/getPwnCd",
+                "http://apis.data.go.kr/1360000/WthrWrnInfoService/getPwnCd",
                 {"serviceKey": self.api_key, "dataType": "JSON",
                  "areaCode": warn_area_code,
                  "fromTmFc": from_tm, "toTmFc": to_tm,
@@ -383,9 +381,9 @@ class KMAWeatherAPI:
             )
             code = self._extract_result_code(data)
             if code and self._check_unsubscribed("warning", code):
-                return "없음"
+                return None  # API 미신청 → 센서 unknown
             if not data:
-                return "없음"
+                return None
 
             items = (
                 data.get("response", {})
@@ -394,7 +392,7 @@ class KMAWeatherAPI:
                     .get("item", [])
             )
             if not items:
-                return "없음"
+                return "특보없음"
 
             active = [
                 item for item in items
@@ -403,7 +401,7 @@ class KMAWeatherAPI:
                 and str(item.get("endTime", "1")) == "0"
             ]
             if not active:
-                return "없음"
+                return "특보없음"
 
             warn_names, seen = [], set()
             for item in active:
@@ -414,11 +412,11 @@ class KMAWeatherAPI:
                         seen.add(name)
                         warn_names.append(name)
 
-            return ", ".join(warn_names) if warn_names else "없음"
+            return ", ".join(warn_names) if warn_names else "특보없음"
 
         except Exception as e:
             _LOGGER.error("기상특보 조회 오류: %s", e)
-            return "없음"
+            return None
 
     # ── 유틸리티 ────────────────────────────────────────────────────────────
     def _haversine_simple(self, lat1, lon1, lat2, lon2) -> float:
@@ -467,7 +465,7 @@ class KMAWeatherAPI:
         return wf_am, wf_pm
 
     # ── 데이터 병합 ─────────────────────────────────────────────────────────
-    def _merge_all(self, now, short_res, mid_res, air_data, address=None, warning="없음"):
+    def _merge_all(self, now, short_res, mid_res, air_data, address=None, warning=None):
         weather_data = {
             "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None,
             "TMX_today": None, "TMN_today": None, "TMX_tomorrow": None, "TMN_tomorrow": None,
