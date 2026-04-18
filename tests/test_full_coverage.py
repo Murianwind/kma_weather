@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from custom_components.kma_weather.api_kma import KMAWeatherAPI
-from custom_components.kma_weather.sensor import KMACustomSensor, SENSOR_TYPES
+from custom_components.kma_weather.sensor import KMACustomSensor
 
 TZ = ZoneInfo("Asia/Seoul")
 
