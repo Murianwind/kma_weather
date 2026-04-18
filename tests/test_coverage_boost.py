@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from custom_components.kma_weather.api_kma import KMAWeatherAPI, _safe_float
 
@@ -119,7 +119,6 @@ class TestWgs84ToTm:
 async def test_air_quality_cache_hit():
     api = KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
     api.lat, api.lon = 37.56, 126.98
-    now = datetime.now(ZoneInfo("Asia/Seoul"))
     api._cached_station = "화성"
     api._cached_station_lat = 37.56
     api._cached_station_lon = 126.98
@@ -213,7 +212,6 @@ async def test_restore_daily_temps_date_mismatch(hass):
 @pytest.mark.asyncio
 async def test_save_daily_temps(hass):
     from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    from datetime import date
     entry = MagicMock(entry_id="save_test", data={"api_key": "k", "location_entity": ""}, options={})
     coord = KMAWeatherUpdateCoordinator(hass, entry)
     coord._daily_date = date(2025, 6, 1)
