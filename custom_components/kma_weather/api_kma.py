@@ -373,7 +373,7 @@ class KMAWeatherAPI:
             to_tm = now.strftime("%Y%m%d")
 
             data = await self._fetch(
-                "http://apis.data.go.kr/1360000/WthrWrnInfoService/getPwnCd",
+                "https://apis.data.go.kr/1360000/WthrWrnInfoService/getPwnCd",
                 {"serviceKey": self.api_key, "dataType": "JSON",
                  "areaCode": warn_area_code,
                  "fromTmFc": from_tm, "toTmFc": to_tm,
