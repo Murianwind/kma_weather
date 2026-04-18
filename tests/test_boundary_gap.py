@@ -8,7 +8,7 @@
 """
 
 import pytest
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from unittest.mock import MagicMock
 
