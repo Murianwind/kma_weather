@@ -441,15 +441,15 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             for offset in (0, 1, 2):
                 t0, t1 = _ts_range(today + timedelta(days=offset))
                 times, events = _almanac.find_discrete(t0, t1, f_tw)
-                prev_e = None
+                # t0 시각의 실제 상태를 초기값으로 사용 (prev_e=None이면 첫 이벤트 skip됨)
+                prev_e = int(f_tw(t0))
                 for t, cur_e in zip(times, events):
                     local_t = t.astimezone(tz)
-                    # prev_e는 now 이전/이후 관계없이 항상 갱신
-                    if prev_e is not None and local_t > now:
-                        key = _TW_MAP.get((int(prev_e), int(cur_e)))
+                    if local_t > now:
+                        key = _TW_MAP.get((prev_e, int(cur_e)))
                         if key and key not in result:
                             result[key] = _fmt(local_t)
-                    prev_e = int(cur_e)   # 항상 갱신
+                    prev_e = int(cur_e)
                 if all(k in result for k in ("dawn", "dusk", "astro_dawn", "astro_dusk")):
                     break
 
