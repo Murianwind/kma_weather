@@ -50,6 +50,8 @@ def make_coordinator(hass, entry):
     coord._sun_cache_lat = None
     coord._sun_cache_lon = None
     coord._cached_data = None
+    coord._sf_ts  = _TEST_SF_TS
+    coord._sf_eph = _TEST_SF_EPH
     return coord
 
 
