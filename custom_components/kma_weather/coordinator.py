@@ -105,21 +105,64 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._sun_times: dict = {}
 
         # skyfield: 고정밀 천문 계산 (월출/월몰 포함)
+        # bsp 파일이 이미 존재할 때만 로드 (네트워크 없이 동작 보장)
         self._sf_eph = None
         self._sf_ts  = None
         if _SKYFIELD_OK:
-            try:
-                _loader = _SkyLoader(hass.config.config_dir + "/.skyfield")
-                self._sf_ts  = _loader.timescale()
-                self._sf_eph = _loader("de440s.bsp")
-                _LOGGER.debug("skyfield de440s.bsp 로드 완료")
-            except Exception as e:
-                _LOGGER.warning("skyfield 초기화 실패 (천문 센서 unavailable): %s", e)
+            import os as _os, tempfile as _tf
+            _sf_dir   = hass.config.config_dir + "/.skyfield"
+            _bsp_path = _sf_dir + "/de440s.bsp"
+            # 환경변수 또는 테스트용 캐시 경로 fallback
+            if not _os.path.exists(_bsp_path):
+                _fallback = _os.environ.get(
+                    "SKYFIELD_BSP_DIR",
+                    _os.path.join(_tf.gettempdir(), "skyfield_test_cache"),
+                )
+                if _os.path.exists(_fallback + "/de440s.bsp"):
+                    _sf_dir = _fallback
+                    _bsp_path = _fallback + "/de440s.bsp"
+            if _os.path.exists(_bsp_path):
+                try:
+                    _loader = _SkyLoader(_sf_dir)
+                    self._sf_ts  = _loader.timescale()
+                    self._sf_eph = _loader("de440s.bsp")
+                    _LOGGER.debug("skyfield de440s.bsp 로드 완료")
+                except Exception as e:
+                    _LOGGER.warning("skyfield 초기화 실패 (천문 센서 unavailable): %s", e)
+            else:
+                # bsp 없으면 백그라운드에서 비동기 다운로드 시도
+                _sf_dir = hass.config.config_dir + "/.skyfield"
+                hass.async_create_task(self._async_init_skyfield(_sf_dir))
 
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
         safe_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
         self._store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_daily_temp")
         self._store_loaded = False
+
+    async def _async_init_skyfield(self, sf_dir: str) -> None:
+        """de440s.bsp 파일을 비동기로 다운로드 후 skyfield 초기화"""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._sync_init_skyfield, sf_dir)
+        except Exception as e:
+            _LOGGER.warning("skyfield 비동기 초기화 실패: %s", e)
+
+    def _sync_init_skyfield(self, sf_dir: str) -> None:
+        """동기 컨텍스트에서 skyfield 로드 (executor에서 실행)"""
+        if not _SKYFIELD_OK:
+            return
+        try:
+            import os as _os
+            _os.makedirs(sf_dir, exist_ok=True)
+            _loader = _SkyLoader(sf_dir)
+            ts  = _loader.timescale()
+            eph = _loader("de440s.bsp")
+            self._sf_ts  = ts
+            self._sf_eph = eph
+            _LOGGER.debug("skyfield de440s.bsp 백그라운드 로드 완료")
+        except Exception as e:
+            _LOGGER.warning("skyfield 백그라운드 초기화 실패: %s", e)
 
     # ── 위치 → 모든 구역코드 결정 (2km 캐시 통합) ───────────────────────────
     def _resolve_area_codes(self, lat: float, lon: float) -> tuple:
