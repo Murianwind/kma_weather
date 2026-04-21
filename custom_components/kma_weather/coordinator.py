@@ -402,10 +402,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             result["moon_illumination"] = self._moon_illumination(p)
 
             # ── 월출/월몰 ──────────────────────────────────────────────────
+            # 달이 뜨지 않는 날(None 반환)이 있으므로 최대 3일까지 탐색
             for label, func in (("moonrise", moonrise), ("moonset", moonset)):
                 found = None
                 if func is not None:
-                    for offset in (0, 1):
+                    for offset in (0, 1, 2):
                         d = today + timedelta(days=offset)
                         try:
                             t = func(loc.observer, date=d, tzinfo=tz)
