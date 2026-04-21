@@ -269,7 +269,7 @@ class TestEvalObservation:
         assert self._eval(22, "sunny", 60) == "보통"
 
     def test_night_poor(self):
-        assert self._eval(22, "sunny", 80) == "불량 (달빛)"
+        assert self._eval(22, "sunny", 80) == "불량"
 
     def test_dawn_clear_excellent(self):
         """새벽 1시, 맑음, 달 없음 → 최우수"""
@@ -293,8 +293,8 @@ class TestEvalObservation:
         (50,  "우수"),
         (51,  "보통"),
         (75,  "보통"),
-        (76,  "불량 (달빛)"),
-        (100, "불량 (달빛)"),
+        (76,  "불량"),
+        (100, "불량"),
     ])
     def test_illumination_boundaries(self, illum, expected):
         result = self._eval(22, "sunny", illum)
@@ -455,7 +455,7 @@ async def test_observation_condition_valid(hass, mock_config_entry, kma_api_mock
     await hass.async_block_till_done()
 
     valid_conditions = {
-        "최우수", "우수", "보통", "불량 (달빛)",
+        "최우수", "우수", "보통", "불량",
         "관측불가", "관측불가", "관측불가",
     }
     state = hass.states.get("sensor.test_observation_condition")
