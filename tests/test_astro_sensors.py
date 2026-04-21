@@ -12,12 +12,25 @@ import pytest
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from unittest.mock import patch, MagicMock
-from astral import LocationInfo
-from astral.sun import elevation as sun_elevation
-from astral.moon import phase as moon_phase
-
-from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator, _SKYFIELD_OK
 from custom_components.kma_weather.const import DOMAIN
+
+# 테스트용 skyfield 객체 (GitHub Actions에서 de440s.bsp 자동 다운로드)
+try:
+    from skyfield.api import Loader as _TestLoader
+    import os, tempfile
+    _SF_DIR = os.path.join(tempfile.gettempdir(), "skyfield_test_cache")
+    os.makedirs(_SF_DIR, exist_ok=True)
+    _loader = _TestLoader(_SF_DIR)
+    _TEST_SF_TS  = _loader.timescale()
+    _TEST_SF_EPH = _loader("de440s.bsp")
+    _TEST_SF_OK  = True
+except Exception:
+    _TEST_SF_OK  = False
+    _TEST_SF_TS  = None
+    _TEST_SF_EPH = None
+
+_skip_no_sf = pytest.mark.skipif(not _TEST_SF_OK, reason="skyfield/de440s.bsp 없음")
 
 TZ = ZoneInfo("Asia/Seoul")
 LAT, LON = 37.608025, 127.094222
@@ -43,75 +56,71 @@ def make_coordinator(hass, entry):
 # ── 달 위상 이름 ───────────────────────────────────────────────────────────────
 
 class TestMoonPhaseName:
-    """_moon_phase_name: 8단계 이름 반환"""
+    """_moon_phase_name: skyfield 0~360° 기준 8단계 이름 반환"""
 
-    @pytest.mark.parametrize("p, expected", [
-        (0.0,  "삭"),
-        (1.0,  "삭"),
-        (1.85, "초승달"),
-        (4.0,  "초승달"),
-        (7.38, "상현달"),
-        (9.0,  "상현달"),
-        (11.07,"준상현달"),
-        (13.0, "준상현달"),
-        (14.77,"보름달"),
-        (16.0, "보름달"),
-        (18.46,"준하현달"),
-        (20.0, "준하현달"),
-        (22.15,"하현달"),
-        (24.0, "하현달"),
-        (25.84,"그믐달"),
-        (28.0, "그믐달"),
-        (29.53,"삭"),  # 경계: 마지막 값 → 삭
+    @pytest.mark.parametrize("deg, expected", [
+        (0.0,   "삭"),
+        (11.0,  "삭"),
+        (22.5,  "초승달"),
+        (45.0,  "초승달"),
+        (67.5,  "상현달"),
+        (90.0,  "상현달"),
+        (112.5, "준상현달"),
+        (135.0, "준상현달"),
+        (157.5, "보름달"),
+        (180.0, "보름달"),
+        (202.5, "준하현달"),
+        (225.0, "준하현달"),
+        (247.5, "하현달"),
+        (270.0, "하현달"),
+        (292.5, "그믐달"),
+        (315.0, "그믐달"),
+        (337.5, "삭"),
+        (359.9, "삭"),
+        (360.0, "삭"),  # % 360 = 0 → 삭
     ])
-    def test_phase_name(self, p, expected):
-        result = KMAWeatherUpdateCoordinator._moon_phase_name(p)
-        assert result == expected, f"위상값 {p} → 기대={expected}, 실제={result}"
+    def test_phase_name(self, deg, expected):
+        result = KMAWeatherUpdateCoordinator._moon_phase_name(deg)
+        assert result == expected, f"위상각 {deg}° → 기대={expected}, 실제={result}"
 
-    def test_no_신월_name(self):
-        """'신월' 이름은 더 이상 사용하지 않음"""
-        for p in [0.0, 0.5, 1.0, 1.84]:
-            assert KMAWeatherUpdateCoordinator._moon_phase_name(p) == "삭"
-
-    def test_no_상현이후_name(self):
-        """'상현 이후' 이름은 더 이상 사용하지 않음"""
-        for p in [11.07, 12.0, 14.76]:
-            assert KMAWeatherUpdateCoordinator._moon_phase_name(p) == "준상현달"
-
-    def test_no_하현이전_name(self):
-        """'하현 이전' 이름은 더 이상 사용하지 않음"""
-        for p in [18.46, 19.0, 22.14]:
-            assert KMAWeatherUpdateCoordinator._moon_phase_name(p) == "준하현달"
+    def test_valid_names_only(self):
+        """반환값이 항상 유효한 8단계 이름 중 하나인지 확인"""
+        valid = {"삭", "초승달", "상현달", "준상현달", "보름달", "준하현달", "하현달", "그믐달"}
+        for deg in range(0, 361, 5):
+            name = KMAWeatherUpdateCoordinator._moon_phase_name(float(deg))
+            assert name in valid, f"{deg}° → '{name}' 유효하지 않음"
 
 
 # ── 달 조명율 ─────────────────────────────────────────────────────────────────
 
+@_skip_no_sf
 class TestMoonIllumination:
-    """_moon_illumination: 0~100% 범위 및 주요 위상 값"""
+    """달 조명율: skyfield fraction_illuminated 기반 0~100% 검증"""
 
-    def test_new_moon_near_zero(self):
-        p = 0.0  # 삭
-        illum = KMAWeatherUpdateCoordinator._moon_illumination(p)
-        assert 0 <= illum <= 5, f"삭 조명율={illum}% (0~5 기대)"
-
-    def test_full_moon_near_100(self):
-        p = 14.77  # 보름달
-        illum = KMAWeatherUpdateCoordinator._moon_illumination(p)
-        assert illum >= 95, f"보름달 조명율={illum}% (95~100 기대)"
-
-    def test_quarter_moon_near_50(self):
-        p = 7.38  # 상현달
-        illum = KMAWeatherUpdateCoordinator._moon_illumination(p)
-        assert 40 <= illum <= 60, f"상현달 조명율={illum}% (40~60 기대)"
-
-    def test_range_always_0_to_100(self):
-        for p in [i * 29.53 / 100 for i in range(101)]:
-            illum = KMAWeatherUpdateCoordinator._moon_illumination(p)
-            assert 0 <= illum <= 100, f"위상={p:.2f} → 조명율={illum}% 범위 벗어남"
+    def test_range_in_calc_result(self):
+        """_calc_sun_times 결과의 달 조명율이 0~100% 범위인지 확인"""
+        from unittest.mock import MagicMock
+        coord = MagicMock()
+        coord.api.tz = TZ
+        coord._sun_times = {}
+        coord._sun_cache_date = None
+        coord._sun_cache_lat = None
+        coord._sun_cache_lon = None
+        coord._sf_ts  = _TEST_SF_TS
+        coord._sf_eph = _TEST_SF_EPH
+        coord._moon_phase_name = staticmethod(KMAWeatherUpdateCoordinator._moon_phase_name)
+        if not _TEST_SF_OK:
+            return  # skyfield 없으면 skip
+        now = datetime(2026, 4, 21, 13, 0, tzinfo=TZ)
+        result = KMAWeatherUpdateCoordinator._calc_sun_times(coord, LAT, LON, now)
+        illum = result.get("moon_illumination")
+        assert illum is not None, "달 조명율 없음"
+        assert 0 <= illum <= 100, f"달 조명율={illum}% 범위 벗어남"
 
 
 # ── 천문 시각 오늘/내일 접두어 ─────────────────────────────────────────────────
 
+@_skip_no_sf
 class TestCalcSunTimes:
     """_calc_sun_times: 반환값 형식 및 오늘/내일 접두어"""
 
@@ -126,9 +135,10 @@ class TestCalcSunTimes:
         coord._sun_cache_date = None
         coord._sun_cache_lat = None
         coord._sun_cache_lon = None
+        coord._sf_ts  = _TEST_SF_TS
+        coord._sf_eph = _TEST_SF_EPH
         # staticmethod는 MagicMock에서 mock되므로 실제 구현으로 교체
         coord._moon_phase_name = staticmethod(KMAWeatherUpdateCoordinator._moon_phase_name)
-        coord._moon_illumination = staticmethod(KMAWeatherUpdateCoordinator._moon_illumination)
 
         now = datetime(2026, 4, 21, hour, 0, tzinfo=TZ)
         return KMAWeatherUpdateCoordinator._calc_sun_times(coord, LAT, LON, now)
@@ -231,6 +241,7 @@ class TestCalcSunTimes:
 
 # ── 관측 조건 평가 ────────────────────────────────────────────────────────────
 
+@_skip_no_sf
 class TestEvalObservation:
     """_eval_observation: 날씨·태양 고도·달 조명율 종합 평가"""
 
@@ -238,6 +249,8 @@ class TestEvalObservation:
         from unittest.mock import MagicMock
         coord = MagicMock()
         coord.api.tz = TZ
+        coord._sf_ts  = _TEST_SF_TS
+        coord._sf_eph = _TEST_SF_EPH
         weather = {"current_condition": condition, "moon_illumination": illum}
         now = datetime(2026, 4, 21, hour, 0, tzinfo=TZ)
         return KMAWeatherUpdateCoordinator._eval_observation(coord, weather, now, LAT, LON)
@@ -383,6 +396,7 @@ class TestRealtimeKeysCache:
 # ── 통합: 실제 HA 환경에서 신규 센서 등록 확인 ────────────────────────────────
 
 @pytest.mark.asyncio
+@_skip_no_sf
 async def test_astro_sensors_registered(hass, mock_config_entry, kma_api_mock_factory):
     """신규 천문 센서들이 HA에 정상 등록되는지 확인"""
     hass.config.latitude = LAT
@@ -414,6 +428,7 @@ async def test_astro_sensors_registered(hass, mock_config_entry, kma_api_mock_fa
 
 
 @pytest.mark.asyncio
+@_skip_no_sf
 async def test_moon_phase_values(hass, mock_config_entry, kma_api_mock_factory):
     """달 위상 센서가 유효한 8단계 값을 반환하는지 확인"""
     hass.config.latitude = LAT
@@ -431,6 +446,7 @@ async def test_moon_phase_values(hass, mock_config_entry, kma_api_mock_factory):
 
 
 @pytest.mark.asyncio
+@_skip_no_sf
 async def test_moon_illumination_range(hass, mock_config_entry, kma_api_mock_factory):
     """달 조명율이 0~100% 범위 내인지 확인"""
     hass.config.latitude = LAT
@@ -448,6 +464,7 @@ async def test_moon_illumination_range(hass, mock_config_entry, kma_api_mock_fac
 
 
 @pytest.mark.asyncio
+@_skip_no_sf
 async def test_observation_condition_valid(hass, mock_config_entry, kma_api_mock_factory):
     """관측 조건 센서가 유효한 값을 반환하는지 확인"""
     hass.config.latitude = LAT
@@ -468,6 +485,7 @@ async def test_observation_condition_valid(hass, mock_config_entry, kma_api_mock
 
 
 @pytest.mark.asyncio
+@_skip_no_sf
 async def test_sun_time_format(hass, mock_config_entry, kma_api_mock_factory):
     """일출/일몰/새벽/황혼 센서 값 형식이 '오늘 HH:MM' 또는 '내일 HH:MM'인지 확인"""
     hass.config.latitude = LAT
@@ -492,6 +510,7 @@ async def test_sun_time_format(hass, mock_config_entry, kma_api_mock_factory):
 
 
 @pytest.mark.asyncio
+@_skip_no_sf
 async def test_realtime_cache_in_coordinator(hass, mock_config_entry, kma_api_mock_factory):
     """coordinator가 실제로 '-' 값을 캐시로 복원하는지 통합 테스트"""
     from unittest.mock import patch, AsyncMock
