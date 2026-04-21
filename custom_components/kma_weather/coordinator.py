@@ -436,7 +436,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             # ── 새벽/황혼/천문박명 (dark_twilight_day) ────────────────────
             # 0=Night, 1=Astronomical, 2=Nautical, 3=Civil, 4=Day
             # (3→4)=dawn, (4→3)=dusk, (0→1)=astro_dawn, (1→0)=astro_dusk
-            _TW_MAP = {(3,4):"dawn", (4,3):"dusk", (0,1):"astro_dawn", (1,0):"astro_dusk"}
+            _TW_MAP = {(2,3):"dawn", (3,2):"dusk", (0,1):"astro_dawn", (1,0):"astro_dusk"}
             f_tw = _almanac.dark_twilight_day(self._sf_eph, sf_loc)
             for offset in (0, 1, 2):
                 t0, t1 = _ts_range(today + timedelta(days=offset))
