@@ -9,6 +9,7 @@
   - 자정 unknown 방지 (_REALTIME_KEYS: 키 있고 값 '-'/None → 캐시 복원)
 """
 import pytest
+import asyncio
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from unittest.mock import patch, MagicMock
@@ -408,6 +409,12 @@ async def test_astro_sensors_registered(hass, mock_config_entry, kma_api_mock_fa
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
+    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
+    await asyncio.sleep(0.5)
+    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
     p = "test"
     expected_sensors = [
         f"sensor.{p}_dawn",
@@ -440,6 +447,12 @@ async def test_moon_phase_values(hass, mock_config_entry, kma_api_mock_factory):
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
+    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
+    await asyncio.sleep(0.5)
+    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
     valid_phases = {"삭", "초승달", "상현달", "준상현달", "보름달", "준하현달", "하현달", "그믐달"}
     state = hass.states.get("sensor.test_moon_phase")
     assert state is not None
@@ -458,6 +471,12 @@ async def test_moon_illumination_range(hass, mock_config_entry, kma_api_mock_fac
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
+    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
+    await asyncio.sleep(0.5)
+    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
     state = hass.states.get("sensor.test_moon_illumination")
     assert state is not None
     assert state.state != "unknown", "달 조명율이 unknown"
@@ -474,6 +493,12 @@ async def test_observation_condition_valid(hass, mock_config_entry, kma_api_mock
     kma_api_mock_factory("full_test")
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
+    await asyncio.sleep(0.5)
+    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    await coordinator.async_refresh()
     await hass.async_block_till_done()
 
     valid_conditions = {
@@ -495,6 +520,12 @@ async def test_sun_time_format(hass, mock_config_entry, kma_api_mock_factory):
     kma_api_mock_factory("full_test")
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
+    await asyncio.sleep(0.5)
+    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    await coordinator.async_refresh()
     await hass.async_block_till_done()
 
     p = "test"
@@ -524,7 +555,11 @@ async def test_realtime_cache_in_coordinator(hass, mock_config_entry, kma_api_mo
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
+    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
+    await asyncio.sleep(0.5)
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
 
     # 1차: 정상 데이터 → TMP=22 캐싱됨
     assert hass.states.get("sensor.test_temperature").state == "22"
