@@ -104,35 +104,24 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._sun_cache_lon: float | None = None
         self._sun_times: dict = {}
 
-        # skyfield: 고정밀 천문 계산 (월출/월몰 포함)
-        # bsp 파일이 이미 존재할 때만 로드 (네트워크 없이 동작 보장)
+                # skyfield: 고정밀 천문 계산 (월출/월몰 포함)
         self._sf_eph = None
         self._sf_ts  = None
         if _SKYFIELD_OK:
             import os as _os, tempfile as _tf
             _sf_dir   = hass.config.config_dir + "/.skyfield"
-            _bsp_path = _sf_dir + "/de440s.bsp"
+            
             # 환경변수 또는 테스트용 캐시 경로 fallback
-            if not _os.path.exists(_bsp_path):
-                _fallback = _os.environ.get(
-                    "SKYFIELD_BSP_DIR",
-                    _os.path.join(_tf.gettempdir(), "skyfield_test_cache"),
-                )
-                if _os.path.exists(_fallback + "/de440s.bsp"):
-                    _sf_dir = _fallback
-                    _bsp_path = _fallback + "/de440s.bsp"
-            if _os.path.exists(_bsp_path):
-                try:
-                    _loader = _SkyLoader(_sf_dir)
-                    self._sf_ts  = _loader.timescale()
-                    self._sf_eph = _loader("de440s.bsp")
-                    _LOGGER.debug("skyfield de440s.bsp 로드 완료")
-                except Exception as e:
-                    _LOGGER.warning("skyfield 초기화 실패 (천문 센서 unavailable): %s", e)
-            else:
-                # bsp 없으면 백그라운드에서 비동기 다운로드 시도
-                _sf_dir = hass.config.config_dir + "/.skyfield"
-                hass.async_create_task(self._async_init_skyfield(_sf_dir))
+            _fallback = _os.environ.get(
+                "SKYFIELD_BSP_DIR",
+                _os.path.join(_tf.gettempdir(), "skyfield_test_cache"),
+            )
+            if _os.path.exists(_fallback + "/de440s.bsp"):
+                _sf_dir = _fallback
+
+            # 메인 이벤트 루프 블로킹을 방지하기 위해 파일 로드를 항상 백그라운드 태스크로 위임
+            hass.async_create_task(self._async_init_skyfield(_sf_dir))
+
 
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
         safe_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
