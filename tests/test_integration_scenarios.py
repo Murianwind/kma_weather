@@ -187,7 +187,17 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-        # [Then] 센서가 에러(unavailable) 없이 "unknown"으로 안전하게 처리되는지 전수 검사
+        # [Then] 센서가 에러(unavailable) 없이 안전하게 처리되는지 전수 검사
+        # 아래 센서는 unknown 검사 제외:
+        #  - _REALTIME_KEYS: "-" 주입 시 이전 캐시로 복원(자정 수정 의도된 동작)
+        #  - 천문/달 센서: API와 무관하게 좌표 계산으로 항상 값이 존재
+        _SKIP_UNKNOWN_CHECK = {
+            "TMP", "REH", "WSD", "VEC_KOR", "POP", "apparent_temp",  # _REALTIME_KEYS
+            "dawn", "sunrise", "sunset", "dusk",                       # 태양 시각
+            "astro_dawn", "astro_dusk",                                # 천문 박명
+            "moon_phase", "moon_illumination", "moonrise", "moonset",  # 달
+            "observation_condition",                                    # 관측 조건
+        }
         for sensor_type, details in SENSOR_TYPES.items():
             if sensor_type in ["last_updated", "api_expire"]:
                 continue
@@ -195,7 +205,9 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
             state = hass.states.get(entity_id)
             if state:
                 assert state.state != "unavailable", f"센서 {entity_id}가 unavailable 상태"
-                assert state.state == "unknown", f"센서 {entity_id}가 {state.state} (unknown 기대)"
+                # _REALTIME_KEYS 센서는 이전 캐시로 복원되므로 unknown이 아닐 수 있음
+                if sensor_type not in _SKIP_UNKNOWN_CHECK:
+                    assert state.state == "unknown", f"센서 {entity_id}가 {state.state} (unknown 기대)"
 
     # 9. [Scenario 11] 가비지 데이터 주입 시 강건성 검증
     garbage_data = {
@@ -213,8 +225,17 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         await hass.async_block_till_done()
 
         # [Then] 측정 단위가 있는 센서들은 "unknown"으로 처리되고 시스템은 유지되어야 함
+        # 천문/달 센서는 API와 무관하게 좌표 계산으로 항상 값이 존재하므로 제외
+        _ASTRO_KEYS = {
+            "dawn", "sunrise", "sunset", "dusk",
+            "astro_dawn", "astro_dusk",
+            "moon_phase", "moon_illumination", "moonrise", "moonset",
+            "observation_condition",
+        }
         for sensor_type, details in SENSOR_TYPES.items():
             if sensor_type in ["last_updated", "api_expire"]:
+                continue
+            if sensor_type in _ASTRO_KEYS:
                 continue
             entity_id = f"sensor.{p}_{details[4]}"
             state = hass.states.get(entity_id)
