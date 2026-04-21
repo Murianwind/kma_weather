@@ -401,11 +401,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 prev_e = None
                 for t, cur_e in zip(times, events):
                     local_t = t.astimezone(tz)
-                    if local_t > now and prev_e is not None:
+                    # prev_e는 now 이전/이후 관계없이 항상 갱신
+                    if prev_e is not None and local_t > now:
                         key = _TW_MAP.get((int(prev_e), int(cur_e)))
                         if key and key not in result:
                             result[key] = _fmt(local_t)
-                    prev_e = cur_e
+                    prev_e = int(cur_e)   # 항상 갱신
                 if all(k in result for k in ("dawn", "dusk", "astro_dawn", "astro_dusk")):
                     break
 
