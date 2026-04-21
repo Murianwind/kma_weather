@@ -4,15 +4,12 @@ import asyncio
 import math
 import pathlib
 from datetime import datetime, timedelta, timezone, date
-from astral import LocationInfo
-from astral.sun import (sun as astral_sun, dawn as astral_dawn, dusk as astral_dusk,
-                        time_at_elevation, SunDirection,
-                        elevation as sun_elevation)
-from astral.moon import phase as moon_phase
 try:
-    from astral.moon import moonrise, moonset  # astral >= 2.2 (HA 내장 버전)
+    from skyfield.api import Loader as _SkyLoader, wgs84 as _wgs84
+    from skyfield import almanac as _almanac
+    _SKYFIELD_OK = True
 except ImportError:
-    moonrise = moonset = None  # fallback: 계산 생략
+    _SKYFIELD_OK = False
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
@@ -105,7 +102,19 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._sun_cache_date: date | None = None
         self._sun_cache_lat: float | None = None
         self._sun_cache_lon: float | None = None
-        self._sun_times: dict = {}  # dawn, sunrise, sunset, dusk (HH:MM 문자열)
+        self._sun_times: dict = {}
+
+        # skyfield: 고정밀 천문 계산 (월출/월몰 포함)
+        self._sf_eph = None
+        self._sf_ts  = None
+        if _SKYFIELD_OK:
+            try:
+                _loader = _SkyLoader(hass.config.config_dir + "/.skyfield")
+                self._sf_ts  = _loader.timescale()
+                self._sf_eph = _loader("de440s.bsp")
+                _LOGGER.debug("skyfield de440s.bsp 로드 완료")
+            except Exception as e:
+                _LOGGER.warning("skyfield 초기화 실패 (천문 센서 unavailable): %s", e)
 
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
         safe_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
@@ -330,14 +339,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     # ── 천문 시각 계산 ──────────────────────────────────────────────────────
     def _calc_sun_times(self, lat: float, lon: float, now: datetime) -> dict:
         """
-        현재 시각 이후의 다음 천문 이벤트 시각을 계산한다.
-        이미 지난 이벤트는 내일 시각을 반환한다.
-        좌표/날짜 변경 시 재계산, 그 외엔 캐시를 반환한다.
+        skyfield를 사용해 현재 시각 이후의 다음 천문 이벤트를 계산한다.
+        skyfield 미준비 시 빈 dict를 반환한다.
 
         반환값 키:
-          dawn, sunrise, sunset, dusk  — 태양 (HH:MM)
-          astro_dawn, astro_dusk       — 천문 박명 18° (HH:MM)
-          moonrise, moonset            — 월출/월몰 (HH:MM)
+          dawn, sunrise, sunset, dusk  — 태양 (오늘/내일 HH:MM)
+          astro_dawn, astro_dusk       — 천문 박명 (오늘/내일 HH:MM)
+          moonrise, moonset            — 월출/월몰 (오늘/내일 HH:MM)
           moon_phase                   — 달 위상 이름
           moon_illumination            — 달 조명율 (정수 %)
         """
@@ -349,73 +357,82 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 and self._sun_cache_date == today):
             return self._sun_times
 
+        if self._sf_eph is None or self._sf_ts is None:
+            return self._sun_times or {}
+
         try:
-            loc = LocationInfo(latitude=lat, longitude=lon,
-                               timezone=str(self.api.tz))
-            tz  = self.api.tz
+            tz     = self.api.tz
+            sf_loc = _wgs84.latlon(lat, lon)
             result = {}
 
             def _fmt(t: datetime) -> str:
                 prefix = "오늘" if t.date() == today else "내일"
                 return f"{prefix} {t.strftime('%H:%M')}"
 
-            # ── 태양 이벤트 ────────────────────────────────────────────────
-            for event in ("dawn", "sunrise", "sunset", "dusk"):
-                found = None
-                for offset in (0, 1):
-                    d = today + timedelta(days=offset)
-                    try:
-                        if event == "dawn":
-                            t = astral_dawn(loc.observer, date=d, tzinfo=tz)
-                        elif event == "dusk":
-                            t = astral_dusk(loc.observer, date=d, tzinfo=tz)
-                        else:
-                            t = astral_sun(loc.observer, date=d, tzinfo=tz)[event]
-                        if t > now:
-                            found = t
-                            break
-                    except Exception:
-                        continue
-                result[event] = _fmt(found) if found else None
+            def _ts_range(dd):
+                t0 = self._sf_ts.from_datetime(
+                    datetime(dd.year, dd.month, dd.day, 0, 0, tzinfo=tz))
+                t1 = self._sf_ts.from_datetime(
+                    datetime(dd.year, dd.month, dd.day, 23, 59, tzinfo=tz))
+                return t0, t1
 
-            # ── 천문 박명 (18°, 별 관측 가능 시각) ────────────────────────
-            for label, elev, direction in (
-                ("astro_dawn", -18, SunDirection.RISING),
-                ("astro_dusk", -18, SunDirection.SETTING),
-            ):
-                found = None
-                for offset in (0, 1):
-                    d = today + timedelta(days=offset)
-                    try:
-                        t = time_at_elevation(loc.observer, elevation=elev,
-                                              date=d, direction=direction, tzinfo=tz)
-                        if t > now:
-                            found = t
-                            break
-                    except Exception:
-                        continue
-                result[label] = _fmt(found) if found else None
+            # ── 일출/일몰 ──────────────────────────────────────────────────
+            f_ss = _almanac.sunrise_sunset(self._sf_eph, sf_loc)
+            for offset in (0, 1):
+                t0, t1 = _ts_range(today + timedelta(days=offset))
+                for t, e in zip(*_almanac.find_discrete(t0, t1, f_ss)):
+                    local_t = t.astimezone(tz)
+                    if local_t > now:
+                        if e and "sunrise" not in result:
+                            result["sunrise"] = _fmt(local_t)
+                        elif not e and "sunset" not in result:
+                            result["sunset"] = _fmt(local_t)
+                if "sunrise" in result and "sunset" in result:
+                    break
 
-            # ── 달 위상/조명율 (오늘 날짜 기준) ───────────────────────────
-            p = moon_phase(today)
-            result["moon_phase"]        = self._moon_phase_name(p)
-            result["moon_illumination"] = self._moon_illumination(p)
+            # ── 새벽/황혼/천문박명 (dark_twilight_day) ────────────────────
+            # 0=Night, 1=Astronomical, 2=Nautical, 3=Civil, 4=Day
+            # (3→4)=dawn, (4→3)=dusk, (0→1)=astro_dawn, (1→0)=astro_dusk
+            _TW_MAP = {(3,4):"dawn", (4,3):"dusk", (0,1):"astro_dawn", (1,0):"astro_dusk"}
+            f_tw = _almanac.dark_twilight_day(self._sf_eph, sf_loc)
+            for offset in (0, 1):
+                t0, t1 = _ts_range(today + timedelta(days=offset))
+                times, events = _almanac.find_discrete(t0, t1, f_tw)
+                prev_e = None
+                for t, cur_e in zip(times, events):
+                    local_t = t.astimezone(tz)
+                    if local_t > now and prev_e is not None:
+                        key = _TW_MAP.get((int(prev_e), int(cur_e)))
+                        if key and key not in result:
+                            result[key] = _fmt(local_t)
+                    prev_e = cur_e
+                if all(k in result for k in ("dawn", "dusk", "astro_dawn", "astro_dusk")):
+                    break
 
-            # ── 월출/월몰 ──────────────────────────────────────────────────
-            # 달이 뜨지 않는 날(None 반환)이 있으므로 최대 3일까지 탐색
-            for label, func in (("moonrise", moonrise), ("moonset", moonset)):
-                found = None
-                if func is not None:
-                    for offset in (0, 1, 2):
-                        d = today + timedelta(days=offset)
-                        try:
-                            t = func(loc.observer, date=d, tzinfo=tz)
-                            if t and t > now:
-                                found = t
-                                break
-                        except Exception:
-                            continue
-                result[label] = _fmt(found) if found else None
+            # ── 달 위상/조명율 ─────────────────────────────────────────────
+            t_now = self._sf_ts.from_datetime(now)
+            phase_deg = _almanac.moon_phase(self._sf_eph, t_now).degrees
+            result["moon_phase"]        = self._moon_phase_name(phase_deg)
+            result["moon_illumination"] = round(
+                _almanac.fraction_illuminated(self._sf_eph, "moon", t_now) * 100)
+
+            # ── 월출/월몰 (달이 없는 날 있으므로 3일 탐색) ────────────────
+            f_rs = _almanac.risings_and_settings(
+                self._sf_eph, self._sf_eph["Moon"], sf_loc)
+            next_rise = next_set = None
+            for offset in (0, 1, 2):
+                t0, t1 = _ts_range(today + timedelta(days=offset))
+                for t, e in zip(*_almanac.find_discrete(t0, t1, f_rs)):
+                    local_t = t.astimezone(tz)
+                    if local_t > now:
+                        if e and next_rise is None:
+                            next_rise = local_t
+                        elif not e and next_set is None:
+                            next_set = local_t
+                if next_rise and next_set:
+                    break
+            result["moonrise"] = _fmt(next_rise) if next_rise else None
+            result["moonset"]  = _fmt(next_set)  if next_set  else None
 
             self._sun_cache_date = today
             self._sun_cache_lat  = lat
@@ -430,21 +447,18 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         return result
 
     @staticmethod
-    def _moon_phase_name(p: float) -> str:
-        if   p <  1.85: return "삭"
-        elif p <  7.38: return "초승달"
-        elif p < 11.07: return "상현달"
-        elif p < 14.77: return "준상현달"
-        elif p < 18.46: return "보름달"
-        elif p < 22.15: return "준하현달"
-        elif p < 25.84: return "하현달"
-        elif p < 29.53: return "그믐달"
+    def _moon_phase_name(deg: float) -> str:
+        """skyfield moon_phase 반환값(0~360°) 기준 8단계 위상 이름"""
+        d = deg % 360
+        if   d <  22.5: return "삭"
+        elif d <  67.5: return "초승달"
+        elif d < 112.5: return "상현달"
+        elif d < 157.5: return "준상현달"
+        elif d < 202.5: return "보름달"
+        elif d < 247.5: return "준하현달"
+        elif d < 292.5: return "하현달"
+        elif d < 337.5: return "그믐달"
         return "삭"
-
-    @staticmethod
-    def _moon_illumination(p: float) -> int:
-        angle = p / 29.53 * 360
-        return round((1 - abs(180 - angle % 360) / 180) * 100)
 
     def _eval_observation(self, weather: dict, now: datetime,
                           lat: float, lon: float) -> str:
@@ -461,12 +475,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         if condition == "cloudy":
             return "관측불가"
 
-        # 2. 태양 고도 직접 계산 (-18° 이하이면 천문 박명 종료, 관측 가능)
+        # 2. 태양 고도 계산 (skyfield, -18° 이하이면 관측 가능)
         try:
-            from astral import LocationInfo as _Loc
-            _loc = _Loc(latitude=lat, longitude=lon, timezone=str(self.api.tz))
-            elev = sun_elevation(_loc.observer, dateandtime=now)
-            if elev > -18:
+            if self._sf_eph is None or self._sf_ts is None:
+                return "관측불가"
+            sf_loc = _wgs84.latlon(lat, lon)
+            t_now  = self._sf_ts.from_datetime(now)
+            alt, _, _ = (self._sf_eph["Earth"] + sf_loc).at(t_now)                        .observe(self._sf_eph["Sun"]).apparent().altaz()
+            if alt.degrees > -18:
                 return "관측불가"
         except Exception:
             return "관측불가"
