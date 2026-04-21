@@ -299,7 +299,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if self._cached_data:
                     prev_weather = self._cached_data.get("weather", {})
                     for _key in _REALTIME_KEYS:
-                        if weather.get(_key) in (None, "-", ""):
+                        # 키가 실제로 존재하고 값이 '-'/None인 경우에만 보완
+                        # 키 자체가 없는 경우(누락 데이터)는 보완하지 않음
+                        if _key in weather and weather[_key] in (None, "-", ""):
                             prev_val = prev_weather.get(_key)
                             if prev_val not in (None, "-", ""):
                                 weather[_key] = prev_val
