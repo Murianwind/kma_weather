@@ -421,7 +421,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
             # ── 일출/일몰 ──────────────────────────────────────────────────
             f_ss = _almanac.sunrise_sunset(self._sf_eph, sf_loc)
-            for offset in (0, 1):
+            for offset in (0, 1, 2):
                 t0, t1 = _ts_range(today + timedelta(days=offset))
                 for t, e in zip(*_almanac.find_discrete(t0, t1, f_ss)):
                     local_t = t.astimezone(tz)
@@ -438,7 +438,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             # (3→4)=dawn, (4→3)=dusk, (0→1)=astro_dawn, (1→0)=astro_dusk
             _TW_MAP = {(3,4):"dawn", (4,3):"dusk", (0,1):"astro_dawn", (1,0):"astro_dusk"}
             f_tw = _almanac.dark_twilight_day(self._sf_eph, sf_loc)
-            for offset in (0, 1):
+            for offset in (0, 1, 2):
                 t0, t1 = _ts_range(today + timedelta(days=offset))
                 times, events = _almanac.find_discrete(t0, t1, f_tw)
                 prev_e = None
