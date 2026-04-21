@@ -3,7 +3,12 @@ import logging
 import asyncio
 import math
 import pathlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
+from astral import LocationInfo
+from astral.sun import (sun as astral_sun, dawn as astral_dawn, dusk as astral_dusk,
+                        time_at_elevation, SunDirection,
+                        elevation as sun_elevation)
+from astral.moon import phase as moon_phase, moonrise, moonset
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
@@ -91,6 +96,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._cached_reg_id_temp: str | None = None
         self._cached_reg_id_land: str | None = None
         self._cached_warn_area_code: str | None = None
+
+        # ── 천문 시각 캐시 (날짜/좌표 변경 시 재계산) ───────────────────────
+        self._sun_cache_date: date | None = None
+        self._sun_cache_lat: float | None = None
+        self._sun_cache_lon: float | None = None
+        self._sun_times: dict = {}  # dawn, sunrise, sunset, dusk (HH:MM 문자열)
 
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
         safe_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
@@ -280,12 +291,189 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
                 self._sync_today_forecast(weather)
 
+                # ── 현재 상태값이 '-'/None이면 이전 캐시 값으로 보완 ──────────
+                # 기상청 발표 직후 일부 시각 슬롯이 '-'로 내려오는 경우 방어
+                _REALTIME_KEYS = (
+                    "TMP", "REH", "WSD", "VEC", "VEC_KOR", "POP", "apparent_temp"
+                )
+                if self._cached_data:
+                    prev_weather = self._cached_data.get("weather", {})
+                    for _key in _REALTIME_KEYS:
+                        if weather.get(_key) in (None, "-", ""):
+                            prev_val = prev_weather.get(_key)
+                            if prev_val not in (None, "-", ""):
+                                weather[_key] = prev_val
+
+                # ── 천문 시각 주입 ──────────────────────────────────────────
+                sun_times = self._calc_sun_times(curr_lat, curr_lon,
+                                                 datetime.now(self.api.tz))
+                weather.update(sun_times)
+
+                # ── 천문 관측 조건 평가 ────────────────────────────────────
+                weather["observation_condition"] = self._eval_observation(
+                    weather, datetime.now(self.api.tz), curr_lat, curr_lon
+                )
+
                 self._cached_data = new_data
                 return new_data
 
             except Exception as exc:
                 _LOGGER.error("업데이트 중 오류: %s", exc)
                 return self._cached_data
+
+    # ── 천문 시각 계산 ──────────────────────────────────────────────────────
+    def _calc_sun_times(self, lat: float, lon: float, now: datetime) -> dict:
+        """
+        현재 시각 이후의 다음 천문 이벤트 시각을 계산한다.
+        이미 지난 이벤트는 내일 시각을 반환한다.
+        좌표/날짜 변경 시 재계산, 그 외엔 캐시를 반환한다.
+
+        반환값 키:
+          dawn, sunrise, sunset, dusk  — 태양 (HH:MM)
+          astro_dawn, astro_dusk       — 천문 박명 18° (HH:MM)
+          moonrise, moonset            — 월출/월몰 (HH:MM)
+          moon_phase                   — 달 위상 이름
+          moon_illumination            — 달 조명율 (정수 %)
+        """
+        today = now.date()
+
+        if (self._sun_cache_lat == lat
+                and self._sun_cache_lon == lon
+                and self._sun_times
+                and self._sun_cache_date == today):
+            return self._sun_times
+
+        try:
+            loc = LocationInfo(latitude=lat, longitude=lon,
+                               timezone=str(self.api.tz))
+            tz  = self.api.tz
+            result = {}
+
+            def _fmt(t: datetime) -> str:
+                prefix = "오늘" if t.date() == today else "내일"
+                return f"{prefix} {t.strftime('%H:%M')}"
+
+            # ── 태양 이벤트 ────────────────────────────────────────────────
+            for event in ("dawn", "sunrise", "sunset", "dusk"):
+                found = None
+                for offset in (0, 1):
+                    d = today + timedelta(days=offset)
+                    try:
+                        if event == "dawn":
+                            t = astral_dawn(loc.observer, date=d, tzinfo=tz)
+                        elif event == "dusk":
+                            t = astral_dusk(loc.observer, date=d, tzinfo=tz)
+                        else:
+                            t = astral_sun(loc.observer, date=d, tzinfo=tz)[event]
+                        if t > now:
+                            found = t
+                            break
+                    except Exception:
+                        continue
+                result[event] = _fmt(found) if found else None
+
+            # ── 천문 박명 (18°, 별 관측 가능 시각) ────────────────────────
+            for label, elev, direction in (
+                ("astro_dawn", -18, SunDirection.RISING),
+                ("astro_dusk", -18, SunDirection.SETTING),
+            ):
+                found = None
+                for offset in (0, 1):
+                    d = today + timedelta(days=offset)
+                    try:
+                        t = time_at_elevation(loc.observer, elevation=elev,
+                                              date=d, direction=direction, tzinfo=tz)
+                        if t > now:
+                            found = t
+                            break
+                    except Exception:
+                        continue
+                result[label] = _fmt(found) if found else None
+
+            # ── 달 위상/조명율 (오늘 날짜 기준) ───────────────────────────
+            p = moon_phase(today)
+            result["moon_phase"]        = self._moon_phase_name(p)
+            result["moon_illumination"] = self._moon_illumination(p)
+
+            # ── 월출/월몰 ──────────────────────────────────────────────────
+            for label, func in (("moonrise", moonrise), ("moonset", moonset)):
+                found = None
+                for offset in (0, 1):
+                    d = today + timedelta(days=offset)
+                    try:
+                        t = func(loc.observer, date=d, tzinfo=tz)
+                        if t and t > now:
+                            found = t
+                            break
+                    except Exception:
+                        continue
+                result[label] = _fmt(found) if found else None
+
+            self._sun_cache_date = today
+            self._sun_cache_lat  = lat
+            self._sun_cache_lon  = lon
+            self._sun_times      = result
+            _LOGGER.debug("천문 시각 갱신: %s (lat=%.4f, lon=%.4f)", today, lat, lon)
+
+        except Exception as e:
+            _LOGGER.warning("천문 시각 계산 실패: %s", e)
+            result = self._sun_times
+
+        return result
+
+    @staticmethod
+    def _moon_phase_name(p: float) -> str:
+        if   p <  1.85: return "삭"
+        elif p <  7.38: return "초승달"
+        elif p < 11.07: return "상현달"
+        elif p < 14.77: return "준상현달"
+        elif p < 18.46: return "보름달"
+        elif p < 22.15: return "준하현달"
+        elif p < 25.84: return "하현달"
+        elif p < 29.53: return "그믐달"
+        return "삭"
+
+    @staticmethod
+    def _moon_illumination(p: float) -> int:
+        angle = p / 29.53 * 360
+        return round((1 - abs(180 - angle % 360) / 180) * 100)
+
+    def _eval_observation(self, weather: dict, now: datetime,
+                          lat: float, lon: float) -> str:
+        """
+        현재 날씨 + 태양 고도 + 달 조명율을 종합해 천문 관측 조건을 평가한다.
+        반환: "최우수" / "우수" / "보통" / "불량 (달빛)" /
+              "관측불가 (강수)" / "관측불가 (흐림)" / "관측불가 (낮/박명)"
+        """
+        # 1. 날씨
+        condition = weather.get("current_condition", "")
+        if condition in {"rainy", "pouring", "snowy", "snowy-rainy",
+                         "lightning", "lightning-rainy"}:
+            return "관측불가"
+        if condition == "cloudy":
+            return "관측불가"
+
+        # 2. 태양 고도 직접 계산 (-18° 이하이면 천문 박명 종료, 관측 가능)
+        try:
+            from astral import LocationInfo as _Loc
+            _loc = _Loc(latitude=lat, longitude=lon, timezone=str(self.api.tz))
+            elev = sun_elevation(_loc.observer, dateandtime=now)
+            if elev > -18:
+                return "관측불가"
+        except Exception:
+            return "관측불가"
+
+        # 3. 달 조명율
+        illum = weather.get("moon_illumination", 100)
+        try:
+            illum = int(illum)
+        except (TypeError, ValueError):
+            illum = 100
+
+        if illum <= 25:   return "최우수"
+        elif illum <= 50: return "우수"
+        elif illum <= 75: return "보통"
+        else:             return "불량"
 
     # ── 위치 결정 ───────────────────────────────────────────────────────────
     def _resolve_location(self) -> tuple:
