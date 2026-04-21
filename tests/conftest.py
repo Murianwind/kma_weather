@@ -86,7 +86,7 @@ MOCK_SCENARIOS = {
         }
     },
     "jeju_missing": {
-        "weather": {"TMP": None, "address": "제주시", "현재 위치": "제주시", "forecast_twice_daily": []},
+        "weather": {"address": "제주시", "현재 위치": "제주시", "forecast_twice_daily": []},
         "air": {}
     }
 }
