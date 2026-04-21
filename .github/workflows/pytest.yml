@@ -41,16 +41,16 @@ jobs:
 
       - name: Download skyfield ephemeris (de440s.bsp)
         run: |
-          python - <<'PYEOF'
-import os, tempfile
-from skyfield.api import Loader
-cache_dir = os.path.join(tempfile.gettempdir(), "skyfield_test_cache")
-os.makedirs(cache_dir, exist_ok=True)
-load = Loader(cache_dir)
-load.timescale()
-load("de440s.bsp")
-print("de440s.bsp 다운로드 완료")
-PYEOF
+          python -c "
+          import os, tempfile
+          from skyfield.api import Loader
+          cache_dir = os.path.join(tempfile.gettempdir(), 'skyfield_test_cache')
+          os.makedirs(cache_dir, exist_ok=True)
+          load = Loader(cache_dir)
+          load.timescale()
+          load('de440s.bsp')
+          print('de440s.bsp 다운로드 완료')
+          "
 
       - name: Run Pytest
         # --color=no: ANSI 색상 코드 제거 → 이후 파싱 정확
