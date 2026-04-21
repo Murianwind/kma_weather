@@ -8,7 +8,11 @@ from astral import LocationInfo
 from astral.sun import (sun as astral_sun, dawn as astral_dawn, dusk as astral_dusk,
                         time_at_elevation, SunDirection,
                         elevation as sun_elevation)
-from astral.moon import phase as moon_phase, moonrise, moonset
+from astral.moon import phase as moon_phase
+try:
+    from astral.moon import moonrise, moonset  # astral >= 2.2 (HA 내장 버전)
+except ImportError:
+    moonrise = moonset = None  # fallback: 계산 생략
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
@@ -400,15 +404,16 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             # ── 월출/월몰 ──────────────────────────────────────────────────
             for label, func in (("moonrise", moonrise), ("moonset", moonset)):
                 found = None
-                for offset in (0, 1):
-                    d = today + timedelta(days=offset)
-                    try:
-                        t = func(loc.observer, date=d, tzinfo=tz)
-                        if t and t > now:
-                            found = t
-                            break
-                    except Exception:
-                        continue
+                if func is not None:
+                    for offset in (0, 1):
+                        d = today + timedelta(days=offset)
+                        try:
+                            t = func(loc.observer, date=d, tzinfo=tz)
+                            if t and t > now:
+                                found = t
+                                break
+                        except Exception:
+                            continue
                 result[label] = _fmt(found) if found else None
 
             self._sun_cache_date = today
