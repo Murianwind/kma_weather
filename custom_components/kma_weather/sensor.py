@@ -33,6 +33,17 @@ SENSOR_TYPES = {
     "wf_am_tomorrow":     ["내일오전날씨",   None,                                "mdi:weather-partly-cloudy",   None,                          "tomorrow_condition_am",None],
     "wf_pm_tomorrow":     ["내일오후날씨",   None,                                "mdi:weather-cloudy",          None,                          "tomorrow_condition_pm",None],
     "warning":            ["기상특보",       None,                                "mdi:alert-outline",           None,                          "warning",             None],
+    "dawn":               ["다음 새벽",        None,   "mdi:weather-night",               None,  "dawn",              None],
+    "sunrise":            ["다음 일출",         None,   "mdi:weather-sunset-up",           None,  "sunrise",           None],
+    "sunset":             ["다음 일몰",         None,   "mdi:weather-sunset-down",         None,  "sunset",            None],
+    "dusk":               ["다음 황혼",         None,   "mdi:weather-night-partly-cloudy", None,  "dusk",              None],
+    "astro_dawn":         ["다음 천문박명 시작", None,   "mdi:telescope",                   None,  "astro_dawn",        None],
+    "astro_dusk":         ["다음 천문박명 종료", None,   "mdi:telescope",                   None,  "astro_dusk",        None],
+    "moon_phase":         ["달 위상",           None,   "mdi:moon-waning-gibbous",         None,  "moon_phase",        None],
+    "moon_illumination":  ["달 조명율",         PERCENTAGE, "mdi:brightness-percent",      None,  "moon_illumination", None],
+    "moonrise":           ["다음 월출",         None,   "mdi:moon-full",                   None,  "moonrise",          None],
+    "moonset":            ["다음 월몰",         None,   "mdi:moon-waning-crescent",        None,  "moonset",           None],
+    "observation_condition": ["천문 관측 조건", None,   "mdi:telescope",                   None,  "observation_condition", None],
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -78,6 +89,42 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             manufacturer="Murianwind",
             model="KMA Weather Service",
         )
+
+    _MOON_PHASE_ICONS = {
+        "삭":       "mdi:moon-new",
+        "초승달":   "mdi:moon-waxing-crescent",
+        "상현달":   "mdi:moon-first-quarter",
+        "준상현달": "mdi:moon-waxing-gibbous",
+        "보름달":   "mdi:moon-full",
+        "준하현달": "mdi:moon-waning-gibbous",
+        "하현달":   "mdi:moon-last-quarter",
+        "그믐달":   "mdi:moon-waning-crescent",
+    }
+
+    _OBSERVATION_ICONS = {
+        "최우수":          "mdi:star-shooting",
+        "우수":            "mdi:star",
+        "보통":            "mdi:star-half-full",
+        "불량 (달빛)":     "mdi:moon-waning-gibbous",
+        "관측불가 (강수)": "mdi:weather-rainy",
+        "관측불가 (흐림)": "mdi:weather-cloudy",
+        "관측불가 (낮/박명)": "mdi:weather-sunny",
+    }
+
+    @property
+    def icon(self) -> str:
+        """달 위상·관측 조건 센서는 현재 값에 맞는 아이콘을 동적으로 반환"""
+        if self.coordinator.data:
+            w = self.coordinator.data.get("weather", {})
+            if self._type == "moon_phase":
+                phase = w.get("moon_phase")
+                if phase and phase in self._MOON_PHASE_ICONS:
+                    return self._MOON_PHASE_ICONS[phase]
+            elif self._type == "observation_condition":
+                cond = w.get("observation_condition")
+                if cond and cond in self._OBSERVATION_ICONS:
+                    return self._OBSERVATION_ICONS[cond]
+        return self._attr_icon
 
     @property
     def native_value(self):
