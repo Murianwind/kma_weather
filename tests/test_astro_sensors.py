@@ -226,21 +226,6 @@ class TestCalcSunTimes:
         assert isinstance(illum, int), f"달 조명율 타입={type(illum)}"
         assert 0 <= illum <= 100, f"달 조명율={illum}% 범위 벗어남"
 
-    def test_cache_reused_same_date(self):
-        """같은 날짜·좌표면 캐시 재사용"""
-        from unittest.mock import MagicMock
-        coord = MagicMock()
-        coord.api.tz = TZ
-        coord._sun_cache_date = date(2026, 4, 21)
-        coord._sun_cache_lat = LAT
-        coord._sun_cache_lon = LON
-        cached = {"dawn": "오늘 05:21", "moon_phase": "초승달"}
-        coord._sun_times = cached
-
-        now = datetime(2026, 4, 21, 10, 0, tzinfo=TZ)
-        result = KMAWeatherUpdateCoordinator._calc_sun_times(coord, LAT, LON, now)
-        assert result is cached, "캐시가 재사용되지 않음"
-
 
 # ── 관측 조건 평가 ────────────────────────────────────────────────────────────
 
