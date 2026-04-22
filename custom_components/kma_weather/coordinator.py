@@ -383,12 +383,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         """
         today = now.date()
 
-        if (self._sun_cache_lat == lat
-                and self._sun_cache_lon == lon
-                and self._sun_times
-                and self._sun_cache_date == today):
-            return self._sun_times
-
         if self._sf_eph is None or self._sf_ts is None:
             return self._sun_times or {}
 
