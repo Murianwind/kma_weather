@@ -31,12 +31,13 @@
 ## ⚙️ 설정 가이드
 
 ### 1. API 키 신청 (필수)
-아래 5개 항목을 [공공데이터포털](https://www.data.go.kr/)에서 신청하고 **일반 인증키(Encoding)**를 준비하세요. (링크 클릭 시 새 창에서 열립니다.)
+아래 6개 항목을 [공공데이터포털](https://www.data.go.kr/)에서 신청하고 **일반 인증키(Encoding)**를 준비하세요. (링크 클릭 시 새 창에서 열립니다.)
 1. <a href="https://www.data.go.kr/data/15084084/openapi.do" target="_blank">기상청 단기예보 신청하기</a>
 2. <a href="https://www.data.go.kr/data/15059468/openapi.do" target="_blank">기상청 중기예보 신청하기</a>
 3. <a href="https://www.data.go.kr/data/15073861/openapi.do" target="_blank">에어코리아 대기오염 신청하기</a>
 4. <a href="https://www.data.go.kr/data/15073877/openapi.do" target="_blank">한국환경공단 에어코리아 측정소정보</a>
 5. <a href="https://www.data.go.kr/data/15000415/openapi.do" target="_blank">기상특보 조회서비스</a>
+6. <a href="https://www.data.go.kr/data/15085289/openapi.do" target="_blank">꽃가루농도위험지수 조회서비스</a>
 
 ### 2. 통합구성요소 추가
 1. **설정 > 기기 및 서비스 > 통합구성요소 추가**에서 `기상청 스마트 날씨`를 검색합니다.
