@@ -51,9 +51,20 @@ KOR_TO_CONDITION: dict[str, str] = {
     "구름많음": "partlycloudy",
     "흐림": "cloudy",
     "비": "rainy",
-    "진눈깨비": "snowy-rainy",
+    "비/눈": "snowy-rainy",
     "눈": "snowy",
     "소나기": "pouring",
+    "빗방울": "rainy",
+    "빗방울/눈날림": "snowy-rainy",
+    "눈날림": "snowy",
+    "구름많고 비": "rainy",
+    "구름많고 눈": "snowy",
+    "구름많고 비/눈": "snowy-rainy",
+    "구름많고 소나기": "pouring",
+    "흐리고 비": "rainy",
+    "흐리고 눈": "snowy",
+    "흐리고 비/눈": "snowy-rainy",
+    "흐리고 소나기": "pouring",
 }
 
 
