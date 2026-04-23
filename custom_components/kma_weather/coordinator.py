@@ -504,7 +504,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         # 2. 태양 고도 체크
         try:
             if self._sf_eph is None or self._sf_ts is None:
-                return "관측불가"
+                return "분석불가"
                 
             sf_loc = _wgs84.latlon(lat, lon)
             t_now = self._sf_ts.from_datetime(now)
@@ -514,7 +514,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             if alt.degrees > -18:
                 return "관측불가"
         except Exception:
-            return "관측불가"
+            return "분석불가"
 
         # 3. 달 조명율 체크
         illum = weather.get("moon_illumination", 100)
