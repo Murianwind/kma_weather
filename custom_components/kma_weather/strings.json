@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "description": "아래 5개 항목을 공공데이터포털에서 신청하고 **일반 인증키(Encoding)**를 준비하세요.\n\n1. [기상청 단기예보 조회서비스](https://www.data.go.kr/data/15084084/openapi.do)\n2. [기상청 중기예보 조회서비스](https://www.data.go.kr/data/15059468/openapi.do)\n3. [에어코리아 대기오염정보](https://www.data.go.kr/data/15073861/openapi.do)\n4. [한국환경공단 에어코리아 측정소정보](https://www.data.go.kr/data/15073877/openapi.do)\n5. [기상특보 조회서비스](https://www.data.go.kr/data/15000415/openapi.do)",
+        "description": "아래 6개 항목을 공공데이터포털에서 신청하고 **일반 인증키(Encoding)**를 준비하세요.\n\n1. [기상청 단기예보 조회서비스](https://www.data.go.kr/data/15084084/openapi.do)\n2. [기상청 중기예보 조회서비스](https://www.data.go.kr/data/15059468/openapi.do)\n3. [에어코리아 대기오염정보](https://www.data.go.kr/data/15073861/openapi.do)\n4. [한국환경공단 에어코리아 측정소정보](https://www.data.go.kr/data/15073877/openapi.do)\n5. [기상특보 조회서비스](https://www.data.go.kr/data/15000415/openapi.do)\n6. [꽃가루농도위험지수 조회서비스](https://www.data.go.kr/data/15085289/openapi.do)",
         "data": {
           "api_key": "공공데이터포털 일반 인증키(Encoding)",
           "location_entity": "위치 엔티티",
