@@ -43,18 +43,14 @@ class TestKorToConditionMapping:
         # [Given] 기상청 한글-영문 매핑 테이블이 정의되어 있을 때
         
         # [Fix] snowy-rainy(진눈깨비)는 파트너님이 정의한 유효한 커스텀 상태이므로 허용 목록에 추가
-        valid_ha_conditions = {
-            "sunny", "partlycloudy", "cloudy", "rainy", "snowy", 
-            "lightning", "lightning-rainy", "fog", "windy", "hail", 
-            "exceptional", "clear-night", "pouring", "snowy-rainy"
-        }
+        valid_ha_conditions = {"sunny", "partlycloudy", "cloudy", "rainy", "snowy", "pouring", "snowy-rainy"}
         
         # [Then] 모든 매핑 결과가 허용된 상태값 안에 포함되어야 함
         for kor, eng in KOR_TO_CONDITION.items():
             assert eng in valid_ha_conditions, f"'{eng}'는 유효한 HA 상태값이 아닙니다 (한글 키: {kor})"
             
         # [Then] 필수 기상 키들이 누락 없이 존재해야 함
-        required = {"맑음", "구름많음", "흐림", "비", "비/눈", "소나기", "눈"}
+        required = {"맑음", "구름많음", "흐림", "비", "진눈깨비", "소나기", "눈"}
         assert required.issubset(set(KOR_TO_CONDITION.keys()))
 
 class TestKorToConditionMethod:
