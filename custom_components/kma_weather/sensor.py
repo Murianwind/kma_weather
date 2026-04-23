@@ -171,10 +171,10 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         "최우수":          "mdi:star-shooting",
         "우수":            "mdi:star",
         "보통":            "mdi:star-half-full",
-        "불량 (달빛)":     "mdi:moon-waning-gibbous",
-        "관측불가 (강수)": "mdi:weather-rainy",
-        "관측불가 (흐림)": "mdi:weather-cloudy",
-        "관측불가 (낮/박명)": "mdi:weather-sunny",
+        "불량":     "mdi:moon-waning-gibbous",
+        "관측불가": "mdi:weather-rainy",
+        "관측불가": "mdi:weather-cloudy",
+        "관측불가": "mdi:weather-sunny",
     }
 
     _POLLEN_ICONS = {
