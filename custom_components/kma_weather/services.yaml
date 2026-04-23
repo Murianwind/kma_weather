@@ -1,0 +1,20 @@
+get_astronomical_info:
+  name: 천문 관측 정보 조회
+  description: >
+    입력한 읍면동 주소와 날짜(오늘~오늘+4일)의 천문 관측 정보를 반환합니다.
+    일출/일몰, 새벽/황혼, 천문박명, 달 위상/조명율, 월출/월몰, 관측 조건을 포함합니다.
+  fields:
+    address:
+      name: 주소
+      description: 읍면동 단위 주소 (예: 서울특별시 강남구 역삼동)
+      required: true
+      example: "서울특별시 강남구 역삼동"
+      selector:
+        text:
+    date:
+      name: 날짜
+      description: 오늘부터 4일 이내의 날짜 (YYYY-MM-DD)
+      required: true
+      example: "2026-04-23"
+      selector:
+        date:

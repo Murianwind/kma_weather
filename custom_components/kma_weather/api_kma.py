@@ -26,15 +26,34 @@ _WARN_TYPE_MAP: dict[str, tuple[str, str]] = {
 
 # ── API 서비스 정보 (미신청 감지용) ──────────────────────────────────────────
 _API_SERVICES = {
-    "short":   ("기상청 단기예보",       "https://www.data.go.kr/data/15084084/openapi.do"),
-    "mid":     ("기상청 중기예보",       "https://www.data.go.kr/data/15059468/openapi.do"),
+    "short":   ("기상청 단기예보",        "https://www.data.go.kr/data/15084084/openapi.do"),
+    "mid":     ("기상청 중기예보",        "https://www.data.go.kr/data/15059468/openapi.do"),
     "air":     ("에어코리아 대기오염정보", "https://www.data.go.kr/data/15073861/openapi.do"),
     "station": ("에어코리아 측정소정보",  "https://www.data.go.kr/data/15073877/openapi.do"),
-    "warning": ("기상특보 조회서비스",   "https://www.data.go.kr/data/15000415/openapi.do"),
+    "warning": ("기상특보 조회서비스",    "https://www.data.go.kr/data/15000415/openapi.do"),
+    "pollen":  ("기상청 생활기상지수",    "https://www.data.go.kr/data/15084083/openapi.do"),
 }
 
 # 미신청으로 판단하는 resultCode 목록
 _UNSUBSCRIBED_CODES = {"20", "22", "30", "31", "33"}
+
+# ── 꽃가루 관련 상수 ──────────────────────────────────────────────────────────
+_POLLEN_GRADE = {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}
+_POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
+# 꽃가루 제공 시즌 (시작월, 종료월 포함)
+_POLLEN_SEASONS = {"oak": (3, 6), "pine": (3, 6), "grass": (4, 10)}
+# reg_id_temp 접두사 → 꽃가루 지역코드 (행정구역코드 10자리)
+_POLLEN_AREA_MAP = [
+    ("11B",  "1100000000"),  # 서울/인천/경기
+    ("11D",  "4200000000"),  # 강원도
+    ("11C1", "4300000000"),  # 충청북도
+    ("11C2", "4400000000"),  # 충청남도/세종
+    ("11F1", "4500000000"),  # 전라북도
+    ("11F2", "4600000000"),  # 전라남도/광주
+    ("11H1", "4700000000"),  # 경상북도/대구
+    ("11H2", "4800000000"),  # 경상남도/부산/울산
+    ("11G",  "5000000000"),  # 제주도
+]
 
 
 def _safe_float(v):
@@ -91,6 +110,9 @@ class KMAWeatherAPI:
         # API 미신청 알림 중복 방지 (서비스 키 → 알림 발송 여부)
         self._notified_unsubscribed: set[str] = set()
 
+        # 승인된 API 추적 (성공적으로 데이터를 반환한 서비스 키)
+        self._approved_apis: set[str] = set()
+
     def _build_nominatim_user_agent(self):
         base = "HomeAssistant-KMA-Weather"
         if self.hass:
@@ -142,6 +164,14 @@ class KMAWeatherAPI:
 
         return True
 
+    def _mark_approved(self, service_key: str) -> None:
+        """API가 성공적으로 응답했을 때 승인 상태로 표시한다."""
+        if service_key not in self._approved_apis:
+            _LOGGER.info("API 승인 확인 [%s] → 관련 센서가 추가됩니다", service_key)
+            self._approved_apis.add(service_key)
+        # 이전에 미신청 알림을 보냈다면 초기화 (재승인 시 재알림 허용)
+        self._notified_unsubscribed.discard(service_key)
+
     async def _fetch(self, url, params, headers=None, timeout=15):
         try:
             async with self.session.get(
@@ -179,12 +209,13 @@ class KMAWeatherAPI:
             self._get_air_quality(lat, lon),
             self._get_address(lat, lon),
             self._get_warning(warn_area_code),
+            self._get_pollen(now, reg_id_temp),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        short_res, mid_res, air_data, address, warning = [
+        short_res, mid_res, air_data, address, warning, pollen_data = [
             r if not isinstance(r, Exception) else None for r in results
         ]
-        return self._merge_all(now, short_res, mid_res, air_data, address, warning)
+        return self._merge_all(now, short_res, mid_res, air_data, address, warning, pollen_data)
 
     # ── 주소 (Nominatim) ────────────────────────────────────────────────────
     async def _get_address(self, lat: float, lon: float) -> str:
@@ -260,6 +291,7 @@ class KMAWeatherAPI:
                 return {"station": sn}
 
             ai = ai_list[0]
+            self._mark_approved("air")
             return {
                 "pm10Value": ai.get("pm10Value"),
                 "pm10Grade": self._translate_grade(ai.get("pm10Grade") or ai.get("pm10Grade1h")),
@@ -295,6 +327,9 @@ class KMAWeatherAPI:
         code = self._extract_result_code(data)
         if code and self._check_unsubscribed("short", code):
             return None
+        items = (data or {}).get("response", {}).get("body", {}).get("items", {}).get("item", [])
+        if items:
+            self._mark_approved("short")
         return data
 
     # ── 중기예보 (reg_id를 파라미터로 수신) ────────────────────────────────
@@ -357,11 +392,11 @@ class KMAWeatherAPI:
             if _is_valid(retry_results[0]) and _is_valid(retry_results[1]):
                 return (retry_results[0], retry_results[1], prev_dt)
 
-        return (
-            results[0] if not isinstance(results[0], Exception) else None,
-            results[1] if not isinstance(results[1], Exception) else None,
-            tm_fc_dt,
-        )
+        r0 = results[0] if not isinstance(results[0], Exception) else None
+        r1 = results[1] if not isinstance(results[1], Exception) else None
+        if _is_valid(r0) and _is_valid(r1):
+            self._mark_approved("mid")
+        return (r0, r1, tm_fc_dt)
 
     # ── 기상특보 (warn_area_code를 파라미터로 수신) ─────────────────────────
     async def _get_warning(self, warn_area_code: str | None) -> str | None:
@@ -400,6 +435,7 @@ class KMAWeatherAPI:
                 and str(item.get("cancel", "1")) == "0"
                 and str(item.get("endTime", "1")) == "0"
             ]
+            self._mark_approved("warning")
             if not active:
                 return "특보없음"
 
@@ -417,6 +453,80 @@ class KMAWeatherAPI:
         except Exception as e:
             _LOGGER.error("기상특보 조회 오류: %s", e)
             return None
+
+    # ── 꽃가루 농도 위험지수 ────────────────────────────────────────────────
+    async def _get_pollen(self, now: datetime, reg_id_temp: str) -> dict:
+        """
+        꽃가루 농도 위험지수를 조회한다.
+        비시즌(제공 월 외)에는 API 호출 없이 좋음을 반환한다.
+        """
+        month = now.month
+        in_season = {
+            k: _POLLEN_SEASONS[k][0] <= month <= _POLLEN_SEASONS[k][1]
+            for k in ("oak", "pine", "grass")
+        }
+
+        # 모든 꽃가루가 비시즌이면 API 호출 없이 좋음 반환
+        if not any(in_season.values()):
+            return {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"}
+
+        # 지역코드 결정 (reg_id_temp 접두사 매핑)
+        area_no = "1100000000"
+        for prefix, code in _POLLEN_AREA_MAP:
+            if reg_id_temp and reg_id_temp.startswith(prefix):
+                area_no = code
+                break
+
+        # 발표 시각 결정 (6시/12시/18시 기준)
+        h = now.hour
+        if h < 6:
+            time_str = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
+        elif h < 12:
+            time_str = now.strftime("%Y%m%d") + "0600"
+        elif h < 18:
+            time_str = now.strftime("%Y%m%d") + "1200"
+        else:
+            time_str = now.strftime("%Y%m%d") + "1800"
+
+        try:
+            data = await self._fetch(
+                "https://apis.data.go.kr/1360000/LivingWthrIdxServiceV4/getPollenRiskIdxV4",
+                {"serviceKey": self.api_key, "dataType": "JSON",
+                 "areaNo": area_no, "time": time_str},
+            )
+            code = self._extract_result_code(data)
+            if code and self._check_unsubscribed("pollen", code):
+                # 미신청 시 비시즌 타입은 좋음, 시즌 타입은 정보없음(None)
+                result = {k: ("좋음" if not in_season[k] else None) for k in ("oak", "pine", "grass")}
+                result["worst"] = None
+                return result
+
+            items = (data or {}).get("response", {}).get("body", {}).get("items", {}).get("item", [])
+            if not items:
+                # 데이터 없음 → 비시즌 타입은 좋음, 시즌 타입은 좋음으로 폴백
+                return {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"}
+
+            item = items[0] if isinstance(items, list) else items
+
+            result: dict = {}
+            for ptype, field in [("oak", "oaktreeindex"), ("pine", "pineindex"), ("grass", "grassindex")]:
+                if not in_season[ptype]:
+                    result[ptype] = "좋음"
+                else:
+                    val = str(item.get(field) or "")
+                    result[ptype] = _POLLEN_GRADE.get(val, "좋음")
+
+            result["worst"] = max(
+                (result[k] for k in ("oak", "pine", "grass") if result[k] is not None),
+                key=lambda g: _POLLEN_GRADE_RANK.get(g, 1),
+                default="좋음",
+            )
+            self._mark_approved("pollen")
+            return result
+
+        except Exception as e:
+            _LOGGER.error("꽃가루 조회 오류: %s", e)
+            return {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"}
 
     # ── 유틸리티 ────────────────────────────────────────────────────────────
     def _haversine_simple(self, lat1, lon1, lat2, lon2) -> float:
@@ -465,7 +575,7 @@ class KMAWeatherAPI:
         return wf_am, wf_pm
 
     # ── 데이터 병합 ─────────────────────────────────────────────────────────
-    def _merge_all(self, now, short_res, mid_res, air_data, address=None, warning=None):
+    def _merge_all(self, now, short_res, mid_res, air_data, address=None, warning=None, pollen_data=None):
         weather_data = {
             "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None,
             "TMX_today": None, "TMN_today": None, "TMX_tomorrow": None, "TMN_tomorrow": None,
@@ -658,7 +768,12 @@ class KMAWeatherAPI:
         })
         if weather_data.get("VEC"):
             weather_data["VEC_KOR"] = self._get_vec_kor(weather_data["VEC"])
-        return {"weather": weather_data, "air": air_data or {}, "raw_forecast": forecast_map}
+        return {
+            "weather": weather_data,
+            "air": air_data or {},
+            "pollen": pollen_data or {},
+            "raw_forecast": forecast_map,
+        }
 
     def _translate_mid_condition_kor(self, wf: str) -> str:
         wf = str(wf or "맑음")
