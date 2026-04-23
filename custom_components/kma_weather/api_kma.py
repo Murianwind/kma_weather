@@ -31,7 +31,7 @@ _API_SERVICES = {
     "air":     ("에어코리아 대기오염정보", "https://www.data.go.kr/data/15073861/openapi.do"),
     "station": ("에어코리아 측정소정보",  "https://www.data.go.kr/data/15073877/openapi.do"),
     "warning": ("기상특보 조회서비스",    "https://www.data.go.kr/data/15000415/openapi.do"),
-    "pollen":  ("기상청 생활기상지수",    "https://www.data.go.kr/data/15084083/openapi.do"),
+    "pollen":  ("기상청 생활기상지수",    "https://www.data.go.kr/data/15085289/openapi.do"),
 }
 
 # 미신청으로 판단하는 resultCode 목록
