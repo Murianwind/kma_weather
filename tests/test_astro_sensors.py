@@ -244,8 +244,7 @@ class TestEvalObservation:
         return KMAWeatherUpdateCoordinator._eval_observation(coord, weather, now, LAT, LON)
 
     # 날씨 불가
-    @pytest.mark.parametrize("cond", ["rainy", "pouring", "snowy", "snowy-rainy",
-                                       "lightning", "lightning-rainy"])
+    @pytest.mark.parametrize("cond", ["rainy", "pouring", "snowy", "snowy-rainy", "cloudy"])
     def test_bad_weather_precipitation(self, cond):
         assert self._eval(22, cond, 5) == "관측불가"
 
