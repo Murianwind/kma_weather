@@ -490,40 +490,43 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def _eval_observation(self, weather: dict, now: datetime,
                           lat: float, lon: float) -> str:
         """
-        현재 날씨 + 태양 고도 + 달 조명율을 종합해 천문 관측 조건을 평가한다.
-        반환: "최우수" / "우수" / "보통" / "불량 (달빛)" /
-              "관측불가 (강수)" / "관측불가 (흐림)" / "관측불가 (낮/박명)"
+        현재 날씨, 태양 고도, 달 조명율을 종합하여 관측 조건을 반환한다.
         """
-        # 1. 날씨
+        # 1. 기상 상태 체크 (강수 및 흐림을 하나의 조건으로 합침)
         condition = weather.get("current_condition", "")
+        
         if condition in {"rainy", "pouring", "snowy", "snowy-rainy", "cloudy"}:
             return "관측불가"
+            
         if condition == "partlycloudy":
             return "불량"
 
-        # 2. 태양 고도 계산 (skyfield, -18° 이하이면 관측 가능)
+        # 2. 태양 고도 체크
         try:
             if self._sf_eph is None or self._sf_ts is None:
                 return "관측불가"
+                
             sf_loc = _wgs84.latlon(lat, lon)
-            t_now  = self._sf_ts.from_datetime(now)
-            alt, _, _ = (self._sf_eph["Earth"] + sf_loc).at(t_now)                        .observe(self._sf_eph["Sun"]).apparent().altaz()
+            t_now = self._sf_ts.from_datetime(now)
+            astrometric = (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(self._sf_eph["Sun"])
+            alt, _, _ = astrometric.apparent().altaz()
+            
             if alt.degrees > -18:
                 return "관측불가"
         except Exception:
             return "관측불가"
 
-        # 3. 달 조명율
+        # 3. 달 조명율 체크
         illum = weather.get("moon_illumination", 100)
         try:
             illum = int(illum)
         except (TypeError, ValueError):
             illum = 100
 
-        if illum <= 25:   return "최우수"
-        elif illum <= 50: return "우수"
-        elif illum <= 75: return "보통"
-        else:             return "불량"
+        if illum <= 25:    return "최우수"
+        elif illum <= 50:  return "우수"
+        elif illum <= 75:  return "보통"
+        else:              return "불량"
 
     # ── 위치 결정 ───────────────────────────────────────────────────────────
     def _resolve_location(self) -> tuple:
