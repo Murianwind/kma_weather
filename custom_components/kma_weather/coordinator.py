@@ -528,6 +528,87 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         elif illum <= 75:  return "보통"
         else:              return "불량"
 
+    # ── 날짜 지정 천문 계산 (HA 서비스용) ──────────────────────────────────
+    def calc_astronomical_for_date(self, lat: float, lon: float, target_date) -> dict:
+        """특정 날짜·좌표의 천문 이벤트를 계산해 dict로 반환한다."""
+        if self._sf_eph is None or self._sf_ts is None:
+            return {"error": "skyfield 라이브러리가 준비되지 않았습니다"}
+        try:
+            from datetime import date as _date
+            tz = self.api.tz
+            sf_loc = _wgs84.latlon(lat, lon)
+            result: dict = {}
+
+            def _ts_range(dd):
+                t0 = self._sf_ts.from_datetime(
+                    datetime(dd.year, dd.month, dd.day, 0, 0, tzinfo=tz))
+                t1 = self._sf_ts.from_datetime(
+                    datetime(dd.year, dd.month, dd.day, 23, 59, tzinfo=tz))
+                return t0, t1
+
+            def _hm(t) -> str:
+                return t.astimezone(tz).strftime("%H:%M")
+
+            t0, t1 = _ts_range(target_date)
+
+            # 일출/일몰
+            f_ss = _almanac.sunrise_sunset(self._sf_eph, sf_loc)
+            sunrise = sunset = None
+            for t, e in zip(*_almanac.find_discrete(t0, t1, f_ss)):
+                local_t = t.astimezone(tz)
+                if e and sunrise is None:
+                    sunrise = _hm(local_t)
+                elif not e and sunset is None:
+                    sunset = _hm(local_t)
+            result["sunrise"] = sunrise
+            result["sunset"] = sunset
+
+            # 박명 (새벽/황혼/천문박명)
+            _TW_MAP = {(2, 3): "dawn", (3, 2): "dusk", (0, 1): "astro_dawn", (1, 0): "astro_dusk"}
+            f_tw = _almanac.dark_twilight_day(self._sf_eph, sf_loc)
+            prev_e = int(f_tw(t0))
+            for t, cur_e in zip(*_almanac.find_discrete(t0, t1, f_tw)):
+                local_t = t.astimezone(tz)
+                key = _TW_MAP.get((prev_e, int(cur_e)))
+                if key and key not in result:
+                    result[key] = _hm(local_t)
+                prev_e = int(cur_e)
+
+            # 달 위상/조명율 (정오 기준)
+            t_noon = self._sf_ts.from_datetime(
+                datetime(target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=tz))
+            phase_deg = _almanac.moon_phase(self._sf_eph, t_noon).degrees
+            illum = round(_almanac.fraction_illuminated(self._sf_eph, "moon", t_noon) * 100)
+            result["moon_phase"] = KMAWeatherUpdateCoordinator._moon_phase_name(phase_deg)
+            result["moon_illumination"] = illum
+
+            # 월출/월몰
+            f_rs = _almanac.risings_and_settings(self._sf_eph, self._sf_eph["Moon"], sf_loc)
+            moonrise = moonset = None
+            for t, e in zip(*_almanac.find_discrete(t0, t1, f_rs)):
+                local_t = t.astimezone(tz)
+                if e and moonrise is None:
+                    moonrise = _hm(local_t)
+                elif not e and moonset is None:
+                    moonset = _hm(local_t)
+            result["moonrise"] = moonrise
+            result["moonset"] = moonset
+
+            # 관측 조건 (달 조명율만 기준, 날씨 불포함)
+            if illum <= 25:
+                obs = "최우수"
+            elif illum <= 50:
+                obs = "우수"
+            elif illum <= 75:
+                obs = "보통"
+            else:
+                obs = "불량"
+            result["observation_condition"] = obs
+            return result
+        except Exception as e:
+            _LOGGER.error("날짜별 천문 계산 실패: %s", e)
+            return {"error": str(e)}
+
     # ── 위치 결정 ───────────────────────────────────────────────────────────
     def _resolve_location(self) -> tuple:
         entity_id = self.entry.data.get(CONF_LOCATION_ENTITY, "")
