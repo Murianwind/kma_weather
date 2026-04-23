@@ -496,11 +496,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         """
         # 1. 날씨
         condition = weather.get("current_condition", "")
-        if condition in {"rainy", "pouring", "snowy", "snowy-rainy",
-                         "lightning", "lightning-rainy"}:
+        if condition in {"rainy", "pouring", "snowy", "snowy-rainy", "cloudy"}:
             return "관측불가"
-        if condition == "cloudy":
-            return "관측불가"
+        if condition == "partlycloudy":
+            return "불량"
 
         # 2. 태양 고도 계산 (skyfield, -18° 이하이면 관측 가능)
         try:
