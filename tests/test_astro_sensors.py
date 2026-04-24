@@ -882,3 +882,204 @@ async def test_realtime_cache_in_coordinator(hass, mock_config_entry, kma_api_mo
 
     assert hass.states.get("sensor.test_temperature").state == "22", \
         "TMP='-' 주입 후 캐시 복원 실패"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# calc_astronomical_for_date async 메서드 + 천문 액션 서비스 테스트
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCalcAstronomicalForDate:
+    """coordinator.calc_astronomical_for_date async 메서드 직접 테스트"""
+
+    @pytest.mark.asyncio
+    async def test_calc_returns_expected_keys(self, hass, mock_config_entry, kma_api_mock_factory):
+        """
+        [Given] skyfield가 초기화된 coordinator
+        [When] calc_astronomical_for_date를 오늘 날짜/서울 좌표로 호출
+        [Then] 반환 dict에 천문 필드 + weather_source + weather_condition이 모두 있어야 함
+        """
+        kma_api_mock_factory("full_test")
+        mock_config_entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        from homeassistant.util import dt as dt_util
+        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+
+        result = await coordinator.calc_astronomical_for_date(
+            lat=37.56, lon=126.98,
+            target_date=dt_util.now().date(),
+        )
+
+        assert "error" not in result, f"천문 계산 오류: {result.get('error')}"
+        for key in ["sunrise", "sunset", "dawn", "dusk",
+                    "astro_dawn", "astro_dusk",
+                    "moonrise", "moonset", "moon_phase", "moon_illumination",
+                    "observation_condition", "weather_source", "weather_condition"]:
+            assert key in result, f"반환값에 '{key}' 없음"
+
+    @pytest.mark.asyncio
+    async def test_weather_source_when_short_not_approved(self, hass, mock_config_entry):
+        """
+        [Given] short API 미승인 상태 (단기예보 없음)
+        [When] calc_astronomical_for_date 호출
+        [Then] weather_source가 "천문만"이고 weather_condition이 "API 조회 불가"여야 함
+        """
+        from unittest.mock import AsyncMock, patch
+
+        minimal_data = {
+            "weather": {"address": "경기도 화성시", "forecast_twice_daily": []},
+            "air": {},
+        }
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator as Coord
+        _real_init = Coord.__init__
+
+        def _no_short_init(self_c, hass_arg, entry_arg):
+            _real_init(self_c, hass_arg, entry_arg)
+            self_c.api._approved_apis = set()  # 모든 API 미승인
+
+        with patch.object(Coord, "__init__", _no_short_init):
+            with patch(
+                "custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data",
+                new_callable=AsyncMock,
+                return_value=minimal_data,
+            ):
+                mock_config_entry.add_to_hass(hass)
+                await hass.config_entries.async_setup(mock_config_entry.entry_id)
+                await hass.async_block_till_done()
+
+        from homeassistant.util import dt as dt_util
+        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+
+        result = await coordinator.calc_astronomical_for_date(
+            lat=37.56, lon=126.98,
+            target_date=dt_util.now().date(),
+        )
+
+        assert result.get("weather_source") == "천문만", \
+            f"단기예보 미승인 시 weather_source='천문만' 기대, 실제={result.get('weather_source')}"
+        assert result.get("weather_condition") == "API 조회 불가", \
+            f"단기예보 미승인 시 weather_condition='API 조회 불가' 기대, 실제={result.get('weather_condition')}"
+
+    @pytest.mark.asyncio
+    async def test_calc_with_eval_dt_passed(self, hass, mock_config_entry, kma_api_mock_factory):
+        """
+        [Given] skyfield가 초기화된 coordinator
+        [When] calc_astronomical_for_date에 eval_dt(야간 시각)를 전달
+        [Then] 결과가 반환되고 observation_condition이 포함되어야 함 (야간이므로 관측 가능)
+        """
+        kma_api_mock_factory("full_test")
+        mock_config_entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        from homeassistant.util import dt as dt_util
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+
+        today = dt_util.now().date()
+        kst = ZoneInfo("Asia/Seoul")
+        # 자정 직후 (야간 시각)
+        eval_dt = datetime(today.year, today.month, today.day, 1, 0, tzinfo=kst)
+
+        result = await coordinator.calc_astronomical_for_date(
+            lat=37.56, lon=126.98,
+            target_date=today,
+            eval_dt=eval_dt,
+        )
+
+        assert "error" not in result
+        assert "observation_condition" in result
+        assert result["observation_condition"] in ["최우수", "우수", "보통", "불량", "관측불가"]
+
+
+class TestAstronomicalActionService:
+    """__init__.py의 get_astronomical_info 서비스 핸들러 테스트"""
+
+    @pytest.mark.asyncio
+    async def test_service_invalid_past_date(self, hass, mock_config_entry, kma_api_mock_factory):
+        """
+        [Given] 통합 구성요소 설치
+        [When] 과거 날짜로 서비스 호출
+        [Then] HomeAssistantError가 발생하고 '과거 날짜' 메시지를 포함해야 함
+        """
+        from homeassistant.exceptions import HomeAssistantError
+        from datetime import date, timedelta
+
+        kma_api_mock_factory("full_test")
+        mock_config_entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        yesterday = date.today() - timedelta(days=1)
+        with pytest.raises((HomeAssistantError, Exception)) as exc_info:
+            await hass.services.async_call(
+                "kma_weather",
+                "get_astronomical_info",
+                {
+                    "address": "경기도 화성시 동탄면",
+                    "date": yesterday,
+                },
+                blocking=True,
+                return_response=True,
+            )
+        assert "과거" in str(exc_info.value) or exc_info.type.__name__ in ("HomeAssistantError", "ServiceValidationError")
+
+    @pytest.mark.asyncio
+    async def test_service_date_too_far(self, hass, mock_config_entry, kma_api_mock_factory):
+        """
+        [Given] 통합 구성요소 설치
+        [When] 오늘+5일 날짜로 서비스 호출
+        [Then] HomeAssistantError가 발생하고 '4일' 메시지를 포함해야 함
+        """
+        from homeassistant.exceptions import HomeAssistantError
+        from datetime import date, timedelta
+
+        kma_api_mock_factory("full_test")
+        mock_config_entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        far_date = date.today() + timedelta(days=5)
+        with pytest.raises((HomeAssistantError, Exception)) as exc_info:
+            await hass.services.async_call(
+                "kma_weather",
+                "get_astronomical_info",
+                {
+                    "address": "경기도 화성시 동탄면",
+                    "date": far_date,
+                },
+                blocking=True,
+                return_response=True,
+            )
+        assert "4일" in str(exc_info.value) or exc_info.type.__name__ in ("HomeAssistantError", "ServiceValidationError")
+
+    @pytest.mark.asyncio
+    async def test_service_invalid_time_format(self, hass, mock_config_entry, kma_api_mock_factory):
+        """
+        [Given] 통합 구성요소 설치
+        [When] 잘못된 시각 형식(HH:MM이 아닌 값)으로 서비스 호출
+        [Then] HomeAssistantError가 발생하고 '형식' 메시지를 포함해야 함
+        """
+        from homeassistant.exceptions import HomeAssistantError
+        from datetime import date
+
+        kma_api_mock_factory("full_test")
+        mock_config_entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises((HomeAssistantError, Exception)) as exc_info:
+            await hass.services.async_call(
+                "kma_weather",
+                "get_astronomical_info",
+                {
+                    "address": "경기도 화성시 동탄면",
+                    "date": date.today(),
+                    "time": "25:99",  # 유효하지 않은 시각
+                },
+                blocking=True,
+                return_response=True,
+            )
+        assert "형식" in str(exc_info.value) or exc_info.type.__name__ in ("HomeAssistantError", "ServiceValidationError", "vol.Invalid")
