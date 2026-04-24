@@ -99,9 +99,9 @@ class KMAWeatherAPI:
         # 승인 확인된 API (실제 데이터 호출 대상)
         self._approved_apis: set[str] = set()
 
-        # 승인 여부 미확인 API (승인 확인용 경량 호출 대상)
-        # 초기에는 모든 선택적 API가 미확인 상태
-        # 미신청으로 확인된 API도 여기에 유지 (매 업데이트마다 재확인)
+        # 승인 여부 미확인 또는 미신청/만료 API
+        # → 매 업데이트마다 호출해서 확인, 미신청이면 로그 출력
+        # → 승인 확인 시 _approved_apis로 이동
         self._pending_apis: set[str] = {"air", "station", "warning", "pollen"}
 
         # API 호출 카운터 콜백 (coordinator에서 주입)
@@ -191,8 +191,9 @@ class KMAWeatherAPI:
             _LOGGER.warning("API 만료/중지 감지 [%s]: resultCode=%s → _approved_apis에서 제거", service_key, result_code)
             self._approved_apis.discard(service_key)
 
-        # 미확인 목록에 추가 → 다음 업데이트에서 재확인
-        self._pending_apis.add(service_key)
+        # _approved에서 제거된 경우 _pending에 다시 추가 → 다음 업데이트에서 재확인
+        if service_key not in self._pending_apis:
+            self._pending_apis.add(service_key)
 
         # HA 알림은 최초 1회만 (중복 방지)
         if service_key in self._notified_unsubscribed:
@@ -227,7 +228,7 @@ class KMAWeatherAPI:
         if service_key not in self._approved_apis:
             _LOGGER.info("API 승인 확인 [%s] → 관련 센서가 추가됩니다", service_key)
             self._approved_apis.add(service_key)
-        # 승인 확인됐으므로 미확인 목록에서 제거
+        # 승인됐으므로 미확인 목록에서 제거
         self._pending_apis.discard(service_key)
         self._notified_unsubscribed.discard(service_key)
 
@@ -286,9 +287,16 @@ class KMAWeatherAPI:
         nx: int, ny: int,
         reg_id_temp: str, reg_id_land: str,
         warn_area_code: str | None,
+        force_check: bool = False,
     ) -> dict | None:
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
+
+        # force_check=True (버튼/다시읽기): 미신청 알림 기록 초기화
+        # → 재신청 후 HA 알림이 다시 출력되도록
+        if force_check:
+            self._notified_unsubscribed.clear()
+
         async def _skip_coro(default):
             return default
 
@@ -297,6 +305,8 @@ class KMAWeatherAPI:
         # _pending_apis에 있음 → 승인 확인용 경량 호출 (_get_* 내부에서 resultCode만 확인)
         # 둘 다 없음 → 건너뜀 (승인 후 _pending 제거됐으나 _approved에도 없는 이상 상태)
         def _should_call(key: str) -> bool:
+            # _pending_apis:  미확인/미신청/만료 → 매 업데이트마다 호출해서 확인
+            # _approved_apis: 승인됨 → 데이터 호출
             return key in self._approved_apis or key in self._pending_apis
 
         tasks = [
@@ -386,16 +396,13 @@ class KMAWeatherAPI:
             if code and self._check_unsubscribed("air", code):
                 return {"station": sn}
 
-            # resultCode=00이면 승인 처리 (데이터 유무와 무관)
-            if code == "00":
-                self._mark_approved("air")
-
             ai_list = (air_json.get("response", {}).get("body", {}).get("items", [])
                        if air_json else [])
             if not ai_list:
                 return {"station": sn}
 
             ai = ai_list[0]
+            self._mark_approved("air")
             return {
                 "pm10Value": ai.get("pm10Value"),
                 "pm10Grade": self._translate_grade(ai.get("pm10Grade") or ai.get("pm10Grade1h")),
@@ -431,10 +438,9 @@ class KMAWeatherAPI:
         code = self._extract_result_code(data)
         if code and self._check_unsubscribed("short", code):
             return None
-        # resultCode=00 확인 시 승인 처리 (items 유무와 무관)
-        if code == "00":
-            self._mark_approved("short")
         items = (data or {}).get("response", {}).get("body", {}).get("items", {}).get("item", [])
+        if items:
+            self._mark_approved("short")
         return data
 
     # ── 중기예보 ────────────────────────────────────────────────────────────
@@ -524,10 +530,6 @@ class KMAWeatherAPI:
             if not data:
                 return None
 
-            # resultCode=00 확인 시 승인 처리 (특보 유무와 무관)
-            if code == "00":
-                self._mark_approved("warning")
-
             items = (
                 data.get("response", {})
                     .get("body", {})
@@ -543,6 +545,7 @@ class KMAWeatherAPI:
                 and str(item.get("cancel", "1")) == "0"
                 and str(item.get("endTime", "1")) == "0"
             ]
+            self._mark_approved("warning")
             if not active:
                 return "특보없음"
 
@@ -616,16 +619,11 @@ class KMAWeatherAPI:
             )
             code = self._extract_result_code(data)
             if code and self._check_unsubscribed("pollen", code):
-                # 미신청/중지: 빈 dict 반환 → 센서 미생성
+                # 미신청: 빈 dict 반환 → 센서 미생성
                 return {}
 
-            # resultCode=00 확인 시에만 승인 처리
-            if code == "00":
-                self._mark_approved("pollen")
-            elif code is None:
-                # 응답 없음(호출 실패) → 승인 상태 변경 없이 기존 상태 유지
-                _LOGGER.debug("pollen API 응답 없음 → 승인 상태 유지")
-                return {}
+            # 승인 확인
+            self._mark_approved("pollen")
 
             # 비시즌: 데이터 파싱 없이 좋음 반환
             if offseason:
