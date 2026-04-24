@@ -81,6 +81,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up KMA Weather from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     coordinator = KMAWeatherUpdateCoordinator(hass, entry)
+    # 재로드(다시 읽어오기) 시 첫 갱신 이유 표시
+    coordinator._update_reason = "다시 읽어오기"
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
@@ -199,6 +201,9 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
     # ── 8. 천문 계산 + 단기예보 기반 관측 조건 평가 ────────────────────────
     # eval_dt: 사용자가 지정한 시각 기준으로 관측 조건 평가
     eval_dt = datetime.combine(target_date, target_time).replace(tzinfo=_KST)
+    # 액션 실행으로 인한 API 호출임을 카운터에 표시
+    coordinator._update_reason = "액션"
+    coordinator._inject_counter("액션")
     astro = await coordinator.calc_astronomical_for_date(lat, lon, target_date, eval_dt)
     if "error" in astro:
         raise HomeAssistantError(
