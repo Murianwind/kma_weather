@@ -179,6 +179,12 @@ class KMAWeatherAPI:
     def _check_unsubscribed(self, service_key: str, result_code: str) -> bool:
         if result_code not in _UNSUBSCRIBED_CODES:
             return False
+
+        # 미신청/만료 감지 시 _approved_apis에서 제거 → 관련 센서 unavailable 전환
+        if service_key in self._approved_apis:
+            _LOGGER.warning("API 만료/중지 감지 [%s]: resultCode=%s → _approved_apis에서 제거", service_key, result_code)
+            self._approved_apis.discard(service_key)
+
         if service_key in self._notified_unsubscribed:
             return True
 
