@@ -843,7 +843,7 @@ def test_sensor_api_expire_valid_iso_date():
 
 
 def test_is_valid_korean_coord_nan():
-    from custom_components.kma_weather.coordinator import _is_valid_korean_coord
+    from custom_components.kma_weather.const import is_korean_coord_loose as _is_valid_korean_coord
     import math
     assert _is_valid_korean_coord(math.nan, 126.98) is False
     assert _is_valid_korean_coord(37.56, math.nan) is False
