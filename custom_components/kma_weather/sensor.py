@@ -279,6 +279,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 "기상특보":        counts.get("기상특보", 0),
                 "꽃가루":          counts.get("꽃가루", 0),
                 "집계일":          counts.get("date") or "-",
+                "마지막_호출_이유": counts.get("last_reason") or "-",
             }
 
         # ── location 센서 (address) ──────────────────────────────────────────
