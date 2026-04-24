@@ -200,22 +200,15 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
             "HA 재시작 후 잠시 기다린 다음 다시 시도해주세요."
         )
 
-    # ── 8. 천문 계산 ──────────────────────────────────────────────────────
-    astro = coordinator.calc_astronomical_for_date(lat, lon, target_date)
+    # ── 8. 천문 계산 + 단기예보 기반 관측 조건 평가 ────────────────────────
+    # eval_dt: 사용자가 지정한 시각 기준으로 관측 조건 평가
+    eval_dt = datetime.combine(target_date, target_time).replace(tzinfo=_KST)
+    astro = await coordinator.calc_astronomical_for_date(lat, lon, target_date, eval_dt)
     if "error" in astro:
         raise HomeAssistantError(
             f"천문 계산 중 오류가 발생했습니다: {astro['error']}\n"
             "잠시 후 다시 시도해주세요."
         )
-
-    # ── 9. 지정 시각 기준 관측 조건 평가 ─────────────────────────────────
-    eval_dt = datetime.combine(target_date, target_time).replace(tzinfo=_KST)
-    obs_cond, obs_reason = coordinator._eval_observation(
-        {"moon_illumination": astro.get("moon_illumination", 100)},
-        eval_dt,
-        lat,
-        lon,
-    )
 
     return {
         "address":           raw_address,
@@ -234,6 +227,6 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
         "moonset":           astro.get("moonset"),
         "moon_phase":        astro.get("moon_phase"),
         "moon_illumination": astro.get("moon_illumination"),
-        "observation_condition": obs_cond,
-        "observation_reason":    obs_reason if obs_reason else None,
+        "observation_condition": astro.get("observation_condition"),
+        "observation_reason":    astro.get("observation_reason"),
     }
