@@ -96,8 +96,13 @@ class KMAWeatherAPI:
         # API 미신청 알림 중복 방지
         self._notified_unsubscribed: set[str] = set()
 
-        # 승인된 API 추적
+        # 승인 확인된 API (실제 데이터 호출 대상)
         self._approved_apis: set[str] = set()
+
+        # 승인 여부 미확인 API (승인 확인용 경량 호출 대상)
+        # 초기에는 모든 선택적 API가 미확인 상태
+        # 미신청으로 확인된 API도 여기에 유지 (매 업데이트마다 재확인)
+        self._pending_apis: set[str] = {"air", "station", "warning", "pollen"}
 
         # API 호출 카운터 콜백 (coordinator에서 주입)
         # coordinator가 없는 단독 테스트 환경에서는 None
@@ -186,6 +191,10 @@ class KMAWeatherAPI:
             _LOGGER.warning("API 만료/중지 감지 [%s]: resultCode=%s → _approved_apis에서 제거", service_key, result_code)
             self._approved_apis.discard(service_key)
 
+        # 미확인 목록에 추가 → 다음 업데이트에서 재확인
+        self._pending_apis.add(service_key)
+
+        # HA 알림은 최초 1회만 (중복 방지)
         if service_key in self._notified_unsubscribed:
             return True
 
@@ -218,6 +227,8 @@ class KMAWeatherAPI:
         if service_key not in self._approved_apis:
             _LOGGER.info("API 승인 확인 [%s] → 관련 센서가 추가됩니다", service_key)
             self._approved_apis.add(service_key)
+        # 승인 확인됐으므로 미확인 목록에서 제거
+        self._pending_apis.discard(service_key)
         self._notified_unsubscribed.discard(service_key)
 
     # URL → 카운팅 키 매핑
@@ -278,24 +289,28 @@ class KMAWeatherAPI:
     ) -> dict | None:
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
-        # 미신청/중지 확인된 API는 호출 건너뜀 (카운터 증가 방지)
-        # 한 번도 시도 안 한 API는 첫 호출에서 승인 여부 확인
         async def _skip_coro(default):
             return default
+
+        # 승인 여부 판단:
+        # _approved_apis에 있음 → 실제 데이터 호출 (_get_* 내부 로직 정상 실행)
+        # _pending_apis에 있음 → 승인 확인용 경량 호출 (_get_* 내부에서 resultCode만 확인)
+        # 둘 다 없음 → 건너뜀 (승인 후 _pending 제거됐으나 _approved에도 없는 이상 상태)
+        def _should_call(key: str) -> bool:
+            return key in self._approved_apis or key in self._pending_apis
 
         tasks = [
             self._get_short_term(now),
             self._get_mid_term(now, reg_id_temp, reg_id_land),
             self._get_air_quality(lat, lon)
-                if not ("station" in self._notified_unsubscribed
-                        and "air" in self._notified_unsubscribed)
+                if _should_call("air") or _should_call("station")
                 else _skip_coro({}),
             self._get_address(lat, lon),
             self._get_warning(warn_area_code)
-                if "warning" not in self._notified_unsubscribed
+                if _should_call("warning")
                 else _skip_coro(None),
             self._get_pollen(now, lat, lon)
-                if "pollen" not in self._notified_unsubscribed
+                if _should_call("pollen")
                 else _skip_coro({}),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
