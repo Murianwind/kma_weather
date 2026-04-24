@@ -263,7 +263,17 @@ class KMAWeatherAPI:
                     _LOGGER.debug("API 404 응답 (%s) - 미신청 또는 중지된 서비스일 수 있음", url)
                     return {"_http_error": "404"}
                 response.raise_for_status()
-                return await response.json(content_type=None)
+                text = await response.text()
+                # JSON 우선 파싱, 실패 시 XML로 처리
+                # (일부 API는 dataType=JSON 요청에도 XML 반환)
+                try:
+                    return json.loads(text)
+                except (json.JSONDecodeError, ValueError):
+                    if text.strip().startswith("<"):
+                        _LOGGER.debug("XML 응답 감지 (%s) → XML 파싱", url)
+                        return self._parse_xml_to_dict(text)
+                    _LOGGER.error("API 응답 파싱 실패 (%s): 알 수 없는 형식", url)
+                    return None
         except Exception as err:
             _LOGGER.error("API 호출 실패 (%s): %s", url, err)
         return None
@@ -622,7 +632,10 @@ class KMAWeatherAPI:
                 # 미신청: 빈 dict 반환 → 센서 미생성
                 return {}
 
-            # 승인 확인
+            # resultCode=00 확인 시에만 승인 처리
+            # code가 None(응답 없음/파싱 실패)이면 승인 상태 변경 없이 유지
+            if code != "00":
+                return {}
             self._mark_approved("pollen")
 
             # 비시즌: 데이터 파싱 없이 좋음 반환
