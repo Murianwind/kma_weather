@@ -181,7 +181,8 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
             "astro_dawn", "astro_dusk",                                # 천문 박명
             "moon_phase", "moon_illumination", "moonrise", "moonset",  # 달
             "observation_condition",                                    # 관측 조건
-            "pollen",  # 비시즌/미신청 시 "좋음" fallback → unknown이 아님(의도된 동작)
+            "pollen",          # 비시즌/미신청 시 "좋음" fallback → unknown이 아님(의도된 동작)
+            "api_calls_today", # 초기값 0 → unknown이 아님(coordinator 생성 즉시 카운터 존재)
         }
         for sensor_type, details in SENSOR_TYPES.items():
             if sensor_type in ["last_updated", "api_expire"]:
@@ -240,3 +241,51 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     # 10. [Teardown] 통합 구성요소 언로드
     await hass.config_entries.async_unload(mock_config_entry.entry_id)
     await hass.async_block_till_done()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API 호출 카운터 센서 테스트
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_api_calls_today_sensor_exists_and_zero(hass, mock_config_entry, kma_api_mock_factory):
+    """
+    [Given] full_test mock으로 통합 구성요소 설치
+    [When] sensor.test_api_calls_today 상태를 조회
+    [Then] 센서가 존재하고 초기값이 0이어야 함 (테스트 환경에서 실제 API 미호출)
+    """
+    kma_api_mock_factory("full_test")
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_api_calls_today")
+    assert state is not None, "api_calls_today 센서가 없음"
+    assert state.state == "0", f"초기 호출 수 0 기대, 실제={state.state}"
+    assert state.attributes.get("단기예보") == 0
+    assert state.attributes.get("중기예보") == 0
+    assert state.attributes.get("에어코리아_측정소") == 0
+    assert state.attributes.get("에어코리아_대기") == 0
+    assert state.attributes.get("기상특보") == 0
+    assert state.attributes.get("꽃가루") == 0
+
+
+@pytest.mark.asyncio
+async def test_api_calls_today_attributes_present(hass, mock_config_entry, kma_api_mock_factory):
+    """
+    [Given] full_test mock으로 통합 구성요소 설치
+    [When] api_calls_today 센서의 속성을 조회
+    [Then] 모든 API 키 속성과 집계일 속성이 존재해야 함
+    """
+    kma_api_mock_factory("full_test")
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_api_calls_today")
+    assert state is not None
+    attrs = state.attributes
+    for key in ["단기예보", "중기예보", "에어코리아_측정소", "에어코리아_대기", "기상특보", "꽃가루"]:
+        assert key in attrs, f"속성 '{key}' 없음"
+    # 집계일: 초기값 "-" (아직 카운터 증가 없음)
+    assert "집계일" in attrs, "집계일 속성 없음"
