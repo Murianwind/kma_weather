@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
+from .const import haversine as _haversine_fn
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -300,7 +301,7 @@ class KMAWeatherAPI:
         try:
             if (self._cached_station
                     and self._cached_station_lat is not None
-                    and self._haversine_simple(
+                    and _haversine_fn(
                         self._cached_station_lat, self._cached_station_lon, lat, lon
                     ) > 2.0):
                 _LOGGER.debug(
@@ -640,13 +641,7 @@ class KMAWeatherAPI:
             return {}
 
     # ── 유틸리티 ────────────────────────────────────────────────────────────
-    def _haversine_simple(self, lat1, lon1, lat2, lon2) -> float:
-        r = 6371.0
-        dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
-        a = (math.sin(dlat / 2) ** 2
-             + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
-             * math.sin(dlon / 2) ** 2)
-        return r * 2 * math.asin(math.sqrt(a))
+
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
         t, rh, v = _safe_float(temp), _safe_float(reh), _safe_float(wsd)
