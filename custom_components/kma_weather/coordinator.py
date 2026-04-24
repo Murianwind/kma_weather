@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from .api_kma import KMAWeatherAPI
-from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid
+from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid, haversine, is_korean_coord_loose
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,13 +30,7 @@ _WARN_AREA: list[list] = json.loads(
 )
 
 
-def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371.0
-    dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2
-         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
-         * math.sin(dlon / 2) ** 2)
-    return r * 2 * math.asin(math.sqrt(a))
+
 
 
 def _land_code(temp_id: str) -> str:
@@ -52,7 +46,7 @@ def _calc_reg_ids(lat: float, lon: float) -> tuple[str | None, str | None]:
     for tid, (tlat, tlon) in _TEMP_ID_COORDS.items():
         if tid in _EXCLUDE_FROM_NEAREST:
             continue
-        d = _haversine(lat, lon, tlat, tlon)
+        d = haversine(lat, lon, tlat, tlon)
         if d < best_dist:
             best_dist, best_id = d, tid
     return (best_id, _land_code(best_id)) if best_id else (None, None)
@@ -62,16 +56,13 @@ def _calc_warn_area_code(lat: float, lon: float) -> str | None:
     """좌표 → 특보구역코드"""
     best_code, best_dist = None, float("inf")
     for row in _WARN_AREA:
-        d = _haversine(lat, lon, row[0], row[1])
+        d = haversine(lat, lon, row[0], row[1])
         if d < best_dist:
             best_dist, best_code = d, row[2]
     return best_code
 
 
-def _is_valid_korean_coord(lat: float, lon: float) -> bool:
-    if math.isnan(lat) or math.isnan(lon):
-        return False
-    return 32.0 <= lat <= 42.5 and 124.0 <= lon <= 132.5
+
 
 
 class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
@@ -176,7 +167,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             (nx, ny, reg_id_temp, reg_id_land, warn_area_code)
         """
         if (self._cached_area_lat is not None
-                and _haversine(self._cached_area_lat, self._cached_area_lon, lat, lon) <= 2.0):
+                and haversine(self._cached_area_lat, self._cached_area_lon, lat, lon) <= 2.0):
             return (
                 self._cached_nx, self._cached_ny,
                 self._cached_reg_id_temp, self._cached_reg_id_land,
@@ -770,7 +761,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             if lat_attr is not None and lon_attr is not None:
                 try:
                     lat, lon = float(lat_attr), float(lon_attr)
-                    if _is_valid_korean_coord(lat, lon):
+                    if is_korean_coord_loose(lat, lon):
                         self._last_lat, self._last_lon = lat, lon  # ← 성공 시 캐시 갱신
                         return lat, lon
                 except Exception:
@@ -779,7 +770,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             return self._last_lat, self._last_lon
         try:
             lat, lon = float(self.hass.config.latitude), float(self.hass.config.longitude)
-            if _is_valid_korean_coord(lat, lon):
+            if is_korean_coord_loose(lat, lon):
                 return lat, lon
         except Exception:
             pass
