@@ -386,13 +386,16 @@ class KMAWeatherAPI:
             if code and self._check_unsubscribed("air", code):
                 return {"station": sn}
 
+            # resultCode=00이면 승인 처리 (데이터 유무와 무관)
+            if code == "00":
+                self._mark_approved("air")
+
             ai_list = (air_json.get("response", {}).get("body", {}).get("items", [])
                        if air_json else [])
             if not ai_list:
                 return {"station": sn}
 
             ai = ai_list[0]
-            self._mark_approved("air")
             return {
                 "pm10Value": ai.get("pm10Value"),
                 "pm10Grade": self._translate_grade(ai.get("pm10Grade") or ai.get("pm10Grade1h")),
@@ -428,9 +431,10 @@ class KMAWeatherAPI:
         code = self._extract_result_code(data)
         if code and self._check_unsubscribed("short", code):
             return None
-        items = (data or {}).get("response", {}).get("body", {}).get("items", {}).get("item", [])
-        if items:
+        # resultCode=00 확인 시 승인 처리 (items 유무와 무관)
+        if code == "00":
             self._mark_approved("short")
+        items = (data or {}).get("response", {}).get("body", {}).get("items", {}).get("item", [])
         return data
 
     # ── 중기예보 ────────────────────────────────────────────────────────────
@@ -520,6 +524,10 @@ class KMAWeatherAPI:
             if not data:
                 return None
 
+            # resultCode=00 확인 시 승인 처리 (특보 유무와 무관)
+            if code == "00":
+                self._mark_approved("warning")
+
             items = (
                 data.get("response", {})
                     .get("body", {})
@@ -535,7 +543,6 @@ class KMAWeatherAPI:
                 and str(item.get("cancel", "1")) == "0"
                 and str(item.get("endTime", "1")) == "0"
             ]
-            self._mark_approved("warning")
             if not active:
                 return "특보없음"
 
@@ -609,11 +616,16 @@ class KMAWeatherAPI:
             )
             code = self._extract_result_code(data)
             if code and self._check_unsubscribed("pollen", code):
-                # 미신청: 빈 dict 반환 → 센서 미생성
+                # 미신청/중지: 빈 dict 반환 → 센서 미생성
                 return {}
 
-            # 승인 확인
-            self._mark_approved("pollen")
+            # resultCode=00 확인 시에만 승인 처리
+            if code == "00":
+                self._mark_approved("pollen")
+            elif code is None:
+                # 응답 없음(호출 실패) → 승인 상태 변경 없이 기존 상태 유지
+                _LOGGER.debug("pollen API 응답 없음 → 승인 상태 유지")
+                return {}
 
             # 비시즌: 데이터 파싱 없이 좋음 반환
             if offseason:
