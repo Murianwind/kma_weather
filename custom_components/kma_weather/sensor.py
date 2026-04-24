@@ -315,13 +315,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 "소나무": pollen.get("pine")  if pollen.get("pine")  is not None else "좋음",
                 "풀":     pollen.get("grass") if pollen.get("grass") is not None else "좋음",
             }
-            # 조회 지역명은 값이 있을 때만 표시
-            area_name = pollen.get("area_name")
-            if area_name:
-                attrs["조회_지역"] = area_name
-            area_no = pollen.get("area_no")
-            if area_no:
-                attrs["지역코드"] = area_no
             return attrs
 
         # ── 관측 조건 센서 ───────────────────────────────────────────────────
