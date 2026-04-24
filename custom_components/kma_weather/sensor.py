@@ -208,8 +208,8 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
     _POLLEN_ICONS = {
         "좋음":     "mdi:flower-pollen-outline",
         "보통":     "mdi:flower-pollen",
-        "나쁨":     "mdi:flower-pollen",
-        "매우나쁨": "mdi:alert-decagram",        # 강조 아이콘으로 구분
+        "나쁨":     "mdi:close-octagon",
+        "매우나쁨": "mdi:gas-mask",        # 강조 아이콘으로 구분
     }
 
     @property
