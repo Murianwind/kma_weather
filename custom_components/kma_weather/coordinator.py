@@ -357,9 +357,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 weather.update(sun_times)
 
                 # ── 천문 관측 조건 평가 ────────────────────────────────────
-                weather["observation_condition"] = self._eval_observation(
+                obs_cond, obs_reason = self._eval_observation(
                     weather, datetime.now(self.api.tz), curr_lat, curr_lon
                 )
+                weather["observation_condition"] = obs_cond
+                weather["observation_reason"]    = obs_reason
 
                 self._cached_data = new_data
                 return new_data
@@ -487,46 +489,64 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         elif d < 337.5: return "그믐달"
         return "삭"
 
-    def _eval_observation(self, weather: dict, now: datetime,
-                          lat: float, lon: float) -> str:
+    def _eval_observation(
+        self, weather: dict, now: "datetime", lat: float, lon: float
+    ) -> "tuple[str, str]":
         """
-        현재 날씨, 태양 고도, 달 조명율을 종합하여 관측 조건을 반환한다.
+        현재 날씨·태양 고도·달 조명율을 종합하여 관측 조건과 사유를 반환한다.
+ 
+        Returns:
+            (condition, reason)
+            condition : "최우수" | "우수" | "보통" | "불량" | "관측불가" | "분석불가"
+            reason    : 관측불가 사유 (아이콘 분기 및 속성 표시에 사용)
+                        "강수" | "흐림" | "구름많음" | "주간" | "" | "분석불가"
+                        관측 가능 등급이면 빈 문자열("")을 반환한다.
         """
-        # 1. 기상 상태 체크 (강수 및 흐림을 하나의 조건으로 합침)
-        condition = weather.get("current_condition", "")
-        
-        if condition in {"rainy", "pouring", "snowy", "snowy-rainy", "cloudy"}:
-            return "관측불가"
-            
-        if condition == "partlycloudy":
-            return "불량"
-
-        # 2. 태양 고도 체크
+        condition_eng = weather.get("current_condition", "")
+ 
+        # 1. 기상 상태 체크
+        if condition_eng in {"rainy", "pouring", "snowy", "snowy-rainy"}:
+            return "관측불가", "강수"
+ 
+        if condition_eng == "cloudy":
+            return "관측불가", "흐림"
+ 
+        if condition_eng == "partlycloudy":
+            return "불량", "구름많음"
+ 
+        # 2. 태양 고도 체크 (skyfield 필요)
         try:
             if self._sf_eph is None or self._sf_ts is None:
-                return "분석불가"
-                
+                return "분석불가", "분석불가"
+ 
             sf_loc = _wgs84.latlon(lat, lon)
             t_now = self._sf_ts.from_datetime(now)
-            astrometric = (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(self._sf_eph["Sun"])
+            astrometric = (
+                (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(self._sf_eph["Sun"])
+            )
             alt, _, _ = astrometric.apparent().altaz()
-            
+ 
             if alt.degrees > -18:
-                return "관측불가"
+                return "관측불가", "주간"
+ 
         except Exception:
-            return "분석불가"
-
+            return "분석불가", "분석불가"
+ 
         # 3. 달 조명율 체크
         illum = weather.get("moon_illumination", 100)
         try:
             illum = int(illum)
         except (TypeError, ValueError):
             illum = 100
-
-        if illum <= 25:    return "최우수"
-        elif illum <= 50:  return "우수"
-        elif illum <= 75:  return "보통"
-        else:              return "불량"
+ 
+        if illum <= 25:
+            return "최우수", ""
+        elif illum <= 50:
+            return "우수", ""
+        elif illum <= 75:
+            return "보통", ""
+        else:
+            return "불량", ""
 
     # ── 날짜 지정 천문 계산 (HA 서비스용) ──────────────────────────────────
     def calc_astronomical_for_date(self, lat: float, lon: float, target_date) -> dict:
