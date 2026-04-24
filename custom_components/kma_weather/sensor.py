@@ -296,6 +296,9 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 "latitude": w.get("debug_lat"),
                 "longitude": w.get("debug_lon"),
             }
+            if pollen.get("area_name"):
+                attrs["pollen_location"] = pollen["area_name"]  # "서울특별시 종로구 청운효자동"
+            return attrs
 
         if self._type == "pollen":
             pollen = self.coordinator.data.get("pollen", {})
