@@ -125,7 +125,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             "기상특보": 0, "꽃가루": 0,
         }
         self._api_call_date: str | None = None   # "YYYYMMDD" 형식
-        self._api_call_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_api_calls")
+        # API 호출 카운터는 모든 기기 합산 → 공통 Store 키 사용
+        self._api_call_store = Store(hass, version=1, key=f"{DOMAIN}_global_api_calls")
         self._api_call_store_loaded = False
 
         # api 객체에 카운터 콜백 주입 (api는 이미 위에서 생성됨)
@@ -192,24 +193,41 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         return nx, ny, reg_id_temp, reg_id_land, warn_area_code
 
     # ── API 카운터 초기화/콜백 주입 ─────────────────────────────────────────
+    # ── 공유 카운터 접근 헬퍼 ────────────────────────────────────────────────
+    @property
+    def _shared_counts(self) -> dict[str, int]:
+        """hass.data에 저장된 전체 기기 공유 카운터를 반환한다."""
+        return self.hass.data.setdefault(f"{DOMAIN}_api_call_counts", {
+            "단기예보": 0, "중기예보": 0,
+            "에어코리아_측정소": 0, "에어코리아_대기": 0,
+            "기상특보": 0, "꽃가루": 0,
+            "date": None,
+        })
+
     def _inject_counter(self) -> None:
         """api 객체에 카운터 콜백을 주입한다. coordinator 생성 후 반드시 호출."""
         def _increment(key: str) -> None:
             now_date = datetime.now(self.api.tz).strftime("%Y%m%d")
-            # 자정 넘어가면 초기화
-            if self._api_call_date and self._api_call_date != now_date:
-                for k in self._api_call_counts:
-                    self._api_call_counts[k] = 0
-                _LOGGER.debug("API 호출 카운터 자정 초기화: %s → %s", self._api_call_date, now_date)
+            shared = self._shared_counts
+            # 자정 넘어가면 전체 초기화
+            if shared.get("date") and shared["date"] != now_date:
+                for k in list(shared.keys()):
+                    if k != "date":
+                        shared[k] = 0
+                _LOGGER.debug("API 호출 카운터 자정 초기화: %s → %s", shared["date"], now_date)
                 self.hass.async_create_task(self._save_api_calls())
+            shared["date"] = now_date
+            if key in shared:
+                shared[key] += 1
+            # 인스턴스 카운터도 동기화 (저장/복구용)
             self._api_call_date = now_date
             if key in self._api_call_counts:
-                self._api_call_counts[key] += 1
+                self._api_call_counts[key] = shared[key]
         self.api._call_counter_ref = _increment
 
     # ── API 카운터 저장소 ────────────────────────────────────────────────────
     async def _restore_api_calls(self) -> None:
-        """재시작 후 오늘 날짜의 카운터를 복구한다."""
+        """재시작 후 오늘 날짜의 카운터를 복구한다 (공유 카운터에 반영)."""
         if self._api_call_store_loaded:
             return
         try:
@@ -218,10 +236,17 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 tz = getattr(self.api, "tz", timezone(timedelta(hours=9)))
                 today = datetime.now(tz).strftime("%Y%m%d")
                 if stored.get("date") == today:
-                    for key in self._api_call_counts:
-                        self._api_call_counts[key] = int(stored.get(key, 0))
-                    self._api_call_date = today
-                    _LOGGER.debug("API 호출 카운터 복구 성공: %s", self._api_call_counts)
+                    shared = self._shared_counts
+                    # 공유 카운터가 아직 초기화 안 된 경우에만 복구
+                    # (이미 다른 coordinator가 복구했으면 덮어쓰지 않음)
+                    if shared.get("date") != today:
+                        for key in self._api_call_counts:
+                            val = int(stored.get(key, 0))
+                            self._api_call_counts[key] = val
+                            shared[key] = val
+                        shared["date"] = today
+                        self._api_call_date = today
+                        _LOGGER.debug("API 호출 카운터 복구 성공: %s", self._api_call_counts)
         except Exception as e:
             _LOGGER.debug("API 호출 카운터 복구 실패 (무시): %s", e)
         self._api_call_store_loaded = True
@@ -237,8 +262,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("API 호출 카운터 저장 실패: %s", e)
 
     def api_call_total(self) -> int:
-        """오늘 총 API 호출 횟수를 반환한다."""
-        return sum(self._api_call_counts.values())
+        """오늘 총 API 호출 횟수를 반환한다 (전체 기기 합산)."""
+        shared = self._shared_counts
+        return sum(v for k, v in shared.items() if k != "date")
 
     # ── 저장소 복구/저장 ────────────────────────────────────────────────────
     async def _restore_daily_temps(self):
