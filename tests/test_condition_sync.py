@@ -32,7 +32,19 @@ def _build_coordinator_data(kor: str, eng: str) -> dict:
             "last_updated": dt_util.utcnow(),
         },
         "air": {},
+        # ── 꽃가루 키 추가 ─────────────────────────────────────────────────
+        # pollen 센서는 API 승인 여부와 무관하게 항상 등록된다(SENSOR_API_GROUPS[None]).
+        # coordinator.data에 "pollen" 키가 없어도 sensor.py가 fallback("좋음")을 반환하므로
+        # 테스트 자체가 실패하지는 않지만, extra_state_attributes 호출 시
+        # dict.get()을 사용하므로 안전하다. 명시적으로 포함시켜 실제 동작과 일치시킨다.
+        "pollen": {
+            "oak": "좋음",
+            "pine": "좋음",
+            "grass": "좋음",
+            "worst": "좋음",
+        },
     }
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. 매핑 테이블/단위 테스트 (오류 수정: snowy-rainy 허용)
@@ -41,18 +53,18 @@ def _build_coordinator_data(kor: str, eng: str) -> dict:
 class TestKorToConditionMapping:
     def test_mapping_integrity(self):
         # [Given] 기상청 한글-영문 매핑 테이블이 정의되어 있을 때
-        
+
         # [Fix] snowy-rainy(진눈깨비)는 파트너님이 정의한 유효한 커스텀 상태이므로 허용 목록에 추가
         valid_ha_conditions = {
-            "sunny", "partlycloudy", "cloudy", "rainy", "snowy", 
-            "lightning", "lightning-rainy", "fog", "windy", "hail", 
+            "sunny", "partlycloudy", "cloudy", "rainy", "snowy",
+            "lightning", "lightning-rainy", "fog", "windy", "hail",
             "exceptional", "clear-night", "pouring", "snowy-rainy"
         }
-        
+
         # [Then] 모든 매핑 결과가 허용된 상태값 안에 포함되어야 함
         for kor, eng in KOR_TO_CONDITION.items():
             assert eng in valid_ha_conditions, f"'{eng}'는 유효한 HA 상태값이 아닙니다 (한글 키: {kor})"
-            
+
         # [Then] 필수 기상 키들이 누락 없이 존재해야 함
         required = {"맑음", "구름많음", "흐림", "비", "비/눈", "소나기", "눈"}
         assert required.issubset(set(KOR_TO_CONDITION.keys()))
@@ -81,14 +93,14 @@ class TestCoordinatorConditionSync:
         from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
         hass.config.latitude, hass.config.longitude = 37.56, 126.98
         entry = MagicMock(data={"api_key": "test", "prefix": "sync"}, options={}, entry_id="coord_test")
-        
+
         coord = KMAWeatherUpdateCoordinator(hass, entry)
         coord.api.tz = TZ
-        
+
         # API 응답 결과 Mocking (실제 _merge_all 결과 딕셔너리와 구조 일치)
         coord.api.fetch_data = AsyncMock(return_value={
             "weather": {
-                "wf_am_today": wf_am, "wf_pm_today": wf_pm, 
+                "wf_am_today": wf_am, "wf_pm_today": wf_pm,
                 "current_condition_kor": wf_am, # 초기값
                 "forecast_twice_daily": [], "forecast_daily": []
             },
@@ -116,11 +128,30 @@ class TestCoordinatorConditionSync:
 async def test_integration_sync(hass, kor, eng):
     # [Given] 센서와 날씨 엔티티가 동기화될 상태 데이터 주입
     entry = MockConfigEntry(domain=DOMAIN, data={"prefix": "sync", "api_key": "test"}, entry_id=f"sync_{kor}")
-    
-    # 코디네이터의 데이터 수집 로직을 패치하여 고정된 데이터 반환
-    with patch("custom_components.kma_weather.coordinator.KMAWeatherUpdateCoordinator._async_update_data",
-               new_callable=AsyncMock, return_value=_build_coordinator_data(kor, eng)):
-        
+
+    # coordinator.data를 반환할 mock 데이터
+    mock_data = _build_coordinator_data(kor, eng)
+
+    # ── 핵심 수정: _async_update_data 패치와 함께 _approved_apis도 주입 ──
+    # _async_update_data를 mock으로 대체하면 실제 API 호출이 없으므로
+    # api._mark_approved()가 호출되지 않는다.
+    # 그 결과 sensor.py의 _eligible_sensor_types()가 short API 미승인으로 판단하여
+    # current_condition_kor 등 short 의존 센서를 등록하지 않아 테스트가 실패한다.
+    # KMAWeatherUpdateCoordinator.__init__ 를 감싸서 초기화 직후 _approved_apis를 주입한다.
+    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+
+    _real_init = KMAWeatherUpdateCoordinator.__init__
+
+    def _patched_init(self_coord, hass_arg, entry_arg):
+        _real_init(self_coord, hass_arg, entry_arg)
+        self_coord.api._approved_apis = {"short", "mid", "air", "warning", "pollen"}
+
+    with patch.object(KMAWeatherUpdateCoordinator, "__init__", _patched_init), \
+         patch(
+             "custom_components.kma_weather.coordinator.KMAWeatherUpdateCoordinator._async_update_data",
+             new_callable=AsyncMock,
+             return_value=mock_data,
+         ):
         # [When] 엔티티를 생성하고 홈어시스턴트에 등록하면
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
@@ -130,7 +161,7 @@ async def test_integration_sync(hass, kor, eng):
         sensor_state = hass.states.get("sensor.sync_condition")
         assert sensor_state is not None, "센서 엔티티가 생성되지 않았습니다."
         assert sensor_state.state == kor
-        
+
         # [Then] 날씨 엔티티의 예보(영문)가 코디네이터 데이터와 일치해야 함
         response = await hass.services.async_call(
             "weather", "get_forecasts", {"type": "twice_daily"},
