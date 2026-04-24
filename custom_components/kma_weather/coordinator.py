@@ -649,9 +649,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         # 날씨 맑음 여부
         is_clear = condition_eng in ("", "sunny")
 
+        # 날씨 미확인 suffix (단기예보 미승인/조회 실패 시)
+        weather_suffix = "" if is_clear else " (날씨 미확인)"
+
         # 4. 달이 떠 있지 않은 경우 → 최우수
         if not moon_up:
-            reason = "달 없음, 맑음" if is_clear else "달 없음"
+            reason = f"달 없음, 맑음" if is_clear else f"달 없음{weather_suffix}"
             return "최우수", reason
 
         # 5. 달이 떠 있음 → 달 조명율로 판단
@@ -661,15 +664,15 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         except (TypeError, ValueError):
             illum = 100
 
+        clear_suffix = ", 맑음" if is_clear else weather_suffix
         if illum <= 25:
-            reason = "달이 어두움, 맑음" if is_clear else "달이 어두움"
-            return "최우수", reason
+            return "최우수", f"달이 어두움{clear_suffix}"
         elif illum <= 50:
-            return "우수", "달이 밝지 않음"
+            return "우수", f"달이 밝지 않음{clear_suffix}"
         elif illum <= 75:
-            return "보통", "달이 밝음"
+            return "보통", f"달이 밝음{clear_suffix}"
         else:
-            return "불량", "달이 환함"
+            return "불량", f"달이 환함{weather_suffix}"
 
     # ── 날짜 지정 천문 계산 (HA 서비스용) ──────────────────────────────────
     async def calc_astronomical_for_date(
