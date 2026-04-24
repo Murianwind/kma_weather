@@ -116,13 +116,14 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
 
-            # Traceback 전체 블록 (파일명:라인 포함)
+            # Traceback 핵심 라인만 추출 (테스트명 + assert 실패 위치 + 오류 메시지)
             echo "**Traceback (파일:라인):**" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             awk '
-              /^_{5,}/ { in_fail=1; print ""; print; next }
-              in_fail && /^={5,}/ { in_fail=0; next }
-              in_fail { print }
+              /^_{5,}/ { in_fail=1; block=""; print ""; print; next }
+              in_fail && /^(FAILED|ERROR|={5,})/ { in_fail=0; next }
+              in_fail && /^[[:space:]]*(tests|custom_components)\/.*\.py:[0-9]+:/ { print; next }
+              in_fail && /^E[[:space:]]/ { print; next }
             ' pytest-output.txt >> $GITHUB_STEP_SUMMARY || true
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
