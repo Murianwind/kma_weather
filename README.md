@@ -65,6 +65,7 @@
 | `sensor.PREFIX_location` | 현재 위치 (읍면동 주소). 속성: 격자좌표, 중기예보 구역코드, 에어코리아 측정소, 좌표, 꽃가루 조회 지역 |
 | `sensor.PREFIX_last_updated` | 마지막 업데이트 시각 |
 | `sensor.PREFIX_api_expire` | API 잔여일수 |
+| `sensor.PREFIX_api_calls_today` | 오늘 API 호출 횟수 (자정 자동 초기화, HA 재시작 후 복구). 속성: API별 세부 횟수(`단기예보`, `중기예보`, `에어코리아_측정소`, `에어코리아_대기`, `기상특보`, `꽃가루`), `집계일` |
 | `sensor.PREFIX_sunrise` | 다음 일출 시각 |
 | `sensor.PREFIX_sunset` | 다음 일몰 시각 |
 | `sensor.PREFIX_dawn` | 다음 새벽(시민박명 시작) |
