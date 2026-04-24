@@ -130,7 +130,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_init_skyfield(self, sf_dir: str) -> None:
         """de440s.bsp 파일을 비동기로 다운로드 후 skyfield 초기화"""
-        import asyncio
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._sync_init_skyfield, sf_dir)
@@ -397,17 +396,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 prefix = "오늘" if t.date() == today else "내일"
                 return f"{prefix} {t.strftime('%H:%M')}"
 
-            def _ts_range(dd):
-                t0 = self._sf_ts.from_datetime(
-                    datetime(dd.year, dd.month, dd.day, 0, 0, tzinfo=tz))
-                t1 = self._sf_ts.from_datetime(
-                    datetime(dd.year, dd.month, dd.day, 23, 59, tzinfo=tz))
-                return t0, t1
-
             # ── 일출/일몰 ──────────────────────────────────────────────────
             f_ss = _almanac.sunrise_sunset(self._sf_eph, sf_loc)
             for offset in (0, 1, 2):
-                t0, t1 = _ts_range(today + timedelta(days=offset))
+                t0, t1 = self._ts_range(today + timedelta(days=offset), tz)
                 for t, e in zip(*_almanac.find_discrete(t0, t1, f_ss)):
                     local_t = t.astimezone(tz)
                     if local_t > now:
@@ -421,17 +413,16 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             # ── 새벽/황혼/천문박명 (dark_twilight_day) ────────────────────
             # 0=Night, 1=Astronomical, 2=Nautical, 3=Civil, 4=Day
             # (3→4)=dawn, (4→3)=dusk, (0→1)=astro_dawn, (1→0)=astro_dusk
-            _TW_MAP = {(2,3):"dawn", (3,2):"dusk", (0,1):"astro_dawn", (1,0):"astro_dusk"}
             f_tw = _almanac.dark_twilight_day(self._sf_eph, sf_loc)
             for offset in (0, 1, 2):
-                t0, t1 = _ts_range(today + timedelta(days=offset))
+                t0, t1 = self._ts_range(today + timedelta(days=offset), tz)
                 times, events = _almanac.find_discrete(t0, t1, f_tw)
                 # t0 시각의 실제 상태를 초기값으로 사용 (prev_e=None이면 첫 이벤트 skip됨)
                 prev_e = int(f_tw(t0))
                 for t, cur_e in zip(times, events):
                     local_t = t.astimezone(tz)
                     if local_t > now:
-                        key = _TW_MAP.get((prev_e, int(cur_e)))
+                        key = self._TW_MAP.get((prev_e, int(cur_e)))
                         if key and key not in result:
                             result[key] = _fmt(local_t)
                     prev_e = int(cur_e)
@@ -450,7 +441,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 self._sf_eph, self._sf_eph["Moon"], sf_loc)
             next_rise = next_set = None
             for offset in (0, 1, 2):
-                t0, t1 = _ts_range(today + timedelta(days=offset))
+                t0, t1 = self._ts_range(today + timedelta(days=offset), tz)
                 for t, e in zip(*_almanac.find_discrete(t0, t1, f_rs)):
                     local_t = t.astimezone(tz)
                     if local_t > now:
@@ -474,6 +465,24 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             result = self._sun_times
 
         return result
+
+    # ── 천문 계산 공통 상수/헬퍼 ───────────────────────────────────────────
+    # dark_twilight_day 이벤트 전환값 → 키 매핑
+    # 0=Night, 1=Astronomical, 2=Nautical, 3=Civil, 4=Day
+    _TW_MAP: dict[tuple, str] = {
+        (2, 3): "dawn",
+        (3, 2): "dusk",
+        (0, 1): "astro_dawn",
+        (1, 0): "astro_dusk",
+    }
+
+    def _ts_range(self, dd, tz) -> tuple:
+        """날짜(dd)의 0시 00분 ~ 23시 59분 skyfield Time 범위를 반환한다."""
+        t0 = self._sf_ts.from_datetime(
+            datetime(dd.year, dd.month, dd.day, 0, 0, tzinfo=tz))
+        t1 = self._sf_ts.from_datetime(
+            datetime(dd.year, dd.month, dd.day, 23, 59, tzinfo=tz))
+        return t0, t1
 
     @staticmethod
     def _moon_phase_name(deg: float) -> str:
@@ -554,22 +563,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         if self._sf_eph is None or self._sf_ts is None:
             return {"error": "skyfield 라이브러리가 준비되지 않았습니다"}
         try:
-            from datetime import date as _date
             tz = self.api.tz
             sf_loc = _wgs84.latlon(lat, lon)
             result: dict = {}
 
-            def _ts_range(dd):
-                t0 = self._sf_ts.from_datetime(
-                    datetime(dd.year, dd.month, dd.day, 0, 0, tzinfo=tz))
-                t1 = self._sf_ts.from_datetime(
-                    datetime(dd.year, dd.month, dd.day, 23, 59, tzinfo=tz))
-                return t0, t1
-
             def _hm(t) -> str:
                 return t.astimezone(tz).strftime("%H:%M")
 
-            t0, t1 = _ts_range(target_date)
+            t0, t1 = self._ts_range(target_date, tz)
 
             # 일출/일몰
             f_ss = _almanac.sunrise_sunset(self._sf_eph, sf_loc)
@@ -584,12 +585,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             result["sunset"] = sunset
 
             # 박명 (새벽/황혼/천문박명)
-            _TW_MAP = {(2, 3): "dawn", (3, 2): "dusk", (0, 1): "astro_dawn", (1, 0): "astro_dusk"}
             f_tw = _almanac.dark_twilight_day(self._sf_eph, sf_loc)
             prev_e = int(f_tw(t0))
             for t, cur_e in zip(*_almanac.find_discrete(t0, t1, f_tw)):
                 local_t = t.astimezone(tz)
-                key = _TW_MAP.get((prev_e, int(cur_e)))
+                key = self._TW_MAP.get((prev_e, int(cur_e)))
                 if key and key not in result:
                     result[key] = _hm(local_t)
                 prev_e = int(cur_e)
@@ -615,15 +615,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             result["moonset"] = moonset
 
             # 관측 조건 (달 조명율만 기준, 날씨 불포함)
-            if illum <= 25:
-                obs = "최우수"
-            elif illum <= 50:
-                obs = "우수"
-            elif illum <= 75:
-                obs = "보통"
-            else:
-                obs = "불량"
-            result["observation_condition"] = obs
+            # _eval_observation 재사용 (weather dict에 moon_illumination만 전달)
+            obs_cond, _ = self._eval_observation(
+                {"moon_illumination": illum},
+                datetime(target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=tz),
+                lat, lon,
+            )
+            result["observation_condition"] = obs_cond
             return result
         except Exception as e:
             _LOGGER.error("날짜별 천문 계산 실패: %s", e)
