@@ -22,6 +22,10 @@ _AREA = json.loads((pathlib.Path(__file__).parent / "area.json").read_text(encod
 _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {k: tuple(v) for k, v in _AREA["temp"].items()}
 _EXCLUDE_FROM_NEAREST: frozenset[str] = frozenset(_AREA["exclude"])
 _LAND_CODE_MAP: list[tuple[str, str]] = [tuple(x) for x in _AREA["land"]]
+# prefix 길이 내림차순으로 미리 정렬 → _land_code 호출 시 매번 정렬 불필요
+_LAND_CODE_MAP_SORTED: list[tuple[str, str]] = sorted(
+    _LAND_CODE_MAP, key=lambda x: len(x[0]), reverse=True
+)
 
 # ── 특보구역코드 테이블 (warn_area.json) ─────────────────────────────────────
 _WARN_AREA: list[list] = json.loads(
@@ -33,7 +37,7 @@ _WARN_AREA: list[list] = json.loads(
 
 
 def _land_code(temp_id: str) -> str:
-    for prefix, land in sorted(_LAND_CODE_MAP, key=lambda x: len(x[0]), reverse=True):
+    for prefix, land in _LAND_CODE_MAP_SORTED:
         if temp_id.startswith(prefix):
             return land
     return "11B00000"
