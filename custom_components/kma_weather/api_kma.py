@@ -116,7 +116,7 @@ class KMAWeatherAPI:
         self._pollen_cached_area_name: str = ""
         self._pollen_cached_lat: float | None = None
         self._pollen_cached_lon: float | None = None
-        self._load_pollen_area_map()
+        # pollen_area_map.json은 첫 _find_pollen_area 호출 시 로드됨 (lazy)
 
     def _build_nominatim_user_agent(self):
         base = "HomeAssistant-KMA-Weather"
@@ -145,10 +145,11 @@ class KMAWeatherAPI:
             _LOGGER.warning("꽃가루 지역코드 룩업 로드 실패 (pollen_area_map.json 누락?): %s", e)
             self._pollen_area_data = None
 
-    def _find_pollen_area(self, lat: float, lon: float) -> tuple[str, str]:
+    async def _find_pollen_area(self, lat: float, lon: float) -> tuple[str, str]:
         """
         위경도로 가장 가까운 읍면동의 (areaNo, 지역명)을 반환한다.
         좌표가 이전과 같으면 캐시를 반환한다.
+        JSON이 아직 로딩되지 않았으면 executor에서 로딩한다.
         JSON 로드 실패 시 서울 fallback을 반환한다.
         """
         if (self._pollen_cached_lat == lat
@@ -157,7 +158,13 @@ class KMAWeatherAPI:
             return self._pollen_cached_area_no, self._pollen_cached_area_name
 
         if not self._pollen_area_data:
-            return "1100000000", ""
+            if self.hass:
+                try:
+                    await self.hass.async_add_executor_job(self._load_pollen_area_map)
+                except Exception as e:
+                    _LOGGER.warning("pollen_area_map.json 로드 실패: %s", e)
+            if not self._pollen_area_data:
+                return "1100000000", ""
 
         best, best_d = None, float("inf")
         for r in self._pollen_area_data:
@@ -241,6 +248,14 @@ class KMAWeatherAPI:
             async with self.session.get(
                 url, params=params, headers=headers, timeout=timeout
             ) as response:
+                if response.status == 401 or response.status == 403:
+                    # 인증 실패 → 미신청/만료와 동일하게 처리
+                    _LOGGER.warning("API 인증 실패 (%s): HTTP %s", url, response.status)
+                    return {"_http_error": str(response.status)}
+                if response.status == 404:
+                    # 404는 API URL 문제 또는 서비스 비활성화
+                    _LOGGER.warning("API 404 응답 (%s)", url)
+                    return {"_http_error": "404"}
                 response.raise_for_status()
                 return await response.json(content_type=None)
         except Exception as err:
@@ -250,6 +265,9 @@ class KMAWeatherAPI:
     def _extract_result_code(self, data: dict | None) -> str | None:
         if not data:
             return None
+        # HTTP 오류 응답 (401/403/404) → 미신청 코드로 매핑
+        if "_http_error" in data:
+            return "30"  # 미신청 코드와 동일하게 처리
         return (
             data.get("response", {})
                 .get("header", {})
@@ -537,7 +555,7 @@ class KMAWeatherAPI:
         offseason = not any(in_season.values())
 
         # 현재 위치의 읍면동 areaNo 및 지역명 (JSON 룩업, 캐시 활용)
-        area_no, area_name = self._find_pollen_area(lat, lon)
+        area_no, area_name = await self._find_pollen_area(lat, lon)
 
         # 비시즌 + 이미 승인 확인됨 → API 호출 없이 좋음 반환
         if offseason and "pollen" in self._approved_apis:
