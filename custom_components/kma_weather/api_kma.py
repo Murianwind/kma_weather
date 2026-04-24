@@ -104,6 +104,10 @@ class KMAWeatherAPI:
         # 승인된 API 추적
         self._approved_apis: set[str] = set()
 
+        # API 호출 카운터 콜백 (coordinator에서 주입)
+        # coordinator가 없는 단독 테스트 환경에서는 None
+        self._call_counter_ref = None
+
         # ── 꽃가루 지역코드 룩업 (JSON, 읍면동 단위) ─────────────────────────
         # pollen_area_map.json: [{"c":"1111051500","n":"서울특별시 종로구 청운효자동","la":37.58,"lo":126.97},...]
         self._pollen_area_data: list[dict] | None = None
@@ -208,7 +212,24 @@ class KMAWeatherAPI:
             self._approved_apis.add(service_key)
         self._notified_unsubscribed.discard(service_key)
 
+    # URL → 카운팅 키 매핑
+    _CALL_COUNT_KEY: dict[str, str] = {
+        "VilageFcstInfoService_2.0": "단기예보",
+        "MidFcstInfoService":        "중기예보",
+        "MsrstnInfoInqireSvc":       "에어코리아_측정소",
+        "ArpltnInforInqireSvc":      "에어코리아_대기",
+        "WthrWrnInfoService":        "기상특보",
+        "LivingWthrIdxServiceV4":    "꽃가루",
+    }
+
     async def _fetch(self, url, params, headers=None, timeout=15):
+        # URL에서 서비스 키 추출 → coordinator 카운터 증가
+        if self.hass is not None:
+            for fragment, key in self._CALL_COUNT_KEY.items():
+                if fragment in url:
+                    if hasattr(self, "_call_counter_ref") and self._call_counter_ref is not None:
+                        self._call_counter_ref(key)
+                    break
         try:
             async with self.session.get(
                 url, params=params, headers=headers, timeout=timeout
