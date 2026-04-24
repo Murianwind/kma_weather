@@ -4,9 +4,9 @@ from unittest.mock import patch
 from custom_components.kma_weather.coordinator import (
     _TEMP_ID_COORDS,
     _calc_reg_ids,          # 변경: _get_kma_reg_ids → _calc_reg_ids
-    _is_valid_korean_coord,
     _EXCLUDE_FROM_NEAREST,
 )
+from custom_components.kma_weather.const import is_korean_coord_loose as _is_valid_korean_coord
 from custom_components.kma_weather.sensor import SENSOR_TYPES
 
 
@@ -123,7 +123,8 @@ async def test_summary_persistence_at_midnight(hass, mock_config_entry):
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. 유틸리티 헬퍼 함수 검증
 # ─────────────────────────────────────────────────────────────────────────────
-from custom_components.kma_weather.coordinator import _haversine, _land_code
+from custom_components.kma_weather.coordinator import _land_code
+from custom_components.kma_weather.const import haversine as _haversine
 
 def test_haversine_known_distance():
     d = _haversine(37.5665, 126.9780, 35.1796, 129.0756)
