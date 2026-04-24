@@ -54,8 +54,6 @@ SENSOR_TYPES = {
 # 키 문자열: 해당 API가 승인됐을 때만 등록
 SENSOR_API_GROUPS: dict[str | None, list[str]] = {
     None: [
-        # API 신청 여부와 무관하게 항상 등록되는 센서
-        # (천문 계산은 skyfield 로컬 연산, 외부 API 불필요)
         "api_expire", "last_updated", "address",
         "dawn", "sunrise", "sunset", "dusk",
         "astro_dawn", "astro_dusk",
@@ -63,24 +61,18 @@ SENSOR_API_GROUPS: dict[str | None, list[str]] = {
         "observation_condition",
     ],
     "short": [
-        # 기상청 단기예보 API 승인 시 등록
         "TMP", "REH", "WSD", "VEC_KOR", "POP", "apparent_temp",
         "rain_start_time", "current_condition_kor",
         "TMX_today", "TMN_today", "wf_am_today", "wf_pm_today",
         "TMX_tomorrow", "TMN_tomorrow", "wf_am_tomorrow", "wf_pm_tomorrow",
     ],
     "air": [
-        # 에어코리아 대기오염정보 API 승인 시 등록
-        # (station API는 air 호출을 위한 내부 단계이므로 별도 그룹 없음)
         "pm10Value", "pm10Grade", "pm25Value", "pm25Grade",
     ],
     "warning": [
-        # 기상특보 API 승인 시 등록
         "warning",
     ],
     "pollen": [
-        # 기상청 생활기상지수(꽃가루) API 승인 시 등록
-        # 비시즌에도 센서는 존재하며, 값은 "좋음"으로 fallback
         "pollen",
     ],
 }
@@ -101,7 +93,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     prefix = entry.options.get(CONF_PREFIX, entry.data.get(CONF_PREFIX, "kma"))
 
-    # 등록된 센서 타입 추적 (중복 방지)
     if not hasattr(coordinator, "_registered_sensor_types"):
         coordinator._registered_sensor_types = set()
 
@@ -112,14 +103,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
             if st not in coordinator._registered_sensor_types and st in SENSOR_TYPES
         ]
 
-    # 초기 등록
     initial_types = _eligible_sensor_types(coordinator)
     initial_entities = _make_sensors(initial_types)
     for e in initial_entities:
         coordinator._registered_sensor_types.add(e._type)
     async_add_entities(initial_entities)
 
-    # 매 업데이트마다 새로 승인된 API 확인 → 센서 추가
     @callback
     def _check_new_sensors():
         eligible = _eligible_sensor_types(coordinator)
@@ -155,11 +144,9 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
         self._attr_entity_category = details[5]
 
-        # 풍속 센서: HA 단위 자동변환 차단
         if sensor_type == "WSD":
             self._attr_suggested_unit_of_measurement = UnitOfSpeed.METERS_PER_SECOND
 
-        # 수치형 단위 센서에 STATE_CLASS 설정
         if details[1] is not None and sensor_type not in ("api_expire",):
             self._attr_state_class = SensorStateClass.MEASUREMENT
 
@@ -181,16 +168,11 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         "그믐달":   "mdi:moon-waning-crescent",
     }
 
-    # ── 관측 조건 아이콘: 상태 + 사유 조합으로 분기 ───────────────────────
-    # coordinator가 weather["observation_reason"]을 함께 저장하므로
-    # 사유(reason)를 우선 참조하고, 없으면 상태(condition)로 fallback한다.
     _OBSERVATION_ICONS_BY_REASON = {
-        # 관측불가 사유별
-        "강수":     "mdi:weather-rainy",        # 비/눈/소나기
-        "흐림":     "mdi:weather-cloudy",        # 흐린 하늘
-        "주간":     "mdi:weather-sunny",         # 태양 고도 높음
-        # 관측 가능 등급
-        "":         None,                        # 등급으로 fallback
+        "강수":     "mdi:weather-rainy",
+        "흐림":     "mdi:weather-cloudy",
+        "주간":     "mdi:weather-sunny",
+        "":         None,
         "분석불가": "mdi:help-circle-outline",
     }
     _OBSERVATION_ICONS_BY_CONDITION = {
@@ -198,18 +180,15 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         "우수":     "mdi:star",
         "보통":     "mdi:star-half-full",
         "불량":     "mdi:moon-waning-gibbous",
-        "관측불가": "mdi:telescope",             # reason 없을 때 최종 fallback
+        "관측불가": "mdi:telescope",
         "분석불가": "mdi:help-circle-outline",
     }
 
-    # ── 꽃가루 아이콘: MDI는 색상 변경 불가이므로 등급별 아이콘을 다르게 ──
-    # "좋음": 윤곽선(outline) 아이콘으로 시각적 구분
-    # "보통"~"매우나쁨": 속이 찬 아이콘 + 이름에 alert 접미 추가
     _POLLEN_ICONS = {
         "좋음":     "mdi:flower-pollen-outline",
         "보통":     "mdi:flower-pollen",
         "나쁨":     "mdi:close-octagon",
-        "매우나쁨": "mdi:gas-mask",        # 강조 아이콘으로 구분
+        "매우나쁨": "mdi:gas-mask",
     }
 
     @property
@@ -222,12 +201,10 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                     return self._MOON_PHASE_ICONS[phase]
 
             elif self._type == "observation_condition":
-                # 1순위: 사유(reason) 기반 아이콘
                 reason = w.get("observation_reason", "")
                 icon_by_reason = self._OBSERVATION_ICONS_BY_REASON.get(reason)
                 if icon_by_reason is not None:
                     return icon_by_reason
-                # 2순위: 상태(condition) 기반 아이콘
                 cond = w.get("observation_condition", "")
                 return self._OBSERVATION_ICONS_BY_CONDITION.get(cond, self._attr_icon)
 
@@ -253,13 +230,11 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         w = self.coordinator.data.get("weather", {})
         a = self.coordinator.data.get("air", {})
 
-        # 꽃가루 센서: worst 등급 반환 (None이면 좋음)
         if self._type == "pollen":
             pollen = self.coordinator.data.get("pollen", {})
             worst = pollen.get("worst")
             return worst if worst is not None else "좋음"
 
-        # 오늘 최고/최저 기온은 코디네이터 누적값 우선
         if self._type == "TMN_today":
             val = self.coordinator._daily_min_temp
         elif self._type == "TMX_today":
@@ -288,28 +263,69 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         w = self.coordinator.data.get("weather", {})
         a = self.coordinator.data.get("air", {})
 
+        # ── location 센서 (address) ──────────────────────────────────────────
         if self._type == "address":
-            return {
-                "short_term_nx": w.get("debug_nx"),
-                "short_term_ny": w.get("debug_ny"),
-                "air_korea_station": a.get("station"),
-                "latitude": w.get("debug_lat"),
-                "longitude": w.get("debug_lon"),
-            }
-            if pollen.get("area_name"):
-                attrs["pollen_location"] = pollen["area_name"]  # "서울특별시 종로구 청운효자동"
-            return attrs
+            attrs: dict = {}
 
+            # 단기예보 API 승인 시에만 격자 좌표 표시
+            approved = self.coordinator.api._approved_apis
+            if "short" in approved:
+                nx = w.get("debug_nx")
+                ny = w.get("debug_ny")
+                if nx is not None:
+                    attrs["short_term_nx"] = nx
+                if ny is not None:
+                    attrs["short_term_ny"] = ny
+                # coordinator 캐시에서 중기예보 구역코드 읽기
+                reg_temp = getattr(self.coordinator, "_cached_reg_id_temp", None)
+                reg_land = getattr(self.coordinator, "_cached_reg_id_land", None)
+                if reg_temp:
+                    attrs["reg_id_temp"] = reg_temp
+                if reg_land:
+                    attrs["reg_id_land"] = reg_land
+
+            # 에어코리아 API 승인 시에만 측정소명 표시
+            if "air" in approved:
+                station = a.get("station")
+                if station:
+                    attrs["air_korea_station"] = station
+
+            # 좌표는 항상 표시 (천문 계산에도 필요, API 무관)
+            lat = w.get("debug_lat")
+            lon = w.get("debug_lon")
+            if lat is not None:
+                attrs["latitude"] = lat
+            if lon is not None:
+                attrs["longitude"] = lon
+
+            # 꽃가루 API 승인 시에만 꽃가루 조회 지역 표시
+            if "pollen" in approved:
+                pollen = self.coordinator.data.get("pollen", {})
+                area_name = pollen.get("area_name")
+                if area_name:
+                    attrs["pollen_location"] = area_name
+
+            return attrs if attrs else None
+
+        # ── 꽃가루 센서 ──────────────────────────────────────────────────────
         if self._type == "pollen":
             pollen = self.coordinator.data.get("pollen", {})
-            return {
-                "참나무": pollen.get("oak") if pollen.get("oak") is not None else "좋음",
-                "소나무": pollen.get("pine") if pollen.get("pine") is not None else "좋음",
+            attrs = {
+                "참나무": pollen.get("oak")   if pollen.get("oak")   is not None else "좋음",
+                "소나무": pollen.get("pine")  if pollen.get("pine")  is not None else "좋음",
                 "풀":     pollen.get("grass") if pollen.get("grass") is not None else "좋음",
             }
+            # 조회 지역명은 값이 있을 때만 표시
+            area_name = pollen.get("area_name")
+            if area_name:
+                attrs["조회_지역"] = area_name
+            area_no = pollen.get("area_no")
+            if area_no:
+                attrs["지역코드"] = area_no
+            return attrs
 
+        # ── 관측 조건 센서 ───────────────────────────────────────────────────
         if self._type == "observation_condition":
-            # 관측불가 사유를 속성으로 노출 (없으면 빈 문자열)
             reason = w.get("observation_reason", "")
             if reason:
                 return {"관측불가_사유": reason}
