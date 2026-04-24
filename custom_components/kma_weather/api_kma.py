@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
-from .const import haversine as _haversine_fn
+from .const import haversine as _haversine_fn, safe_float as _safe_float
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,13 +48,7 @@ _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 _POLLEN_SEASONS = {"oak": (3, 6), "pine": (3, 6), "grass": (4, 10)}
 
 
-def _safe_float(v):
-    try:
-        if v == "" or v is None or v == "-":
-            return None
-        return float(v)
-    except (TypeError, ValueError):
-        return None
+
 
 
 KOR_TO_CONDITION: dict[str, str] = {
