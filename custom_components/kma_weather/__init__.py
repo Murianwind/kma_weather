@@ -9,7 +9,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from zoneinfo import ZoneInfo
 
-from .const import DOMAIN
+from .const import DOMAIN, is_korean_coord_strict
 from .coordinator import KMAWeatherUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,10 +27,6 @@ _SERVICE_SCHEMA = vol.Schema({
     vol.Required("date"): cv.date,
     vol.Optional("time"): str,
 })
-
-# 한국 영역 경계 (독도·이어도 포함)
-_KOR_LAT = (33.0, 38.7)
-_KOR_LON = (124.0, 132.0)
 
 
 def _parse_time_str(time_str: str) -> dt_time:
@@ -75,10 +71,6 @@ async def _geocode_ko(
     except Exception as e:
         _LOGGER.error("주소 지오코딩 실패 (%s): %s", address, e)
     return None, None, None
-
-
-def _in_korea(lat: float, lon: float) -> bool:
-    return _KOR_LAT[0] <= lat <= _KOR_LAT[1] and _KOR_LON[0] <= lon <= _KOR_LON[1]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -177,7 +169,7 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
         )
 
     # ── 5. 한국 영역 밖 좌표 ──────────────────────────────────────────────
-    if not _in_korea(lat, lon):
+    if not is_korean_coord_strict(lat, lon):
         raise HomeAssistantError(
             f"입력한 주소가 한국 영역 밖의 좌표로 변환됐습니다: '{raw_address}'\n"
             f"변환된 좌표: 위도 {lat:.4f}, 경도 {lon:.4f}\n"
