@@ -11,7 +11,7 @@ from homeassistant.const import (
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo
-from .const import DOMAIN, CONF_PREFIX
+from .const import DOMAIN, CONF_PREFIX, safe_float
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,40 +47,25 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
         )
 
     def _get_safe_val(self, key):
-        val = (self.coordinator.data or {}).get("weather", {}).get(key)
-        return None if val == "-" else val
+        """weather dict에서 키 값을 꺼낸다. safe_float/int 변환은 호출부에서 처리."""
+        return (self.coordinator.data or {}).get("weather", {}).get(key)
 
     @property
     def native_temperature(self):
-        val = self._get_safe_val("TMP")
-        try:
-            return float(val) if val is not None else None
-        except (ValueError, TypeError):
-            return None
+        return safe_float(self._get_safe_val("TMP"))
 
     @property
     def humidity(self):
-        val = self._get_safe_val("REH")
-        try:
-            return int(float(val)) if val is not None else None
-        except (ValueError, TypeError):
-            return None
+        v = safe_float(self._get_safe_val("REH"))
+        return int(v) if v is not None else None
 
     @property
     def native_wind_speed(self):
-        val = self._get_safe_val("WSD")
-        try:
-            return float(val) if val is not None else None
-        except (ValueError, TypeError):
-            return None
+        return safe_float(self._get_safe_val("WSD"))
 
     @property
     def wind_bearing(self):
-        val = self._get_safe_val("VEC")
-        try:
-            return float(val) if val is not None else None
-        except (ValueError, TypeError):
-            return None
+        return safe_float(self._get_safe_val("VEC"))
 
     @property
     def condition(self):
