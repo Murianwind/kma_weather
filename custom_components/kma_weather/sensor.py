@@ -54,21 +54,35 @@ SENSOR_TYPES = {
 # 키 문자열: 해당 API가 승인됐을 때만 등록
 SENSOR_API_GROUPS: dict[str | None, list[str]] = {
     None: [
+        # API 신청 여부와 무관하게 항상 등록되는 센서
+        # (천문 계산은 skyfield 로컬 연산, 외부 API 불필요)
         "api_expire", "last_updated", "address",
         "dawn", "sunrise", "sunset", "dusk",
         "astro_dawn", "astro_dusk",
         "moon_phase", "moon_illumination", "moonrise", "moonset",
         "observation_condition",
-        "pollen",   # 비시즌 = 좋음으로 폴백, API 불필요
     ],
     "short": [
+        # 기상청 단기예보 API 승인 시 등록
         "TMP", "REH", "WSD", "VEC_KOR", "POP", "apparent_temp",
         "rain_start_time", "current_condition_kor",
         "TMX_today", "TMN_today", "wf_am_today", "wf_pm_today",
         "TMX_tomorrow", "TMN_tomorrow", "wf_am_tomorrow", "wf_pm_tomorrow",
     ],
-    "air": ["pm10Value", "pm10Grade", "pm25Value", "pm25Grade"],
-    "warning": ["warning"],
+    "air": [
+        # 에어코리아 대기오염정보 API 승인 시 등록
+        # (station API는 air 호출을 위한 내부 단계이므로 별도 그룹 없음)
+        "pm10Value", "pm10Grade", "pm25Value", "pm25Grade",
+    ],
+    "warning": [
+        # 기상특보 API 승인 시 등록
+        "warning",
+    ],
+    "pollen": [
+        # 기상청 생활기상지수(꽃가루) API 승인 시 등록
+        # 비시즌에도 센서는 존재하며, 값은 "좋음"으로 fallback
+        "pollen",
+    ],
 }
 
 
