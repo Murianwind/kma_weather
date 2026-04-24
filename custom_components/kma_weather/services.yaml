@@ -6,15 +6,22 @@ get_astronomical_info:
   fields:
     address:
       name: 주소
-      description: 읍면동 단위 주소 (예: 서울특별시 강남구 역삼동)
+      description: "읍면동 단위 주소 (예: 서울특별시 강남구 역삼동)"
       required: true
       example: "서울특별시 강남구 역삼동"
       selector:
         text:
     date:
       name: 날짜
-      description: 오늘부터 4일 이내의 날짜 (YYYY-MM-DD)
+      description: "오늘부터 4일 이내의 날짜 (YYYY-MM-DD)"
       required: true
       example: "2026-04-23"
       selector:
         date:
+    time:
+      name: 시각
+      description: "조회 시각 HH:MM 형식 (기본값: 현재 시각, 예: 21:30)"
+      required: false
+      example: "21:30"
+      selector:
+        text:
