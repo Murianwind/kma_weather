@@ -5,9 +5,10 @@ from unittest.mock import MagicMock, patch
 from custom_components.kma_weather.api_kma import KMAWeatherAPI
 
 class MockAiohttpResponse:
-    def __init__(self, json_data=None, should_raise=False):
+    def __init__(self, json_data=None, should_raise=False, status=200):
         self._json_data = json_data or {}
         self._should_raise = should_raise
+        self.status = status  # _fetch의 response.status 체크 대응
     def raise_for_status(self):
         if self._should_raise:
             raise Exception("HTTP 500 Internal Server Error")
@@ -25,9 +26,10 @@ class MockAiohttpSession:
         return MockAiohttpResponse(json_data=self.json_data, should_raise=self.should_raise)
 
 def test_api_key_decoding():
-    encoded_key = quote("test_secret_key!@#")
+    original_key = "test_secret_key!@#"
+    encoded_key = quote(original_key)
     api = KMAWeatherAPI(None, encoded_key)
-    assert api.api_key == "test_secret_key!@#"
+    assert api.api_key == original_key
 
 @pytest.mark.asyncio
 async def test_fetch_http_error(caplog):
