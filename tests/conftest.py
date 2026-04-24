@@ -43,17 +43,12 @@ def generate_forecast_data(start_date):
 now = dt_util.now()
 forecast_list = generate_forecast_data(now)
 
-# ── Mock 시나리오 — 모든 수치는 API가 실제로 보내는 원본 형식 그대로 ──
-# 기상청 단기예보 TMP, REH 등은 정수 문자열("22", "45")로 오고
-# WSD는 소수점 1자리("2.1"), apparent_temp는 소수점 1자리("23.4")
-# pm10/pm25 농도는 정수("35", "15")
+# ── Mock 시나리오 ────────────────────────────────────────────────────────────
 MOCK_SCENARIOS = {
     "full_test": {
         "weather": {
-            # 기상청 원본: 온도/습도/강수확률은 정수
             "TMP": 22,
             "REH": 45,
-            # 기상청 원본: 풍속은 소수점 1자리
             "WSD": 2.1,
             "VEC_KOR": "남동",
             "POP": 10,
@@ -69,7 +64,6 @@ MOCK_SCENARIOS = {
             "wf_pm_today": "구름많음",
             "wf_am_tomorrow": "흐림",
             "wf_pm_tomorrow": "맑음",
-            # 체감온도: 소수점 1자리
             "apparent_temp": 23.4,
             "rain_start_time": "강수없음",
             "address": "경기도 화성시",
@@ -77,19 +71,38 @@ MOCK_SCENARIOS = {
             "forecast_twice_daily": forecast_list,
         },
         "air": {
-            # 에어코리아 원본: 농도는 정수
             "pm10Value": 35,
             "pm10Grade": "좋음",
             "pm25Value": 15,
             "pm25Grade": "좋음",
             "station": "화성"
-        }
+        },
+        # ── 꽃가루 데이터 추가 ──────────────────────────────────────────────
+        # pollen 센서는 SENSOR_API_GROUPS[None]에 포함되어 항상 등록되며,
+        # coordinator.data["pollen"]이 없으면 native_value가 "좋음"(fallback)을 반환하지만
+        # extra_state_attributes에서 KeyError 없이 동작하려면 키가 있어야 한다.
+        "pollen": {
+            "oak": "좋음",
+            "pine": "좋음",
+            "grass": "좋음",
+            "worst": "좋음",
+        },
     },
     "jeju_missing": {
         "weather": {"address": "제주시", "현재 위치": "제주시", "forecast_twice_daily": []},
         "air": {}
     }
 }
+
+# "full_test" 시나리오에서 승인된 것으로 가정하는 API 키 목록.
+# fetch_data를 mock으로 대체하면 실제 _mark_approved()가 호출되지 않으므로
+# coordinator 초기화 직후 _approved_apis를 직접 주입해야 한다.
+# 그렇지 않으면 sensor.py의 _eligible_sensor_types()가 short/air/warning 등
+# API 의존 센서를 등록 대상에서 제외해 테스트가 실패한다.
+_FULL_TEST_APPROVED: frozenset[str] = frozenset(
+    {"short", "mid", "air", "warning", "pollen"}
+)
+
 
 @pytest.fixture
 def mock_config_entry():
@@ -99,14 +112,68 @@ def mock_config_entry():
         entry_id="mock_id_123"
     )
 
+
 @pytest.fixture
 def kma_api_mock_factory():
-    def _create_mock(scenario_name):
-        mock_fetch = patch("custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data").start()
+    """
+    fetch_data를 패치하면서 "full_test" 시나리오일 때
+    coordinator.__init__ 완료 직후 api._approved_apis를 자동 주입한다.
+
+    [문제]
+    sensor.py::async_setup_entry 에서 _eligible_sensor_types(coordinator) 를
+    호출할 때 coordinator.api._approved_apis 를 참조한다.
+    fetch_data 가 mock 으로 대체되면 실제 API 호출이 없어
+    _mark_approved() 가 한 번도 호출되지 않는다.
+    결과적으로 _approved_apis 가 빈 set 으로 남아
+    short / air / warning 관련 센서가 전혀 등록되지 않아 테스트가 실패한다.
+
+    [해결]
+    KMAWeatherUpdateCoordinator.__init__ 를 감싸서
+    실제 __init__ 실행 후 api._approved_apis 를 직접 주입한다.
+    patch.object 를 사용하므로 patch.stopall() 과 별도로 정리한다.
+    """
+    _obj_patchers: list = []
+
+    def _create_mock(scenario_name: str):
+        # ── fetch_data 패치 ────────────────────────────────────────────────
+        mock_fetch = patch(
+            "custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data"
+        ).start()
+
         if scenario_name == "error":
             mock_fetch.side_effect = Exception("API Error")
         else:
             mock_fetch.return_value = MOCK_SCENARIOS.get(scenario_name)
+
+        # ── "full_test": coordinator 생성 시 _approved_apis 주입 ───────────
+        if scenario_name == "full_test":
+            from custom_components.kma_weather.coordinator import (
+                KMAWeatherUpdateCoordinator,
+            )
+
+            _real_init = KMAWeatherUpdateCoordinator.__init__
+
+            def _patched_init(self_coord, hass, entry):
+                # 원본 __init__ 그대로 실행
+                _real_init(self_coord, hass, entry)
+                # fetch_data mock으로 _mark_approved가 호출되지 않으므로
+                # 테스트 목적상 모든 API가 승인된 상태로 초기화한다.
+                self_coord.api._approved_apis = set(_FULL_TEST_APPROVED)
+
+            patcher = patch.object(
+                KMAWeatherUpdateCoordinator, "__init__", _patched_init
+            )
+            patcher.start()
+            _obj_patchers.append(patcher)
+
         return mock_fetch
+
     yield _create_mock
+
+    # 정리: object 패치는 patch.stopall() 대상이 아니므로 별도 처리
+    for p in _obj_patchers:
+        try:
+            p.stop()
+        except RuntimeError:
+            pass
     patch.stopall()
