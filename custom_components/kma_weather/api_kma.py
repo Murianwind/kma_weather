@@ -455,20 +455,30 @@ class KMAWeatherAPI:
             return None
 
     # ── 꽃가루 농도 위험지수 ────────────────────────────────────────────────
+# ── 꽃가루 농도 위험지수 ────────────────────────────────────────────────
     async def _get_pollen(self, now: datetime, reg_id_temp: str) -> dict:
         """
         꽃가루 농도 위험지수를 조회한다.
-        비시즌(제공 월 외)에는 API 호출 없이 좋음을 반환한다.
+
+        비시즌(제공 월 외)이더라도 API 승인 여부가 아직 확인되지 않은 경우에는
+        API를 한 번 호출하여 미신청 여부를 감지한다.
+        이미 승인이 확인된 경우 비시즌에는 API 호출을 생략하고 좋음을 반환한다.
         """
         month = now.month
         in_season = {
             k: _POLLEN_SEASONS[k][0] <= month <= _POLLEN_SEASONS[k][1]
             for k in ("oak", "pine", "grass")
         }
+        offseason = not any(in_season.values())
 
-        # 모든 꽃가루가 비시즌이면 API 호출 없이 좋음 반환
-        if not any(in_season.values()):
-            return {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"}
+        # ── 비시즌 처리 ──────────────────────────────────────────────────────
+        if offseason:
+            # 이미 승인이 확인된 상태라면 API 호출 없이 좋음 반환
+            if "pollen" in self._approved_apis:
+                return {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"}
+            # 승인 여부를 모르는 경우: 확인을 위해 API를 호출한다.
+            # 미신청이면 _check_unsubscribed가 알림을 보내고 None 반환
+            # 승인이면 _mark_approved 후 좋음 반환
 
         # 지역코드 결정 (reg_id_temp 접두사 매핑)
         area_no = "1100000000"
@@ -496,14 +506,18 @@ class KMAWeatherAPI:
             )
             code = self._extract_result_code(data)
             if code and self._check_unsubscribed("pollen", code):
-                # 미신청 시 비시즌 타입은 좋음, 시즌 타입은 정보없음(None)
-                result = {k: ("좋음" if not in_season[k] else None) for k in ("oak", "pine", "grass")}
-                result["worst"] = None
-                return result
+                # 미신청: 센서 생성을 위한 값 없음을 나타내는 빈 dict 반환
+                return {}
+
+            # 응답 성공 → 승인 확인
+            self._mark_approved("pollen")
+
+            # 비시즌이면 데이터 파싱 없이 좋음 반환
+            if offseason:
+                return {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"}
 
             items = (data or {}).get("response", {}).get("body", {}).get("items", {}).get("item", [])
             if not items:
-                # 데이터 없음 → 비시즌 타입은 좋음, 시즌 타입은 좋음으로 폴백
                 return {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"}
 
             item = items[0] if isinstance(items, list) else items
@@ -521,12 +535,14 @@ class KMAWeatherAPI:
                 key=lambda g: _POLLEN_GRADE_RANK.get(g, 1),
                 default="좋음",
             )
-            self._mark_approved("pollen")
             return result
 
         except Exception as e:
             _LOGGER.error("꽃가루 조회 오류: %s", e)
-            return {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"}
+            # 오류 시: 이미 승인됐으면 좋음 반환, 아니면 빈 dict(센서 값 없음)
+            if "pollen" in self._approved_apis:
+                return {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"}
+            return {}
 
     # ── 유틸리티 ────────────────────────────────────────────────────────────
     def _haversine_simple(self, lat1, lon1, lat2, lon2) -> float:
