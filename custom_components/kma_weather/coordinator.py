@@ -682,7 +682,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         특정 날짜·좌표의 천문 이벤트를 계산해 dict로 반환한다.
 
         입력된 좌표의 단기예보를 조회하여 관측 조건 평가에 날씨 상태를 반영한다.
-        단기예보 API가 미신청이거나 호출 실패 시 달 조명율만으로 평가한다.
+        단기예보 API가 미신청이거나 호출 실패 시 달 조명율+달 고도+태양고도만으로 평가한다.
 
         Args:
             lat, lon    : 위경도
@@ -752,7 +752,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             # ── 단기예보 조회 (입력 위치 기준) ───────────────────────────────
             # weather_source: 관측 조건 평가에 날씨가 반영됐는지 여부를 나타냄
             #   "날씨+천문": 단기예보 조회 성공 → 날씨 상태 반영
-            #   "천문만":    단기예보 미승인 또는 조회 실패 → 달 조명율+태양고도만
+            #   "천문만":    단기예보 미승인 또는 조회 실패 → 달 조명율+달 고도+태양고도만
             weather_for_obs: dict = {"moon_illumination": illum}
             weather_source = "천문만"   # 기본값: 날씨 미반영
             weather_kor: str = "API 조회 불가"
@@ -805,7 +805,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 except Exception as e:
                     _LOGGER.warning("천문 액션 단기예보 조회 실패 (날씨 무시): %s", e)
             else:
-                _LOGGER.debug("단기예보 API 미승인 → 달 조명율만으로 관측 조건 평가")
+                _LOGGER.debug("단기예보 API 미승인 → 달 조명율+달 고도+태양고도만으로 관측 조건 평가")
 
             # ── 관측 조건 평가 ────────────────────────────────────────────────
             obs_dt = eval_dt or datetime(
