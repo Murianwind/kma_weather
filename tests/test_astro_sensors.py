@@ -413,12 +413,14 @@ class TestPollenSensor:
         entry.data = {"prefix": "test"}
         return KMACustomSensor(coordinator, "pollen", "test", entry)
 
-    def test_pollen_always_registered(self):
-        """[Given] SENSOR_API_GROUPS, [When] None 그룹을 확인하면,
-        [Then] 'pollen'이 포함되어 API 승인 여부와 무관하게 항상 등록되어야 함"""
+    def test_pollen_in_pollen_api_group(self):
+        """[Given] SENSOR_API_GROUPS, [When] 그룹을 확인하면,
+        [Then] 'pollen'은 None 그룹이 아닌 'pollen' API 그룹에만 있어야 함"""
         from custom_components.kma_weather.sensor import SENSOR_API_GROUPS
-        assert "pollen" in SENSOR_API_GROUPS[None], \
-            "pollen은 API 승인 없이도 항상 등록되어야 함"
+        assert "pollen" not in SENSOR_API_GROUPS[None], \
+            "pollen은 None 그룹(항상 등록)에 있으면 안 됨 — pollen API 승인 시에만 등록"
+        assert "pollen" in SENSOR_API_GROUPS.get("pollen", []), \
+            "pollen은 SENSOR_API_GROUPS['pollen'] 그룹에 있어야 함"
 
     def test_pollen_offseason_returns_good(self):
         """[Given] pollen 데이터 없음(비시즌), [When] native_value를 조회하면,
@@ -470,13 +472,15 @@ class TestDynamicSensorRegistration:
 
     def test_eligible_sensor_types_no_approved(self):
         """[Given] 승인된 API 없음, [When] _eligible_sensor_types 호출,
-        [Then] None 그룹(천문/꽃가루 등)만 반환되어야 함"""
+        [Then] None 그룹(천문 등)만 반환되고 pollen은 포함되지 않아야 함"""
         from custom_components.kma_weather.sensor import _eligible_sensor_types, SENSOR_API_GROUPS
         coordinator = MagicMock()
         coordinator.api._approved_apis = set()
         result = _eligible_sensor_types(coordinator)
         expected = set(SENSOR_API_GROUPS[None])
         assert set(result) == expected
+        # pollen은 API 미승인 상태에서 등록되면 안 됨
+        assert "pollen" not in result, "pollen API 미승인 시 pollen 센서가 등록되면 안 됨"
 
     def test_eligible_sensor_types_with_short_approved(self):
         """[Given] short API 승인, [When] _eligible_sensor_types 호출,
@@ -515,41 +519,89 @@ class TestDynamicSensorRegistration:
         assert len(eligible) == len(set(eligible)), "중복 센서 타입 존재"
 
     @pytest.mark.asyncio
-    async def test_pollen_registered_without_any_api(self, hass, mock_config_entry, kma_api_mock_factory):
-        """[Given] 어떤 API도 승인되지 않은 상태 (천문 데이터만 있는 mock),
+    async def test_pollen_not_registered_without_api(self, hass, mock_config_entry):
+        """[Given] pollen API가 승인되지 않은 상태,
         [When] 통합 구성요소를 설정하면,
-        [Then] sensor.test_pollen이 생성되고 상태가 '좋음'이어야 함"""
+        [Then] sensor.test_pollen이 생성되지 않아야 함"""
         hass.config.latitude = LAT
         hass.config.longitude = LON
 
-        # API 미승인 상태 시뮬레이션: fetch_data가 pollen 없는 최소 데이터 반환
-        minimal_data = {
+        # pollen 데이터 없음 = API 미신청으로 빈 dict 반환
+        no_pollen_data = {
             "weather": {"address": "경기도 화성시", "forecast_twice_daily": []},
             "air": {},
-            "pollen": {},  # 비시즌 or 미신청 → 빈 dict
         }
 
-        with patch(
-            "custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data",
-            new_callable=AsyncMock,
-            return_value=minimal_data,
-        ):
-            from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator as Coord
-            _real_init = Coord.__init__
-            def _no_api_init(self_c, hass_arg, entry_arg):
-                _real_init(self_c, hass_arg, entry_arg)
-                self_c.api._approved_apis = set()  # 미승인 상태
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator as Coord
+        _real_init = Coord.__init__
+        def _no_api_init(self_c, hass_arg, entry_arg):
+            _real_init(self_c, hass_arg, entry_arg)
+            self_c.api._approved_apis = set()  # 모든 API 미승인
 
-            with patch.object(Coord, "__init__", _no_api_init):
+        with patch.object(Coord, "__init__", _no_api_init):
+            with patch(
+                "custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data",
+                new_callable=AsyncMock,
+                return_value=no_pollen_data,
+            ):
                 mock_config_entry.add_to_hass(hass)
                 await hass.config_entries.async_setup(mock_config_entry.entry_id)
                 await hass.async_block_till_done()
 
-            # [Then] pollen은 항상 등록
-            state = hass.states.get("sensor.test_pollen")
-            assert state is not None, "API 미승인 상태에서도 pollen 센서는 등록되어야 함"
-            assert state.state == "좋음", \
-                f"비시즌/미신청 시 좋음 fallback 기대, 실제='{state.state}'"
+        # [Then] pollen API 미승인 → 센서 미생성
+        state = hass.states.get("sensor.test_pollen")
+        assert state is None, "pollen API 미승인 상태에서는 pollen 센서가 생성되면 안 됨"
+
+    @pytest.mark.asyncio
+    async def test_pollen_registered_after_api_approval(self, hass, mock_config_entry):
+        """[Given] 초기에 pollen API 미승인,
+        [When] 다음 업데이트에서 pollen API가 승인되면,
+        [Then] sensor.test_pollen이 재로드 없이 자동 생성되어야 함"""
+        hass.config.latitude = LAT
+        hass.config.longitude = LON
+
+        no_pollen_data = {
+            "weather": {"address": "경기도 화성시", "forecast_twice_daily": []},
+            "air": {},
+        }
+        with_pollen_data = {
+            "weather": {"address": "경기도 화성시", "forecast_twice_daily": []},
+            "air": {},
+            "pollen": {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"},
+        }
+
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator as Coord
+        _real_init = Coord.__init__
+        def _no_api_init(self_c, hass_arg, entry_arg):
+            _real_init(self_c, hass_arg, entry_arg)
+            self_c.api._approved_apis = set()  # 초기 미승인
+
+        with patch.object(Coord, "__init__", _no_api_init):
+            with patch(
+                "custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data",
+                new_callable=AsyncMock,
+                return_value=no_pollen_data,
+            ):
+                mock_config_entry.add_to_hass(hass)
+                await hass.config_entries.async_setup(mock_config_entry.entry_id)
+                await hass.async_block_till_done()
+
+        # 초기: pollen 센서 없음
+        assert hass.states.get("sensor.test_pollen") is None, "초기에는 pollen 센서가 없어야 함"
+
+        # [When] 다음 업데이트에서 pollen API 승인 확인
+        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+        coordinator.api._approved_apis = {"pollen"}  # 승인 상태 주입
+
+        with patch.object(coordinator.api, "fetch_data", new_callable=AsyncMock,
+                          return_value=with_pollen_data):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+
+        # [Then] pollen 센서가 자동 생성
+        state = hass.states.get("sensor.test_pollen")
+        assert state is not None, "pollen API 승인 후 센서가 자동 생성되어야 함"
+        assert state.state == "좋음"
 
 
 # ── 자정 unknown 방지 (_REALTIME_KEYS) ────────────────────────────────────────
@@ -636,7 +688,9 @@ async def test_astro_sensors_registered(hass, mock_config_entry, kma_api_mock_fa
         f"sensor.{p}_moonrise",
         f"sensor.{p}_moonset",
         f"sensor.{p}_observation_condition",
-        f"sensor.{p}_pollen",   # 꽃가루 센서도 항상 등록
+        # pollen은 pollen API 승인 시에만 등록됨.
+        # kma_api_mock_factory("full_test")가 _approved_apis에 "pollen"을 포함하므로 여기서는 등록됨.
+        f"sensor.{p}_pollen",
     ]
     for entity_id in expected_sensors:
         state = hass.states.get(entity_id)
