@@ -623,7 +623,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
             # ── 단기예보 조회 (입력 위치 기준) ───────────────────────────────
             # 날씨 상태를 관측 조건 평가에 반영하기 위해 입력 좌표의 격자로 조회
+            # ── 단기예보 조회 (입력 위치 기준) ───────────────────────────────
+            # weather_source: 관측 조건 평가에 날씨가 반영됐는지 여부를 나타냄
+            #   "날씨+천문": 단기예보 조회 성공 → 날씨 상태 반영
+            #   "천문만":    단기예보 미승인 또는 조회 실패 → 달 조명율+태양고도만
             weather_for_obs: dict = {"moon_illumination": illum}
+            weather_source = "천문만"   # 기본값: 날씨 미반영
+            weather_kor: str = "API 조회 불가"
+
             if "short" in self.api._approved_apis:
                 try:
                     nx, ny = convert_grid(lat, lon)
@@ -641,13 +648,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     )
                     items = (short_data or {}).get("response", {}).get("body", {}).get("items", {}).get("item", [])
                     if items:
-                        # 평가 시각(eval_dt) 또는 target_date 정오에 가장 가까운 슬롯 선택
                         ref_dt = eval_dt or datetime(
                             target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=tz)
                         ref_date_str = ref_dt.strftime("%Y%m%d")
                         ref_time_str = f"{ref_dt.hour:02d}00"
 
-                        # fcstDate/fcstTime 맵 구성
                         forecast_map: dict = {}
                         for it in items:
                             forecast_map.setdefault(
@@ -665,6 +670,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                             cond_eng = self.api.kor_to_condition(kor)
                             if cond_eng:
                                 weather_for_obs["current_condition"] = cond_eng
+                                weather_source = "날씨+천문"
+                                weather_kor = kor
                             _LOGGER.debug(
                                 "천문 액션 단기예보 조회 성공: (%s, %s) → %s (%s)",
                                 lat, lon, kor, ref_dt.strftime("%Y%m%d %H:%M")
@@ -675,12 +682,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("단기예보 API 미승인 → 달 조명율만으로 관측 조건 평가")
 
             # ── 관측 조건 평가 ────────────────────────────────────────────────
-            # eval_dt가 없으면 target_date 정오 기준
             obs_dt = eval_dt or datetime(
                 target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=tz)
             obs_cond, obs_reason = self._eval_observation(weather_for_obs, obs_dt, lat, lon)
             result["observation_condition"] = obs_cond
-            result["observation_reason"] = obs_reason if obs_reason else None
+            result["observation_reason"]    = obs_reason if obs_reason else None
+            result["weather_source"]        = weather_source
+            result["weather_condition"]     = weather_kor
             return result
 
         except Exception as e:
