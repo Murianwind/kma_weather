@@ -6,13 +6,17 @@
   - 일출/일몰/새벽/황혼 오늘/내일 접두어
   - 천문 박명(18°) 오늘/내일 접두어
   - 천문 관측 조건 평가 (날씨·태양 고도·달 조명율)
+    → _eval_observation은 (condition, reason) 튜플을 반환한다.
   - 자정 unknown 방지 (_REALTIME_KEYS: 키 있고 값 '-'/None → 캐시 복원)
+  - 꽃가루 센서: 비시즌/API 미신청 시 좋음 fallback
+  - 관측불가 사유 속성 노출
+  - 동적 센서 등록 (API 승인 후 short 센서 추가)
 """
 import pytest
 import asyncio
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator, _SKYFIELD_OK
 from custom_components.kma_weather.const import DOMAIN
 
@@ -113,7 +117,7 @@ class TestMoonIllumination:
         coord._sf_eph = _TEST_SF_EPH
         coord._moon_phase_name = staticmethod(KMAWeatherUpdateCoordinator._moon_phase_name)
         if not _TEST_SF_OK:
-            return  # skyfield 없으면 skip
+            return
         now = datetime(2026, 4, 21, 13, 0, tzinfo=TZ)
         result = KMAWeatherUpdateCoordinator._calc_sun_times(coord, LAT, LON, now)
         illum = result.get("moon_illumination")
@@ -128,10 +132,7 @@ class TestCalcSunTimes:
     """_calc_sun_times: 반환값 형식 및 오늘/내일 접두어"""
 
     def _calc(self, hour):
-        """주어진 시각으로 _calc_sun_times 실행"""
         from unittest.mock import MagicMock
-
-        # spec 없이 생성하되, staticmethod가 올바르게 호출되도록 실제 메서드 연결
         coord = MagicMock()
         coord.api.tz = TZ
         coord._sun_times = {}
@@ -140,9 +141,7 @@ class TestCalcSunTimes:
         coord._sun_cache_lon = None
         coord._sf_ts  = _TEST_SF_TS
         coord._sf_eph = _TEST_SF_EPH
-        # staticmethod는 MagicMock에서 mock되므로 실제 구현으로 교체
         coord._moon_phase_name = staticmethod(KMAWeatherUpdateCoordinator._moon_phase_name)
-
         now = datetime(2026, 4, 21, hour, 0, tzinfo=TZ)
         return KMAWeatherUpdateCoordinator._calc_sun_times(coord, LAT, LON, now)
 
@@ -172,69 +171,71 @@ class TestCalcSunTimes:
                 f"'{key}' 시각 형식 오류: '{val}'"
 
     def test_noon_dawn_is_tomorrow(self):
-        """낮 13시: 새벽은 이미 지났으므로 '내일'이어야 함"""
         result = self._calc(13)
-        assert result["dawn"].startswith("내일 "), \
-            f"13시 새벽={result['dawn']} ('내일' 기대)"
+        assert result["dawn"].startswith("내일 ")
 
     def test_noon_sunset_is_today(self):
-        """낮 13시: 일몰은 아직 안 왔으므로 '오늘'이어야 함"""
         result = self._calc(13)
-        assert result["sunset"].startswith("오늘 "), \
-            f"13시 일몰={result['sunset']} ('오늘' 기대)"
+        assert result["sunset"].startswith("오늘 ")
 
     def test_midnight_sunrise_is_today(self):
-        """새벽 1시: 일출이 아직 안 왔으므로 '오늘'이어야 함"""
         result = self._calc(1)
-        assert result["sunrise"].startswith("오늘 "), \
-            f"01시 일출={result['sunrise']} ('오늘' 기대)"
+        assert result["sunrise"].startswith("오늘 ")
 
     def test_night_all_tomorrow(self):
-        """밤 23시: 새벽/일출 모두 내일이어야 함"""
         result = self._calc(23)
-        assert result["dawn"].startswith("내일 "), \
-            f"23시 새벽={result['dawn']} ('내일' 기대)"
-        assert result["sunrise"].startswith("내일 "), \
-            f"23시 일출={result['sunrise']} ('내일' 기대)"
+        assert result["dawn"].startswith("내일 ")
+        assert result["sunrise"].startswith("내일 ")
 
     def test_astro_dusk_before_dark(self):
-        """낮 13시: 천문박명 종료는 저녁에 있으므로 '오늘'이어야 함"""
         result = self._calc(13)
-        assert result["astro_dusk"].startswith("오늘 "), \
-            f"13시 천문박명 종료={result['astro_dusk']} ('오늘' 기대)"
+        assert result["astro_dusk"].startswith("오늘 ")
 
     def test_astro_dawn_after_midnight(self):
-        """새벽 1시: 천문박명 시작(04:xx)은 아직 안 왔으므로 오늘 또는 내일이어야 함
-        (astral 버전에 따라 t.date() 반환이 달라질 수 있으므로 접두어보다 시각 존재 여부만 검증)"""
         result = self._calc(1)
         val = result["astro_dawn"]
-        assert val is not None, "01시 천문박명 시작이 None"
-        assert val.startswith("오늘 ") or val.startswith("내일 "), \
-            f"01시 천문박명 시작={val} (오늘/내일 접두어 기대)"
+        assert val is not None
+        assert val.startswith("오늘 ") or val.startswith("내일 ")
 
     def test_moon_phase_is_string(self):
-        """달 위상은 8단계 중 하나여야 함"""
         valid = {"삭", "초승달", "상현달", "준상현달", "보름달", "준하현달", "하현달", "그믐달"}
         result = self._calc(13)
-        assert result["moon_phase"] in valid, \
-            f"달 위상='{result['moon_phase']}' 유효하지 않음"
+        assert result["moon_phase"] in valid
 
     def test_moon_illumination_is_int(self):
-        """달 조명율은 0~100 정수여야 함"""
         result = self._calc(13)
         illum = result["moon_illumination"]
-        assert isinstance(illum, int), f"달 조명율 타입={type(illum)}"
-        assert 0 <= illum <= 100, f"달 조명율={illum}% 범위 벗어남"
+        assert isinstance(illum, int)
+        assert 0 <= illum <= 100
 
 
 # ── 관측 조건 평가 ────────────────────────────────────────────────────────────
+#
+# [중요] _eval_observation은 (condition, reason) 튜플을 반환한다.
+#   condition: "최우수" | "우수" | "보통" | "불량" | "관측불가" | "분석불가"
+#   reason   : "강수" | "흐림" | "구름많음" | "주간" | "" | "분석불가"
+#
+# 테스트에서 condition만 검증할 때는 result[0]을 사용한다.
+# reason까지 검증하는 테스트는 별도 클래스(TestEvalObservationReason)에서 다룬다.
 
 @_skip_no_sf
 class TestEvalObservation:
-    """_eval_observation: 날씨·태양 고도·달 조명율 종합 평가"""
+    """_eval_observation: 날씨·태양 고도·달 조명율 종합 평가 (condition 검증)"""
 
     def _eval(self, hour, condition, illum):
-        from unittest.mock import MagicMock
+        """반환 튜플 중 condition(첫 번째 값)만 반환한다."""
+        coord = MagicMock()
+        coord.api.tz = TZ
+        coord._sf_ts  = _TEST_SF_TS
+        coord._sf_eph = _TEST_SF_EPH
+        weather = {"current_condition": condition, "moon_illumination": illum}
+        now = datetime(2026, 4, 21, hour, 0, tzinfo=TZ)
+        result = KMAWeatherUpdateCoordinator._eval_observation(coord, weather, now, LAT, LON)
+        # 튜플 (condition, reason) → condition만 반환
+        return result[0] if isinstance(result, tuple) else result
+
+    def _eval_full(self, hour, condition, illum):
+        """반환 튜플 전체를 반환한다."""
         coord = MagicMock()
         coord.api.tz = TZ
         coord._sf_ts  = _TEST_SF_TS
@@ -246,6 +247,9 @@ class TestEvalObservation:
     # 날씨 불가
     @pytest.mark.parametrize("cond", ["rainy", "pouring", "snowy", "snowy-rainy", "cloudy"])
     def test_bad_weather_precipitation(self, cond):
+        # [Given] 강수 또는 흐린 날씨 조건
+        # [When] 관측 조건을 평가하면
+        # [Then] condition은 "관측불가"이어야 함
         assert self._eval(22, cond, 5) == "관측불가"
 
     def test_cloudy_returns_cloudy(self):
@@ -283,9 +287,8 @@ class TestEvalObservation:
         assert self._eval(4, "sunny", 5) == "최우수"
 
     def test_partlycloudy_not_blocked(self):
-        """구름조금은 관측 가능"""
+        """구름조금은 관측 불가가 아닌 다른 등급이어야 함"""
         result = self._eval(22, "partlycloudy", 10)
-        assert result != "관측불가"
         assert result != "관측불가"
 
     # 경계값
@@ -304,6 +307,251 @@ class TestEvalObservation:
         assert result == expected, f"조명율={illum}% → 기대={expected}, 실제={result}"
 
 
+@_skip_no_sf
+class TestEvalObservationReason:
+    """_eval_observation: reason(사유) 검증 — 아이콘 분기 및 속성 노출에 사용"""
+
+    def _eval_full(self, hour, condition, illum):
+        coord = MagicMock()
+        coord.api.tz = TZ
+        coord._sf_ts  = _TEST_SF_TS
+        coord._sf_eph = _TEST_SF_EPH
+        weather = {"current_condition": condition, "moon_illumination": illum}
+        now = datetime(2026, 4, 21, hour, 0, tzinfo=TZ)
+        return KMAWeatherUpdateCoordinator._eval_observation(coord, weather, now, LAT, LON)
+
+    def test_returns_tuple(self):
+        """[Given] 맑은 밤하늘, [When] 평가하면, [Then] 튜플(condition, reason)을 반환해야 함"""
+        result = self._eval_full(22, "sunny", 5)
+        assert isinstance(result, tuple), "튜플이 아님"
+        assert len(result) == 2, "튜플 길이가 2가 아님"
+
+    def test_precipitation_reason_강수(self):
+        """[Given] 비/눈 날씨, [When] 평가하면, [Then] reason='강수'이어야 함"""
+        for cond in ("rainy", "pouring", "snowy", "snowy-rainy"):
+            _, reason = self._eval_full(22, cond, 5)
+            assert reason == "강수", f"{cond} → reason 기대='강수', 실제='{reason}'"
+
+    def test_cloudy_reason_흐림(self):
+        """[Given] 흐린 날씨, [When] 평가하면, [Then] reason='흐림'이어야 함"""
+        _, reason = self._eval_full(22, "cloudy", 5)
+        assert reason == "흐림"
+
+    def test_partlycloudy_reason_구름많음(self):
+        """[Given] 구름많음, [When] 평가하면, [Then] reason='구름많음'이어야 함"""
+        _, reason = self._eval_full(22, "partlycloudy", 5)
+        assert reason == "구름많음"
+
+    def test_daytime_reason_주간(self):
+        """[Given] 맑은 낮, [When] 평가하면, [Then] reason='주간'이어야 함"""
+        _, reason = self._eval_full(13, "sunny", 5)
+        assert reason == "주간"
+
+    def test_night_clear_reason_empty(self):
+        """[Given] 맑은 밤, [When] 평가하면, [Then] reason=''(빈 문자열)이어야 함"""
+        _, reason = self._eval_full(22, "sunny", 5)
+        assert reason == "", f"맑은 밤 reason 기대='', 실제='{reason}'"
+
+    def test_observation_reason_attribute_exposed(self):
+        """[Given] 관측 불가(주간) 상태, [When] 센서 속성을 확인하면,
+        [Then] '관측불가_사유' 속성이 존재해야 함"""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {
+            "weather": {
+                "observation_condition": "관측불가",
+                "observation_reason": "주간",
+            },
+            "air": {},
+        }
+        entry = MagicMock()
+        entry.entry_id = "obs_test"
+        entry.options = {}
+        entry.data = {"prefix": "test"}
+        sensor = KMACustomSensor(coordinator, "observation_condition", "test", entry)
+        attrs = sensor.extra_state_attributes
+        assert attrs is not None
+        assert "관측불가_사유" in attrs
+        assert attrs["관측불가_사유"] == "주간"
+
+    def test_observation_good_condition_no_reason_attribute(self):
+        """[Given] 관측 가능(최우수) 상태, [When] 속성을 확인하면,
+        [Then] '관측불가_사유' 속성이 없어야 함"""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {
+            "weather": {
+                "observation_condition": "최우수",
+                "observation_reason": "",
+            },
+            "air": {},
+        }
+        entry = MagicMock()
+        entry.entry_id = "obs_good"
+        entry.options = {}
+        entry.data = {"prefix": "test"}
+        sensor = KMACustomSensor(coordinator, "observation_condition", "test", entry)
+        attrs = sensor.extra_state_attributes
+        # reason이 빈 문자열이면 속성이 None이거나 키가 없어야 함
+        assert attrs is None or "관측불가_사유" not in attrs
+
+
+# ── 꽃가루 센서 ───────────────────────────────────────────────────────────────
+
+class TestPollenSensor:
+    """꽃가루 센서: 비시즌/API 미신청 시 좋음 fallback, 속성 출력, 항상 등록"""
+
+    def _make_sensor(self, pollen_data):
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {"weather": {}, "air": {}, "pollen": pollen_data}
+        coordinator._daily_max_temp = None
+        coordinator._daily_min_temp = None
+        entry = MagicMock()
+        entry.entry_id = "pollen_test"
+        entry.options = {}
+        entry.data = {"prefix": "test"}
+        return KMACustomSensor(coordinator, "pollen", "test", entry)
+
+    def test_pollen_always_registered(self):
+        """[Given] SENSOR_API_GROUPS, [When] None 그룹을 확인하면,
+        [Then] 'pollen'이 포함되어 API 승인 여부와 무관하게 항상 등록되어야 함"""
+        from custom_components.kma_weather.sensor import SENSOR_API_GROUPS
+        assert "pollen" in SENSOR_API_GROUPS[None], \
+            "pollen은 API 승인 없이도 항상 등록되어야 함"
+
+    def test_pollen_offseason_returns_good(self):
+        """[Given] pollen 데이터 없음(비시즌), [When] native_value를 조회하면,
+        [Then] '좋음'을 반환해야 함"""
+        sensor = self._make_sensor({})
+        assert sensor.native_value == "좋음"
+
+    def test_pollen_worst_is_state(self):
+        """[Given] 나쁨 등급 꽃가루 데이터, [When] native_value를 조회하면,
+        [Then] '나쁨'을 반환해야 함"""
+        sensor = self._make_sensor({"oak": "나쁨", "pine": "좋음", "grass": "좋음", "worst": "나쁨"})
+        assert sensor.native_value == "나쁨"
+
+    def test_pollen_attributes_contain_three_types(self):
+        """[Given] 꽃가루 데이터, [When] extra_state_attributes를 조회하면,
+        [Then] 참나무/소나무/풀 3개 속성이 모두 있어야 함"""
+        sensor = self._make_sensor({"oak": "보통", "pine": "좋음", "grass": "나쁨", "worst": "나쁨"})
+        attrs = sensor.extra_state_attributes
+        assert attrs is not None
+        assert attrs["참나무"] == "보통"
+        assert attrs["소나무"] == "좋음"
+        assert attrs["풀"] == "나쁨"
+
+    def test_pollen_offseason_attributes_fallback_good(self):
+        """[Given] pollen 데이터 없음(비시즌), [When] 속성을 조회하면,
+        [Then] 3가지 속성 모두 '좋음'이어야 함"""
+        sensor = self._make_sensor({})
+        attrs = sensor.extra_state_attributes
+        assert attrs == {"참나무": "좋음", "소나무": "좋음", "풀": "좋음"}
+
+    def test_pollen_icon_changes_by_grade(self):
+        """[Given] 매우나쁨 등급, [When] icon을 조회하면,
+        [Then] 좋음 아이콘(outline)과 달라야 함"""
+        sensor_good = self._make_sensor({"worst": "좋음"})
+        sensor_bad  = self._make_sensor({"worst": "매우나쁨"})
+        assert sensor_good.icon != sensor_bad.icon
+
+    def test_pollen_good_icon_is_outline(self):
+        """[Given] 좋음 등급, [When] icon을 조회하면,
+        [Then] outline 아이콘이어야 함"""
+        sensor = self._make_sensor({"worst": "좋음"})
+        assert "outline" in sensor.icon
+
+
+# ── 동적 센서 등록 (API 승인 후 센서 추가) ────────────────────────────────────
+
+class TestDynamicSensorRegistration:
+    """API 승인 여부에 따른 동적 센서 등록 검증"""
+
+    def test_eligible_sensor_types_no_approved(self):
+        """[Given] 승인된 API 없음, [When] _eligible_sensor_types 호출,
+        [Then] None 그룹(천문/꽃가루 등)만 반환되어야 함"""
+        from custom_components.kma_weather.sensor import _eligible_sensor_types, SENSOR_API_GROUPS
+        coordinator = MagicMock()
+        coordinator.api._approved_apis = set()
+        result = _eligible_sensor_types(coordinator)
+        expected = set(SENSOR_API_GROUPS[None])
+        assert set(result) == expected
+
+    def test_eligible_sensor_types_with_short_approved(self):
+        """[Given] short API 승인, [When] _eligible_sensor_types 호출,
+        [Then] None 그룹 + short 그룹 센서가 모두 포함되어야 함"""
+        from custom_components.kma_weather.sensor import (
+            _eligible_sensor_types, SENSOR_API_GROUPS
+        )
+        coordinator = MagicMock()
+        coordinator.api._approved_apis = {"short"}
+        result = _eligible_sensor_types(coordinator)
+        for t in SENSOR_API_GROUPS["short"]:
+            assert t in result, f"short 센서 '{t}'가 누락됨"
+
+    def test_eligible_sensor_types_all_approved(self):
+        """[Given] 모든 API 승인, [When] _eligible_sensor_types 호출,
+        [Then] 모든 SENSOR_TYPES 키가 포함되어야 함"""
+        from custom_components.kma_weather.sensor import (
+            _eligible_sensor_types, SENSOR_API_GROUPS, SENSOR_TYPES
+        )
+        coordinator = MagicMock()
+        coordinator.api._approved_apis = set(
+            k for k in SENSOR_API_GROUPS if k is not None
+        )
+        result = _eligible_sensor_types(coordinator)
+        for t in SENSOR_TYPES:
+            assert t in result, f"센서 '{t}'가 누락됨"
+
+    def test_no_duplicate_sensor_registration(self):
+        """[Given] 이미 등록된 센서, [When] _check_new_sensors 재실행,
+        [Then] 중복 등록이 없어야 함"""
+        from custom_components.kma_weather.sensor import _eligible_sensor_types
+        coordinator = MagicMock()
+        coordinator.api._approved_apis = {"short", "air"}
+        eligible = _eligible_sensor_types(coordinator)
+        # 중복 없음: set으로 변환해도 길이 동일
+        assert len(eligible) == len(set(eligible)), "중복 센서 타입 존재"
+
+    @pytest.mark.asyncio
+    async def test_pollen_registered_without_any_api(self, hass, mock_config_entry, kma_api_mock_factory):
+        """[Given] 어떤 API도 승인되지 않은 상태 (천문 데이터만 있는 mock),
+        [When] 통합 구성요소를 설정하면,
+        [Then] sensor.test_pollen이 생성되고 상태가 '좋음'이어야 함"""
+        hass.config.latitude = LAT
+        hass.config.longitude = LON
+
+        # API 미승인 상태 시뮬레이션: fetch_data가 pollen 없는 최소 데이터 반환
+        minimal_data = {
+            "weather": {"address": "경기도 화성시", "forecast_twice_daily": []},
+            "air": {},
+            "pollen": {},  # 비시즌 or 미신청 → 빈 dict
+        }
+
+        with patch(
+            "custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data",
+            new_callable=AsyncMock,
+            return_value=minimal_data,
+        ):
+            from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator as Coord
+            _real_init = Coord.__init__
+            def _no_api_init(self_c, hass_arg, entry_arg):
+                _real_init(self_c, hass_arg, entry_arg)
+                self_c.api._approved_apis = set()  # 미승인 상태
+
+            with patch.object(Coord, "__init__", _no_api_init):
+                mock_config_entry.add_to_hass(hass)
+                await hass.config_entries.async_setup(mock_config_entry.entry_id)
+                await hass.async_block_till_done()
+
+            # [Then] pollen은 항상 등록
+            state = hass.states.get("sensor.test_pollen")
+            assert state is not None, "API 미승인 상태에서도 pollen 센서는 등록되어야 함"
+            assert state.state == "좋음", \
+                f"비시즌/미신청 시 좋음 fallback 기대, 실제='{state.state}'"
+
+
 # ── 자정 unknown 방지 (_REALTIME_KEYS) ────────────────────────────────────────
 
 class TestRealtimeKeysCache:
@@ -313,7 +561,6 @@ class TestRealtimeKeysCache:
     KEYS = ("TMP", "REH", "WSD", "VEC", "VEC_KOR", "POP", "apparent_temp")
 
     def _run(self, new_weather, prev_weather):
-        """coordinator 보완 로직만 순수하게 실행"""
         _REALTIME_KEYS = self.KEYS
         weather = dict(new_weather)
         if prev_weather is not None:
@@ -325,58 +572,36 @@ class TestRealtimeKeysCache:
         return weather
 
     def test_dash_value_restored_from_cache(self):
-        """값이 '-'인 경우 이전 캐시로 복원"""
-        result = self._run(
-            {"TMP": "-", "REH": 45},
-            {"TMP": 22, "REH": 40},
-        )
-        assert result["TMP"] == 22, "TMP='-' → 캐시 22로 복원 기대"
-        assert result["REH"] == 45, "REH는 정상값이므로 유지"
+        result = self._run({"TMP": "-", "REH": 45}, {"TMP": 22, "REH": 40})
+        assert result["TMP"] == 22
+        assert result["REH"] == 45
 
     def test_none_value_restored_from_cache(self):
-        """값이 None인 경우 이전 캐시로 복원"""
-        result = self._run(
-            {"TMP": None, "WSD": 2.1},
-            {"TMP": 22, "WSD": 1.5},
-        )
+        result = self._run({"TMP": None, "WSD": 2.1}, {"TMP": 22, "WSD": 1.5})
         assert result["TMP"] == 22
         assert result["WSD"] == 2.1
 
     def test_missing_key_not_restored(self):
-        """키 자체가 없는 경우(누락 데이터) → 보완하지 않음"""
-        result = self._run(
-            {"REH": 45},          # TMP 키 없음
-            {"TMP": 22, "REH": 40},
-        )
-        assert "TMP" not in result, "TMP 키가 없는데 캐시로 채워지면 안 됨"
+        result = self._run({"REH": 45}, {"TMP": 22, "REH": 40})
+        assert "TMP" not in result
 
     def test_all_realtime_keys_covered(self):
-        """모든 _REALTIME_KEYS가 보완 로직 적용 대상인지 확인"""
         new = {k: "-" for k in self.KEYS}
         prev = {k: f"val_{k}" for k in self.KEYS}
         result = self._run(new, prev)
         for k in self.KEYS:
-            assert result[k] == f"val_{k}", f"키={k} 복원 실패"
+            assert result[k] == f"val_{k}"
 
     def test_no_cache_no_restore(self):
-        """이전 캐시가 없으면 보완하지 않음"""
         result = self._run({"TMP": "-"}, None)
         assert result["TMP"] == "-"
 
     def test_prev_also_bad_no_restore(self):
-        """이전 캐시도 '-'/None이면 보완하지 않음"""
-        result = self._run(
-            {"TMP": "-"},
-            {"TMP": "-"},
-        )
+        result = self._run({"TMP": "-"}, {"TMP": "-"})
         assert result["TMP"] == "-"
 
     def test_empty_string_restored(self):
-        """빈 문자열도 '-'와 동일하게 캐시로 복원"""
-        result = self._run(
-            {"TMP": ""},
-            {"TMP": 22},
-        )
+        result = self._run({"TMP": ""}, {"TMP": 22})
         assert result["TMP"] == 22
 
 
@@ -393,7 +618,6 @@ async def test_astro_sensors_registered(hass, mock_config_entry, kma_api_mock_fa
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
     await asyncio.sleep(0.5)
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
     await coordinator.async_refresh()
@@ -412,12 +636,63 @@ async def test_astro_sensors_registered(hass, mock_config_entry, kma_api_mock_fa
         f"sensor.{p}_moonrise",
         f"sensor.{p}_moonset",
         f"sensor.{p}_observation_condition",
+        f"sensor.{p}_pollen",   # 꽃가루 센서도 항상 등록
     ]
     for entity_id in expected_sensors:
         state = hass.states.get(entity_id)
         assert state is not None, f"센서 {entity_id} 미등록"
         assert state.state not in ("unavailable",), \
             f"센서 {entity_id} 상태={state.state}"
+
+
+@pytest.mark.asyncio
+@_skip_no_sf
+async def test_pollen_sensor_registered_and_state(hass, mock_config_entry, kma_api_mock_factory):
+    """[Given] full_test 시나리오, [When] 통합 구성요소 설정 후,
+    [Then] pollen 센서가 등록되고 상태/속성이 올바르게 출력되어야 함"""
+    hass.config.latitude = LAT
+    hass.config.longitude = LON
+    kma_api_mock_factory("full_test")
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_pollen")
+    assert state is not None, "pollen 센서가 등록되지 않음"
+    assert state.state in {"좋음", "보통", "나쁨", "매우나쁨"}, \
+        f"pollen 상태 유효하지 않음: '{state.state}'"
+    # 속성 검증
+    assert "참나무" in state.attributes
+    assert "소나무" in state.attributes
+    assert "풀" in state.attributes
+
+
+@pytest.mark.asyncio
+@_skip_no_sf
+async def test_observation_condition_has_reason_attribute(
+    hass, mock_config_entry, kma_api_mock_factory
+):
+    """[Given] full_test + skyfield 준비 완료, [When] 관측 조건 센서 갱신 후,
+    [Then] 관측불가 상태이면 '관측불가_사유' 속성이 있어야 함"""
+    hass.config.latitude = LAT
+    hass.config.longitude = LON
+    kma_api_mock_factory("full_test")
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    await asyncio.sleep(0.5)
+    coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.test_observation_condition")
+    assert state is not None
+    if state.state == "관측불가":
+        assert "관측불가_사유" in state.attributes, \
+            "관측불가 상태에서 사유 속성이 없음"
+        assert state.attributes["관측불가_사유"] in ("강수", "흐림", "주간"), \
+            f"유효하지 않은 사유: '{state.attributes['관측불가_사유']}'"
 
 
 @pytest.mark.asyncio
@@ -431,7 +706,6 @@ async def test_moon_phase_values(hass, mock_config_entry, kma_api_mock_factory):
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
     await asyncio.sleep(0.5)
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
     await coordinator.async_refresh()
@@ -440,8 +714,7 @@ async def test_moon_phase_values(hass, mock_config_entry, kma_api_mock_factory):
     valid_phases = {"삭", "초승달", "상현달", "준상현달", "보름달", "준하현달", "하현달", "그믐달"}
     state = hass.states.get("sensor.test_moon_phase")
     assert state is not None
-    assert state.state in valid_phases, \
-        f"달 위상='{state.state}' 유효하지 않음"
+    assert state.state in valid_phases
 
 
 @pytest.mark.asyncio
@@ -455,7 +728,6 @@ async def test_moon_illumination_range(hass, mock_config_entry, kma_api_mock_fac
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
     await asyncio.sleep(0.5)
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
     await coordinator.async_refresh()
@@ -463,9 +735,9 @@ async def test_moon_illumination_range(hass, mock_config_entry, kma_api_mock_fac
 
     state = hass.states.get("sensor.test_moon_illumination")
     assert state is not None
-    assert state.state != "unknown", "달 조명율이 unknown"
+    assert state.state != "unknown"
     illum = int(state.state)
-    assert 0 <= illum <= 100, f"달 조명율={illum}% 범위 벗어남"
+    assert 0 <= illum <= 100
 
 
 @pytest.mark.asyncio
@@ -479,20 +751,15 @@ async def test_observation_condition_valid(hass, mock_config_entry, kma_api_mock
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
     await asyncio.sleep(0.5)
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
-    valid_conditions = {
-        "최우수", "우수", "보통", "불량",
-        "관측불가", "관측불가", "관측불가",
-    }
+    valid_conditions = {"최우수", "우수", "보통", "불량", "관측불가", "분석불가"}
     state = hass.states.get("sensor.test_observation_condition")
     assert state is not None
-    assert state.state in valid_conditions, \
-        f"관측 조건='{state.state}' 유효하지 않음"
+    assert state.state in valid_conditions
 
 
 @pytest.mark.asyncio
@@ -506,7 +773,6 @@ async def test_sun_time_format(hass, mock_config_entry, kma_api_mock_factory):
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
     await asyncio.sleep(0.5)
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
     await coordinator.async_refresh()
@@ -517,13 +783,11 @@ async def test_sun_time_format(hass, mock_config_entry, kma_api_mock_factory):
         state = hass.states.get(f"sensor.{p}_{sensor}")
         assert state is not None, f"sensor.{p}_{sensor} 미등록"
         val = state.state
-        assert val != "unknown", f"sensor.{p}_{sensor} = unknown"
-        assert val.startswith("오늘 ") or val.startswith("내일 "), \
-            f"sensor.{p}_{sensor} 접두어 없음: '{val}'"
+        assert val != "unknown"
+        assert val.startswith("오늘 ") or val.startswith("내일 ")
         time_part = val.split(" ")[1]
         h, m = time_part.split(":")
-        assert 0 <= int(h) <= 23 and 0 <= int(m) <= 59, \
-            f"sensor.{p}_{sensor} 시각 형식 오류: '{val}'"
+        assert 0 <= int(h) <= 23 and 0 <= int(m) <= 59
 
 
 @pytest.mark.asyncio
@@ -539,16 +803,13 @@ async def test_realtime_cache_in_coordinator(hass, mock_config_entry, kma_api_mo
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    # [수정] 백그라운드 Skyfield 로드가 끝날 때까지 대기 후 강제 업데이트
     await asyncio.sleep(0.5)
     coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
-    # 1차: 정상 데이터 → TMP=22 캐싱됨
     assert hass.states.get("sensor.test_temperature").state == "22"
 
-    # 2차: TMP="-" 주입 → 캐시 복원으로 여전히 22
     dash_data = {
         "weather": {
             "TMP": "-", "REH": 45, "WSD": 2.1, "VEC_KOR": "남동",
