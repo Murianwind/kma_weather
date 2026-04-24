@@ -812,7 +812,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=tz)
             obs_cond, obs_reason = self._eval_observation(weather_for_obs, obs_dt, lat, lon)
             result["observation_condition"] = obs_cond
-            result["observation_reason"]    = obs_reason if obs_reason else None
+            result["observation_reason"]    = obs_reason
             result["weather_source"]        = weather_source
             result["weather_condition"]     = weather_kor
             return result
