@@ -347,10 +347,11 @@ class TestEvalObservationReason:
         _, reason = self._eval_full(13, "sunny", 5)
         assert reason == "주간"
 
-    def test_night_clear_reason_empty(self):
-        """[Given] 맑은 밤, [When] 평가하면, [Then] reason=''(빈 문자열)이어야 함"""
+    def test_night_clear_reason_moon_context(self):
+        """[Given] 맑은 밤 + 달 조명율 낮음(5%), [When] 평가하면,
+        [Then] 달이 떠 있으면 '달이 어두움, 맑음', 달이 없으면 '달 없음, 맑음'이어야 함"""
         _, reason = self._eval_full(22, "sunny", 5)
-        assert reason == "", f"맑은 밤 reason 기대='', 실제='{reason}'"
+        assert reason in ("달이 어두움, 맑음", "달 없음, 맑음"),             f"맑은 밤 reason 기대='달이 어두움, 맑음' 또는 '달 없음, 맑음', 실제='{reason}'"
 
     def test_observation_reason_attribute_exposed(self):
         """[Given] 관측 불가(주간) 상태, [When] 센서 속성을 확인하면,
