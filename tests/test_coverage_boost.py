@@ -272,7 +272,8 @@ async def test_options_flow(hass, mock_config_entry, kma_api_mock_factory):
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. 유틸리티 헬퍼
 # ─────────────────────────────────────────────────────────────────────────────
-from custom_components.kma_weather.coordinator import _haversine, _land_code
+from custom_components.kma_weather.coordinator import _land_code
+from custom_components.kma_weather.const import haversine as _haversine
 
 def test_haversine_known_distance():
     d = _haversine(37.5665, 126.9780, 35.1796, 129.0756)
