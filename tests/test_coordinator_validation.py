@@ -6,7 +6,7 @@ from custom_components.kma_weather.coordinator import (
     _calc_reg_ids,          # 변경: _get_kma_reg_ids → _calc_reg_ids
     _EXCLUDE_FROM_NEAREST,
 )
-from custom_components.kma_weather.const import is_korean_coord_loose as _is_valid_korean_coord
+from custom_components.kma_weather.const import is_korean_coord_loose as _is_valid_korean_coord, convert_grid
 from custom_components.kma_weather.sensor import SENSOR_TYPES
 
 
