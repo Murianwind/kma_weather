@@ -231,6 +231,12 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
                 if pollen_s:
                     assert pollen_s.state == "좋음"
                 continue
+            if sensor_type == "api_calls_today":
+                # coordinator 내부 카운터를 직접 읽으므로 가비지 데이터와 무관하게 항상 숫자 반환
+                api_s = hass.states.get(f"sensor.{p}_{details[4]}")
+                if api_s:
+                    assert api_s.state.isdigit() or int(api_s.state) >= 0
+                continue
             entity_id = f"sensor.{p}_{details[4]}"
             state = hass.states.get(entity_id)
             if state:
