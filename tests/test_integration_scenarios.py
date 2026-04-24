@@ -84,7 +84,6 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     assert state_apparent.state == "23.4", f"체감온도 기대='23.4', 실제='{state_apparent.state}'"
 
     # 3. [Scenario 2] 예보 10일치 검증
-    # [When] weather.get_forecasts 서비스를 호출하면
     response = await hass.services.async_call(
         "weather", "get_forecasts",
         {"type": "twice_daily"},
@@ -92,7 +91,6 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         blocking=True, return_response=True,
     )
     forecast = response[f"weather.{p}_weather"]["forecast"]
-    # [Then] 최소 10일 이상의 예보 데이터가 존재해야 함
     assert len(forecast) >= 10
     f0 = forecast[0]
     assert "temperature" in f0
@@ -102,25 +100,18 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     assert f0["condition"] is not None
 
     # 4. [Scenario 3] 미세먼지 센서 및 등급 검증
-    # [When] 대기질 데이터를 수신하면
-    # [Then] PM10=35, PM25=15 정수 출력 및 등급 계산 일치 확인
     pm10 = hass.states.get(f"sensor.{p}_pm10")
     assert pm10 is not None, "PM10 센서가 없음"
-    assert pm10.state == "35", f"PM10 기대='35', 실제='{pm10.state}'"
+    assert pm10.state == "35"
     assert pm10.attributes.get("unit_of_measurement") == "µg/m³"
     assert pm10.attributes.get("icon") == "mdi:blur"
 
     pm25 = hass.states.get(f"sensor.{p}_pm25")
-    assert pm25 is not None, "PM25 센서가 없음"
-    assert pm25.state == "15", f"PM25 기대='15', 실제='{pm25.state}'"
+    assert pm25 is not None
+    assert pm25.state == "15"
 
-    expected_pm10_grade = calculate_pm10_grade(pm10.state)
-    actual_pm10_grade = hass.states.get(f"sensor.{p}_pm10_grade").state
-    assert actual_pm10_grade == expected_pm10_grade
-
-    expected_pm25_grade = calculate_pm25_grade(pm25.state)
-    actual_pm25_grade = hass.states.get(f"sensor.{p}_pm25_grade").state
-    assert actual_pm25_grade == expected_pm25_grade
+    assert hass.states.get(f"sensor.{p}_pm10_grade").state == calculate_pm10_grade(pm10.state)
+    assert hass.states.get(f"sensor.{p}_pm25_grade").state == calculate_pm25_grade(pm25.state)
 
     # 5. [Scenario 4] 위치 진단 센서 속성 검증
     loc_state = hass.states.get(f"sensor.{p}_location")
@@ -131,10 +122,8 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     assert loc_state.attributes.get("air_korea_station") == expected_station
 
     # 6. [Scenario 5 & 6] 현재 위치 출력 및 이동 시 갱신 검증
-    # [Given] 초기 위치가 '경기도 화성시'일 때
     assert hass.states.get(f"sensor.{p}_location").state == "경기도 화성시"
 
-    # [When] 부산광역시로 위치를 이동(patch)하고 리프레시하면
     with patch(
         "custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data",
         new_callable=AsyncMock,
@@ -153,22 +142,17 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-        # [Then] 위치 센서가 '부산광역시'로 즉시 갱신되어야 함
         assert hass.states.get(f"sensor.{p}_location").state == "부산광역시"
 
     # 7. [Scenario 7 & 8] 데이터 누락 및 복원 검증
-    # [When] 데이터가 누락된 시나리오("jeju_missing") 주입 시
     kma_api_mock_factory("jeju_missing")
     await coordinator.async_refresh()
     await hass.async_block_till_done()
-    # [Then] 센서 상태는 "unknown"이 되어야 함
     assert hass.states.get(f"sensor.{p}_temperature").state == "unknown"
 
-    # [When] 다시 정상 데이터("full_test") 주입 시
     kma_api_mock_factory("full_test")
     await coordinator.async_refresh()
     await hass.async_block_till_done()
-    # [Then] 센서 상태가 "22"로 정상 복원되어야 함
     assert hass.states.get(f"sensor.{p}_temperature").state == "22"
 
     # 8. [Scenario 10] 오염된 데이터("-") 주입 시 안정성 검사
@@ -178,7 +162,6 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         "air": {key: "-" for key in SENSOR_TYPES},
     }
 
-    # [When] 모든 값이 "-"인 데이터를 수신하면
     with patch(
         "custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data",
         new_callable=AsyncMock,
@@ -189,14 +172,16 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
 
         # [Then] 센서가 에러(unavailable) 없이 안전하게 처리되는지 전수 검사
         # 아래 센서는 unknown 검사 제외:
-        #  - _REALTIME_KEYS: "-" 주입 시 이전 캐시로 복원(자정 수정 의도된 동작)
-        #  - 천문/달 센서: API와 무관하게 좌표 계산으로 항상 값이 존재
+        #  - _REALTIME_KEYS: "-" 주입 시 이전 캐시로 복원
+        #  - 천문/달 센서: API와 무관하게 좌표 계산으로 항상 값 존재
+        #  - pollen: "-" 주입 시에도 비시즌 fallback("좋음")으로 동작 (설계 의도)
         _SKIP_UNKNOWN_CHECK = {
             "TMP", "REH", "WSD", "VEC_KOR", "POP", "apparent_temp",  # _REALTIME_KEYS
             "dawn", "sunrise", "sunset", "dusk",                       # 태양 시각
             "astro_dawn", "astro_dusk",                                # 천문 박명
             "moon_phase", "moon_illumination", "moonrise", "moonset",  # 달
             "observation_condition",                                    # 관측 조건
+            "pollen",  # 비시즌/미신청 시 "좋음" fallback → unknown이 아님(의도된 동작)
         }
         for sensor_type, details in SENSOR_TYPES.items():
             if sensor_type in ["last_updated", "api_expire"]:
@@ -205,9 +190,14 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
             state = hass.states.get(entity_id)
             if state:
                 assert state.state != "unavailable", f"센서 {entity_id}가 unavailable 상태"
-                # _REALTIME_KEYS 센서는 이전 캐시로 복원되므로 unknown이 아닐 수 있음
                 if sensor_type not in _SKIP_UNKNOWN_CHECK:
                     assert state.state == "unknown", f"센서 {entity_id}가 {state.state} (unknown 기대)"
+
+        # [Then] pollen 센서는 "-" 주입 시에도 "좋음"을 유지해야 함 (fallback 검증)
+        pollen_state = hass.states.get(f"sensor.{p}_pollen")
+        assert pollen_state is not None, "pollen 센서가 없음"
+        assert pollen_state.state == "좋음", \
+            f"'-' 주입 시 pollen 좋음 fallback 기대, 실제='{pollen_state.state}'"
 
     # 9. [Scenario 11] 가비지 데이터 주입 시 강건성 검증
     garbage_data = {
@@ -215,7 +205,6 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         "air": {key: "BAD_DATA" for key in SENSOR_TYPES},
     }
 
-    # [When] 유효하지 않은 문자열("BAD_DATA")을 수신하면
     with patch(
         "custom_components.kma_weather.api_kma.KMAWeatherAPI.fetch_data",
         new_callable=AsyncMock,
@@ -224,8 +213,6 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-        # [Then] 측정 단위가 있는 센서들은 "unknown"으로 처리되고 시스템은 유지되어야 함
-        # 천문/달 센서는 API와 무관하게 좌표 계산으로 항상 값이 존재하므로 제외
         _ASTRO_KEYS = {
             "dawn", "sunrise", "sunset", "dusk",
             "astro_dawn", "astro_dusk",
@@ -236,6 +223,12 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
             if sensor_type in ["last_updated", "api_expire"]:
                 continue
             if sensor_type in _ASTRO_KEYS:
+                continue
+            if sensor_type == "pollen":
+                # 가비지 데이터에도 pollen은 좋음 fallback
+                pollen_s = hass.states.get(f"sensor.{p}_{details[4]}")
+                if pollen_s:
+                    assert pollen_s.state == "좋음"
                 continue
             entity_id = f"sensor.{p}_{details[4]}"
             state = hass.states.get(entity_id)
