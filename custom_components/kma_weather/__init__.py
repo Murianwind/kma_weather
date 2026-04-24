@@ -232,7 +232,7 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
         "observation_reason":    astro.get("observation_reason"),
         # 관측 조건 평가에 현지 날씨가 반영됐는지 여부
         # "날씨+천문": 단기예보 조회 성공, 날씨 반영
-        # "천문만":    단기예보 미승인 또는 조회 실패, 달 조명율+태양고도만 사용
+        # "천문만":    단기예보 미승인 또는 조회 실패, 달 조명율+달 고도+태양고도만 사용
         "weather_source":        astro.get("weather_source"),
         "weather_condition":     astro.get("weather_condition"),  # 반영된 날씨 (미반영이면 "API 조회 불가")
     }
