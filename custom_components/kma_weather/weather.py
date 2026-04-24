@@ -7,7 +7,6 @@ from homeassistant.components.weather import (
 from homeassistant.const import (
     UnitOfTemperature,
     UnitOfSpeed,
-    UnitOfPressure
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo
@@ -24,7 +23,6 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
     _attr_has_entity_name = False
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
-    _attr_native_pressure_unit = UnitOfPressure.HPA
     _attr_supported_features = (
         WeatherEntityFeature.FORECAST_DAILY |
         WeatherEntityFeature.FORECAST_TWICE_DAILY
