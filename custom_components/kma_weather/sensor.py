@@ -46,7 +46,7 @@ SENSOR_TYPES = {
     "moonrise":           ["다음 월출",          None,   "mdi:moon-full",                   None,  "moonrise",           None],
     "moonset":            ["다음 월몰",          None,   "mdi:moon-waning-crescent",        None,  "moonset",            None],
     "observation_condition": ["천문 관측 조건",  None,   "mdi:telescope",                   None,  "observation_condition", None],
-    "pollen":             ["꽃가루 농도",      None,                                "mdi:flower-pollen",           None,                          "pollen",               None],
+    "pollen":             ["꽃가루 농도",      None,                                "mdi:flower-pollen-outline",   None,                          "pollen",               None],
 }
 
 # ── API별 센서 그룹 ───────────────────────────────────────────────────────────
@@ -167,21 +167,35 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         "그믐달":   "mdi:moon-waning-crescent",
     }
 
-    _OBSERVATION_ICONS = {
-        "최우수":          "mdi:star-shooting",
-        "우수":            "mdi:star",
-        "보통":            "mdi:star-half-full",
+    # ── 관측 조건 아이콘: 상태 + 사유 조합으로 분기 ───────────────────────
+    # coordinator가 weather["observation_reason"]을 함께 저장하므로
+    # 사유(reason)를 우선 참조하고, 없으면 상태(condition)로 fallback한다.
+    _OBSERVATION_ICONS_BY_REASON = {
+        # 관측불가 사유별
+        "강수":     "mdi:weather-rainy",        # 비/눈/소나기
+        "흐림":     "mdi:weather-cloudy",        # 흐린 하늘
+        "주간":     "mdi:weather-sunny",         # 태양 고도 높음
+        # 관측 가능 등급
+        "":         None,                        # 등급으로 fallback
+        "분석불가": "mdi:help-circle-outline",
+    }
+    _OBSERVATION_ICONS_BY_CONDITION = {
+        "최우수":   "mdi:star-shooting",
+        "우수":     "mdi:star",
+        "보통":     "mdi:star-half-full",
         "불량":     "mdi:moon-waning-gibbous",
-        "관측불가": "mdi:weather-rainy",
-        "관측불가": "mdi:weather-cloudy",
-        "관측불가": "mdi:weather-sunny",
+        "관측불가": "mdi:telescope",             # reason 없을 때 최종 fallback
+        "분석불가": "mdi:help-circle-outline",
     }
 
+    # ── 꽃가루 아이콘: MDI는 색상 변경 불가이므로 등급별 아이콘을 다르게 ──
+    # "좋음": 윤곽선(outline) 아이콘으로 시각적 구분
+    # "보통"~"매우나쁨": 속이 찬 아이콘 + 이름에 alert 접미 추가
     _POLLEN_ICONS = {
-        "좋음":   "mdi:flower-pollen-outline",
-        "보통":   "mdi:flower-pollen",
-        "나쁨":   "mdi:flower-pollen",
-        "매우나쁨": "mdi:flower-pollen",
+        "좋음":     "mdi:flower-pollen-outline",
+        "보통":     "mdi:flower-pollen",
+        "나쁨":     "mdi:flower-pollen",
+        "매우나쁨": "mdi:alert-decagram",        # 강조 아이콘으로 구분
     }
 
     @property
@@ -192,14 +206,22 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 phase = w.get("moon_phase")
                 if phase and phase in self._MOON_PHASE_ICONS:
                     return self._MOON_PHASE_ICONS[phase]
+
             elif self._type == "observation_condition":
-                cond = w.get("observation_condition")
-                if cond and cond in self._OBSERVATION_ICONS:
-                    return self._OBSERVATION_ICONS[cond]
+                # 1순위: 사유(reason) 기반 아이콘
+                reason = w.get("observation_reason", "")
+                icon_by_reason = self._OBSERVATION_ICONS_BY_REASON.get(reason)
+                if icon_by_reason is not None:
+                    return icon_by_reason
+                # 2순위: 상태(condition) 기반 아이콘
+                cond = w.get("observation_condition", "")
+                return self._OBSERVATION_ICONS_BY_CONDITION.get(cond, self._attr_icon)
+
             elif self._type == "pollen":
                 pollen = self.coordinator.data.get("pollen", {})
                 worst = pollen.get("worst") or "좋음"
                 return self._POLLEN_ICONS.get(worst, self._attr_icon)
+
         return self._attr_icon
 
     @property
@@ -268,5 +290,12 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 "소나무": pollen.get("pine") if pollen.get("pine") is not None else "좋음",
                 "풀":     pollen.get("grass") if pollen.get("grass") is not None else "좋음",
             }
+
+        if self._type == "observation_condition":
+            # 관측불가 사유를 속성으로 노출 (없으면 빈 문자열)
+            reason = w.get("observation_reason", "")
+            if reason:
+                return {"관측불가_사유": reason}
+            return None
 
         return None
