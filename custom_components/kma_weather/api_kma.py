@@ -248,7 +248,7 @@ class KMAWeatherAPI:
                     return {"_http_error": str(response.status)}
                 if response.status == 404:
                     # 404는 API URL 문제 또는 서비스 비활성화
-                    _LOGGER.warning("API 404 응답 (%s)", url)
+                    _LOGGER.debug("API 404 응답 (%s) - 미신청 또는 중지된 서비스일 수 있음", url)
                     return {"_http_error": "404"}
                 response.raise_for_status()
                 return await response.json(content_type=None)
@@ -278,13 +278,25 @@ class KMAWeatherAPI:
     ) -> dict | None:
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
+        # 미신청/중지 확인된 API는 호출 건너뜀 (카운터 증가 방지)
+        # 한 번도 시도 안 한 API는 첫 호출에서 승인 여부 확인
+        async def _skip_coro(default):
+            return default
+
         tasks = [
             self._get_short_term(now),
             self._get_mid_term(now, reg_id_temp, reg_id_land),
-            self._get_air_quality(lat, lon),
+            self._get_air_quality(lat, lon)
+                if not ("station" in self._notified_unsubscribed
+                        and "air" in self._notified_unsubscribed)
+                else _skip_coro({}),
             self._get_address(lat, lon),
-            self._get_warning(warn_area_code),
-            self._get_pollen(now, lat, lon),   # reg_id_temp 제거, lat/lon 직접 전달
+            self._get_warning(warn_area_code)
+                if "warning" not in self._notified_unsubscribed
+                else _skip_coro(None),
+            self._get_pollen(now, lat, lon)
+                if "pollen" not in self._notified_unsubscribed
+                else _skip_coro({}),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         short_res, mid_res, air_data, address, warning, pollen_data = [
