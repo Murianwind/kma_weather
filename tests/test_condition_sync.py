@@ -169,3 +169,110 @@ async def test_integration_sync(hass, kor, eng):
             blocking=True, return_response=True
         )
         assert response["weather.sync_weather"]["forecast"][0]["condition"] == eng
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1. SKY × PTY 조합 테스트 (Combinatorial Testing)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestSkyPtyCombinations:
+    """
+    기상청 단기예보 SKY(하늘 상태)와 PTY(강수 형태) 조합에 대한 완전한 매핑 검증.
+
+    SKY 유효값: "1"=맑음, "3"=구름많음, "4"=흐림
+    PTY 유효값: "0"=없음, "1"=비, "2"=비/눈, "3"=눈, "4"=소나기,
+                "5"=빗방울, "6"=빗방울/눈날림, "7"=눈날림
+    """
+
+    @pytest.mark.parametrize("sky,pty,expected", [
+        # ── PTY=0(강수없음): SKY 값에 따라 분기 ──────────────────────────────
+        ("1", "0", "맑음"),
+        ("3", "0", "구름많음"),
+        ("4", "0", "흐림"),
+        # SKY가 맑음(1)이어도 PTY가 있으면 PTY 우선
+        ("1", "1", "비"),
+        ("1", "2", "비/눈"),
+        ("1", "3", "눈"),
+        ("1", "4", "소나기"),
+        ("1", "5", "빗방울"),
+        ("1", "6", "빗방울/눈날림"),
+        ("1", "7", "눈날림"),
+        # PTY가 있을 때 SKY 값은 결과에 영향 없음
+        ("4", "1", "비"),
+        ("3", "3", "눈"),
+        ("4", "4", "소나기"),
+    ])
+    def test_valid_combinations(self, sky, pty, expected):
+        """
+        [Given] 유효한 SKY, PTY 값 조합
+        [When] _get_sky_kor 호출
+        [Then] 명세에 정의된 한국어 날씨 상태를 반환해야 함
+        """
+        api = KMAWeatherAPI(None, "key")
+        assert api._get_sky_kor(sky, pty) == expected, \
+            f"SKY={sky}, PTY={pty} → '{api._get_sky_kor(sky, pty)}' (기대: '{expected}')"
+
+    @pytest.mark.parametrize("sky,pty", [
+        ("1", "9"),    # 명세에 없는 PTY 값
+        ("1", "99"),   # 완전히 벗어난 PTY 값
+        ("2", "0"),    # 명세에 없는 SKY 값 (2는 없음)
+        ("9", "0"),    # 명세에 없는 SKY 값
+        ("0", "0"),    # SKY 최솟값 이하
+        (None, None),  # None 입력
+        ("", ""),      # 빈 문자열 입력
+        ("abc", "xyz"),# 비숫자 입력
+    ])
+    def test_out_of_spec_values_do_not_crash(self, sky, pty):
+        """
+        [Given] 명세에 없는 SKY 또는 PTY 값 (OUT 값)
+        [When] _get_sky_kor 호출
+        [Then] 크래시 없이 기본값(맑음 또는 흐림) 중 하나를 반환해야 함
+        """
+        api = KMAWeatherAPI(None, "key")
+        result = api._get_sky_kor(sky, pty)
+        assert isinstance(result, str), \
+            f"SKY={sky!r}, PTY={pty!r} → 문자열 반환 기대, 실제: {result!r}"
+        assert result in ["맑음", "구름많음", "흐림", "비", "비/눈", "눈",
+                          "소나기", "빗방울", "빗방울/눈날림", "눈날림"], \
+            f"알 수 없는 반환값: {result!r}"
+
+    def test_pty_takes_priority_over_sky(self):
+        """
+        [Given] SKY='1'(맑음), PTY='1'(비) — 논리적으로 모순된 조합
+        [When] _get_sky_kor 호출
+        [Then] PTY가 SKY보다 우선하여 '비'를 반환해야 함
+        """
+        api = KMAWeatherAPI(None, "key")
+        assert api._get_sky_kor("1", "1") == "비"
+
+    @pytest.mark.parametrize("kor,expected_eng", [
+        ("맑음",         "sunny"),
+        ("구름많음",      "partlycloudy"),
+        ("흐림",         "cloudy"),
+        ("비",           "rainy"),
+        ("비/눈",        "snowy-rainy"),
+        ("눈",           "snowy"),
+        ("소나기",        "pouring"),
+        ("빗방울",        "rainy"),
+        ("빗방울/눈날림", "snowy-rainy"),
+        ("눈날림",        "snowy"),
+    ])
+    def test_kor_to_condition_full_mapping(self, kor, expected_eng):
+        """
+        [Given] 한국어 날씨 상태 전체 목록
+        [When] kor_to_condition 호출
+        [Then] HA 표준 영문 condition으로 정확히 매핑되어야 함
+        """
+        result = KMAWeatherAPI.kor_to_condition(kor)
+        assert result == expected_eng, \
+            f"'{kor}' → '{result}' (기대: '{expected_eng}')"
+
+    def test_kor_to_condition_unknown_returns_none(self):
+        """
+        [Given] 매핑 테이블에 없는 한국어 날씨 상태
+        [When] kor_to_condition 호출
+        [Then] None을 반환해야 함 (크래시 없음)
+        """
+        assert KMAWeatherAPI.kor_to_condition("모래바람") is None
+        assert KMAWeatherAPI.kor_to_condition("") is None
+        assert KMAWeatherAPI.kor_to_condition(None) is None
