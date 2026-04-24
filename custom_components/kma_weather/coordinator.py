@@ -128,6 +128,19 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_daily_temp")
         self._store_loaded = False
 
+        # ── API 호출 카운터 ──────────────────────────────────────────────────
+        self._api_call_counts: dict[str, int] = {
+            "단기예보": 0, "중기예보": 0,
+            "에어코리아_측정소": 0, "에어코리아_대기": 0,
+            "기상특보": 0, "꽃가루": 0,
+        }
+        self._api_call_date: str | None = None   # "YYYYMMDD" 형식
+        self._api_call_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_api_calls")
+        self._api_call_store_loaded = False
+
+        # api 객체에 카운터 콜백 주입 (api는 이미 위에서 생성됨)
+        self._inject_counter()
+
     async def _async_init_skyfield(self, sf_dir: str) -> None:
         """de440s.bsp 파일을 비동기로 다운로드 후 skyfield 초기화"""
         import asyncio
@@ -187,6 +200,55 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             nx, ny, reg_id_temp, reg_id_land, warn_area_code,
         )
         return nx, ny, reg_id_temp, reg_id_land, warn_area_code
+
+    # ── API 카운터 초기화/콜백 주입 ─────────────────────────────────────────
+    def _inject_counter(self) -> None:
+        """api 객체에 카운터 콜백을 주입한다. coordinator 생성 후 반드시 호출."""
+        def _increment(key: str) -> None:
+            now_date = datetime.now(self.api.tz).strftime("%Y%m%d")
+            # 자정 넘어가면 초기화
+            if self._api_call_date and self._api_call_date != now_date:
+                for k in self._api_call_counts:
+                    self._api_call_counts[k] = 0
+                _LOGGER.debug("API 호출 카운터 자정 초기화: %s → %s", self._api_call_date, now_date)
+                self.hass.async_create_task(self._save_api_calls())
+            self._api_call_date = now_date
+            if key in self._api_call_counts:
+                self._api_call_counts[key] += 1
+        self.api._call_counter_ref = _increment
+
+    # ── API 카운터 저장소 ────────────────────────────────────────────────────
+    async def _restore_api_calls(self) -> None:
+        """재시작 후 오늘 날짜의 카운터를 복구한다."""
+        if self._api_call_store_loaded:
+            return
+        try:
+            stored = await self._api_call_store.async_load()
+            if stored:
+                tz = getattr(self.api, "tz", timezone(timedelta(hours=9)))
+                today = datetime.now(tz).strftime("%Y%m%d")
+                if stored.get("date") == today:
+                    for key in self._api_call_counts:
+                        self._api_call_counts[key] = int(stored.get(key, 0))
+                    self._api_call_date = today
+                    _LOGGER.debug("API 호출 카운터 복구 성공: %s", self._api_call_counts)
+        except Exception as e:
+            _LOGGER.debug("API 호출 카운터 복구 실패 (무시): %s", e)
+        self._api_call_store_loaded = True
+
+    async def _save_api_calls(self) -> None:
+        """현재 카운터를 저장한다."""
+        try:
+            await self._api_call_store.async_save({
+                "date": self._api_call_date or datetime.now(self.api.tz).strftime("%Y%m%d"),
+                **self._api_call_counts,
+            })
+        except Exception as e:
+            _LOGGER.debug("API 호출 카운터 저장 실패: %s", e)
+
+    def api_call_total(self) -> int:
+        """오늘 총 API 호출 횟수를 반환한다."""
+        return sum(self._api_call_counts.values())
 
     # ── 저장소 복구/저장 ────────────────────────────────────────────────────
     async def _restore_daily_temps(self):
@@ -281,6 +343,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         async with self._update_lock:
             try:
                 await self._restore_daily_temps()
+                await self._restore_api_calls()
                 curr_lat, curr_lon = self._resolve_location()
                 if curr_lat is None:
                     return self._cached_data or {"weather": {}, "air": {}}
@@ -364,6 +427,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 weather["observation_reason"]    = obs_reason
 
                 self._cached_data = new_data
+                # 카운터 저장 (매 업데이트마다 영속화)
+                await self._save_api_calls()
                 return new_data
 
             except Exception as exc:
