@@ -208,25 +208,33 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             "date": None,
         })
 
-    def _inject_counter(self) -> None:
-        """api 객체에 카운터 콜백을 주입한다. coordinator 생성 후 반드시 호출."""
+    def _inject_counter(self, reason: str = "자동 업데이트") -> None:
+        """
+        api 객체에 카운터 콜백을 주입한다. coordinator 생성 후 반드시 호출.
+
+        Args:
+            reason: 호출 이유 레이블 (자동 업데이트 / 업데이트 액션 / 다시 읽어오기 / 액션)
+        """
         def _increment(key: str) -> None:
             now_date = datetime.now(self.api.tz).strftime("%Y%m%d")
             shared = self._shared_counts
             # 자정 넘어가면 전체 초기화
             if shared.get("date") and shared["date"] != now_date:
                 for k in list(shared.keys()):
-                    if k != "date":
+                    if k not in ("date", "last_reason"):
                         shared[k] = 0
                 _LOGGER.debug("API 호출 카운터 자정 초기화: %s → %s", shared["date"], now_date)
                 self.hass.async_create_task(self._save_api_calls())
             shared["date"] = now_date
+            shared["last_reason"] = reason  # 마지막 호출 이유 갱신
             if key in shared:
                 shared[key] += 1
             # 인스턴스 카운터도 동기화 (저장/복구용)
             self._api_call_date = now_date
             if key in self._api_call_counts:
                 self._api_call_counts[key] = shared[key]
+            # 센서 즉시 갱신 (HA 이벤트 루프에서 예약)
+            self.hass.async_create_task(self._notify_api_counter_listeners())
         self.api._call_counter_ref = _increment
 
     # ── API 카운터 저장소 ────────────────────────────────────────────────────
@@ -268,7 +276,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def api_call_total(self) -> int:
         """오늘 총 API 호출 횟수를 반환한다 (전체 기기 합산)."""
         shared = self._shared_counts
-        return sum(v for k, v in shared.items() if k != "date")
+        return sum(v for k, v in shared.items() if k not in ("date", "last_reason"))
+
+    async def _notify_api_counter_listeners(self) -> None:
+        """api_calls_today 센서를 즉시 갱신하도록 HA에 알린다."""
+        try:
+            self.async_update_listeners()
+        except Exception:
+            pass
 
     # ── 저장소 복구/저장 ────────────────────────────────────────────────────
     async def _restore_daily_temps(self):
@@ -364,6 +379,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await self._restore_daily_temps()
                 await self._restore_api_calls()
+                # 업데이트 이유를 카운터에 반영 (기본: 자동 업데이트)
+                self._inject_counter(getattr(self, "_update_reason", "자동 업데이트"))
+                self._update_reason = "자동 업데이트"  # 다음 업데이트를 위해 초기화
                 curr_lat, curr_lon = self._resolve_location()
                 if curr_lat is None:
                     return self._cached_data or {"weather": {}, "air": {}}
@@ -578,60 +596,80 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self, weather: dict, now: "datetime", lat: float, lon: float
     ) -> "tuple[str, str]":
         """
-        현재 날씨·태양 고도·달 조명율을 종합하여 관측 조건과 사유를 반환한다.
- 
+        현재 날씨·태양 고도·달 고도·달 조명율을 종합하여 관측 조건과 사유를 반환한다.
+
         Returns:
             (condition, reason)
             condition : "최우수" | "우수" | "보통" | "불량" | "관측불가" | "분석불가"
-            reason    : 관측불가 사유 (아이콘 분기 및 속성 표시에 사용)
-                        "강수" | "흐림" | "구름많음" | "주간" | "" | "분석불가"
-                        관측 가능 등급이면 빈 문자열("")을 반환한다.
+            reason    : 조건 사유 (속성에 표시)
+                        관측 불가 — "강수" | "흐림" | "주간"
+                        관측 가능 — "달 없음, 맑음" | "달이 어두움, 맑음" | "달이 어두움"
+                                    | "달이 밝지 않음" | "달이 밝음" | "달이 환함"
+                                    | "구름많음"
         """
         condition_eng = weather.get("current_condition", "")
- 
+
         # 1. 기상 상태 체크
         if condition_eng in {"rainy", "pouring", "snowy", "snowy-rainy"}:
             return "관측불가", "강수"
- 
+
         if condition_eng == "cloudy":
             return "관측불가", "흐림"
- 
-        if condition_eng == "partlycloudy":
-            return "불량", "구름많음"
- 
+
         # 2. 태양 고도 체크 (skyfield 필요)
         try:
             if self._sf_eph is None or self._sf_ts is None:
                 return "분석불가", "분석불가"
- 
+
             sf_loc = _wgs84.latlon(lat, lon)
             t_now = self._sf_ts.from_datetime(now)
-            astrometric = (
+
+            # 태양 고도
+            sun_astr = (
                 (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(self._sf_eph["Sun"])
             )
-            alt, _, _ = astrometric.apparent().altaz()
- 
-            if alt.degrees > -18:
+            sun_alt, _, _ = sun_astr.apparent().altaz()
+            if sun_alt.degrees > -18:
                 return "관측불가", "주간"
- 
+
+            # 달 고도 (지평선 7° 초과면 달이 떠 있음)
+            moon_astr = (
+                (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(self._sf_eph["Moon"])
+            )
+            moon_alt, _, _ = moon_astr.apparent().altaz()
+            moon_up = moon_alt.degrees > 7.0
+
         except Exception:
             return "분석불가", "분석불가"
- 
-        # 3. 달 조명율 체크
+
+        # 3. 구름 많음 (달 유무와 무관하게 불량)
+        if condition_eng == "partlycloudy":
+            return "불량", "구름많음"
+
+        # 날씨 맑음 여부
+        is_clear = condition_eng in ("", "sunny")
+
+        # 4. 달이 떠 있지 않은 경우 → 최우수
+        if not moon_up:
+            reason = "달 없음, 맑음" if is_clear else "달 없음"
+            return "최우수", reason
+
+        # 5. 달이 떠 있음 → 달 조명율로 판단
         illum = weather.get("moon_illumination", 100)
         try:
             illum = int(illum)
         except (TypeError, ValueError):
             illum = 100
- 
+
         if illum <= 25:
-            return "최우수", ""
+            reason = "달이 어두움, 맑음" if is_clear else "달이 어두움"
+            return "최우수", reason
         elif illum <= 50:
-            return "우수", ""
+            return "우수", "달이 밝지 않음"
         elif illum <= 75:
-            return "보통", ""
+            return "보통", "달이 밝음"
         else:
-            return "불량", ""
+            return "불량", "달이 환함"
 
     # ── 날짜 지정 천문 계산 (HA 서비스용) ──────────────────────────────────
     async def calc_astronomical_for_date(
