@@ -30,21 +30,18 @@ _SERVICE_SCHEMA = vol.Schema({
 
 
 def _parse_time_str(time_str: str) -> dt_time:
-    """HH:MM 또는 HH:MM:SS 문자열을 time 객체로 변환한다."""
+    """HH:MM 문자열을 time 객체로 변환한다."""
     if not time_str:
         raise HomeAssistantError(
             "시각을 입력해주세요. 올바른 형식은 HH:MM 입니다.  예) 09:00  /  21:30"
         )
-    s = time_str.strip()
-    for fmt in ("%H:%M", "%H:%M:%S"):
-        try:
-            return datetime.strptime(s, fmt).time()
-        except ValueError:
-            continue
-    raise HomeAssistantError(
-        f"시각 형식이 올바르지 않습니다: '{time_str}'\n"
-        "올바른 형식은 HH:MM 입니다.  예) 09:00  /  21:30  /  00:00"
-    )
+    try:
+        return datetime.strptime(time_str.strip(), "%H:%M").time()
+    except ValueError:
+        raise HomeAssistantError(
+            f"시각 형식이 올바르지 않습니다: '{time_str}'\n"
+            "올바른 형식은 HH:MM 입니다.  예) 09:00  /  21:30"
+        )
 
 
 async def _geocode_ko(
