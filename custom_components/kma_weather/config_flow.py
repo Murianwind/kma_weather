@@ -1,4 +1,6 @@
 import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -33,8 +35,6 @@ async def _validate_api_key(hass, api_key: str) -> str | None:
         decoded_key = unquote(api_key)
 
         # 단기예보 API로 테스트 호출 (서울 격자 좌표, 날짜/시간은 무관)
-        from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo
         tz = ZoneInfo("Asia/Seoul")
         now = datetime.now(tz)
         adj = now - timedelta(minutes=10)
