@@ -6,7 +6,8 @@
   - api_kma.py: KMAWeatherAPI(session, api_key, hass) — reg_id 파라미터 제거
                 fetch_data()에 reg_id_temp, reg_id_land, warn_area_code 인자 추가
                 _check_unsubscribed()로 API 미신청 감지 및 HA 알림
-  - sensor.py: "warning" 센서 추가
+                _get_pollen()으로 꽃가루 농도 위험지수 조회 추가
+  - sensor.py: "warning", "pollen" 센서 추가
 """
 import pytest
 from datetime import datetime
@@ -209,8 +210,12 @@ class TestCheckUnsubscribed:
         assert result is True
 
     def test_all_services_defined_in_api_services(self):
-        """5개 API 서비스가 모두 _API_SERVICES에 정의되어 있음"""
-        expected_keys = {"short", "mid", "air", "station", "warning"}
+        """_API_SERVICES에 정의된 서비스 키가 정확히 일치함
+
+        꽃가루 농도 위험지수(pollen) API가 추가되었으므로 6개.
+        short, mid, air, station, warning, pollen
+        """
+        expected_keys = {"short", "mid", "air", "station", "warning", "pollen"}
         assert set(_API_SERVICES.keys()) == expected_keys
 
     def test_all_services_have_url(self):
@@ -218,6 +223,12 @@ class TestCheckUnsubscribed:
         for key, (name, url) in _API_SERVICES.items():
             assert "data.go.kr" in url, f"{key} 서비스 URL이 data.go.kr이 아님"
             assert name, f"{key} 서비스 이름이 비어있음"
+
+    def test_pollen_service_url_correct(self):
+        """꽃가루 서비스의 URL이 올바른 공공데이터포털 주소임"""
+        name, url = _API_SERVICES["pollen"]
+        assert "15085289" in url, "꽃가루 API URL에 올바른 데이터셋 ID가 없음"
+        assert name == "기상청 생활기상지수"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -413,9 +424,7 @@ class TestCoordinatorApiIntegration:
         coord = KMAWeatherUpdateCoordinator(hass, entry)
         coord._store_loaded = True
 
-        # 첫 번째 구역코드 결정
         r1 = coord._resolve_area_codes(37.608025, 127.094222)
-        # 1km 이동 (캐시 범위 내)
         r2 = coord._resolve_area_codes(37.615000, 127.090000)
         assert r1 == r2
 
@@ -446,9 +455,8 @@ class TestAirQualityStationCache:
             return air_resp
 
         api._fetch = mock_fetch
-        # 0.5km 이동
         await api._get_air_quality(37.564, 126.982)
-        assert call_count["n"] == 0  # 측정소 재조회 없음
+        assert call_count["n"] == 0
 
     @pytest.mark.asyncio
     async def test_station_cache_invalidated_over_2km(self):
@@ -468,7 +476,6 @@ class TestAirQualityStationCache:
             return air_resp
 
         api._fetch = mock_fetch
-        # 강남 (약 15km 이동)
         await api._get_air_quality(37.498, 127.027)
         assert api._cached_station == "강남"
         assert api._cached_station_lat == pytest.approx(37.498)
