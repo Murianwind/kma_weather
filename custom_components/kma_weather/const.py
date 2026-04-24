@@ -44,3 +44,42 @@ def convert_grid(lat, lon):
     x = math.floor(ra * math.sin(theta) + XO + 0.5)
     y = math.floor(ro - ra * math.cos(theta) + YO + 0.5)
     return int(x), int(y)
+
+
+# ── 공통 지오 유틸리티 ────────────────────────────────────────────────────────
+
+import math as _math
+
+def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """두 위경도 좌표 간 거리를 킬로미터(km) 단위로 반환한다 (Haversine 공식)."""
+    r = 6371.0
+    dlat = _math.radians(lat2 - lat1)
+    dlon = _math.radians(lon2 - lon1)
+    a = (_math.sin(dlat / 2) ** 2
+         + _math.cos(_math.radians(lat1)) * _math.cos(_math.radians(lat2))
+         * _math.sin(dlon / 2) ** 2)
+    return r * 2 * _math.asin(_math.sqrt(a))
+
+
+# 한국 영역 경계 상수 (독도·이어도 포함)
+# ── 서비스 액션 입력 주소 검증용 (엄격한 범위) ────────────────────────────
+KOR_LAT_STRICT = (33.0, 38.7)
+KOR_LON_STRICT = (124.0, 132.0)
+
+# ── 기기 위치 좌표 유효성 검사용 (넓은 범위: 제주 남단·독도 포함) ──────────
+KOR_LAT_LOOSE  = (32.0, 42.5)
+KOR_LON_LOOSE  = (124.0, 132.5)
+
+
+def is_korean_coord_strict(lat: float, lon: float) -> bool:
+    """서비스 입력 주소 검증용 — 국내 행정구역 범위 내 좌표인지 검사한다."""
+    return (KOR_LAT_STRICT[0] <= lat <= KOR_LAT_STRICT[1]
+            and KOR_LON_STRICT[0] <= lon <= KOR_LON_STRICT[1])
+
+
+def is_korean_coord_loose(lat: float, lon: float) -> bool:
+    """기기 위치 유효성 검사용 — 한반도 인근 넓은 범위 내 좌표인지 검사한다."""
+    if _math.isnan(lat) or _math.isnan(lon):
+        return False
+    return (KOR_LAT_LOOSE[0] <= lat <= KOR_LAT_LOOSE[1]
+            and KOR_LON_LOOSE[0] <= lon <= KOR_LON_LOOSE[1])
