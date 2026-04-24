@@ -47,6 +47,7 @@ SENSOR_TYPES = {
     "moonset":            ["다음 월몰",          None,   "mdi:moon-waning-crescent",        None,  "moonset",            None],
     "observation_condition": ["천문 관측 조건",  None,   "mdi:telescope",                   None,  "observation_condition", None],
     "pollen":             ["꽃가루 농도",      None,                                "mdi:flower-pollen-outline",   None,                          "pollen",               None],
+    "api_calls_today":    ["오늘 API 호출 수", "회",                                "mdi:counter",                 None,                          "api_calls_today",      EntityCategory.DIAGNOSTIC],
 }
 
 # ── API별 센서 그룹 ───────────────────────────────────────────────────────────
@@ -54,7 +55,7 @@ SENSOR_TYPES = {
 # 키 문자열: 해당 API가 승인됐을 때만 등록
 SENSOR_API_GROUPS: dict[str | None, list[str]] = {
     None: [
-        "api_expire", "last_updated", "address",
+        "api_expire", "last_updated", "address", "api_calls_today",
         "dawn", "sunrise", "sunset", "dusk",
         "astro_dawn", "astro_dusk",
         "moon_phase", "moon_illumination", "moonrise", "moonset",
@@ -224,6 +225,9 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
             except (ValueError, TypeError):
                 return None
 
+        if self._type == "api_calls_today":
+            return self.coordinator.api_call_total()
+
         if not self.coordinator.data:
             return None
 
@@ -262,6 +266,19 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
         w = self.coordinator.data.get("weather", {})
         a = self.coordinator.data.get("air", {})
+
+        # ── API 호출 카운터 센서 ────────────────────────────────────────────────
+        if self._type == "api_calls_today":
+            counts = self.coordinator._api_call_counts
+            return {
+                "단기예보":        counts.get("단기예보", 0),
+                "중기예보":        counts.get("중기예보", 0),
+                "에어코리아_측정소": counts.get("에어코리아_측정소", 0),
+                "에어코리아_대기":  counts.get("에어코리아_대기", 0),
+                "기상특보":        counts.get("기상특보", 0),
+                "꽃가루":          counts.get("꽃가루", 0),
+                "집계일":          self.coordinator._api_call_date or "-",
+            }
 
         # ── location 센서 (address) ──────────────────────────────────────────
         if self._type == "address":
