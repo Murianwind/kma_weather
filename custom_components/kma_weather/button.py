@@ -28,6 +28,8 @@ class KMAUpdateButton(CoordinatorEntity, ButtonEntity):
         self._last_press = None
 
     async def async_press(self) -> None:
+        # 버튼 클릭 시 호출 이유를 "업데이트 액션"으로 설정
+        self.coordinator._update_reason = "업데이트 액션"
         now = datetime.now()
         # 로그 메시지 이름 변경 반영
         if self._last_press and (now - self._last_press) < timedelta(seconds=5):
