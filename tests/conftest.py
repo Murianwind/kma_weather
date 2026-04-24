@@ -78,9 +78,8 @@ MOCK_SCENARIOS = {
             "station": "화성"
         },
         # ── 꽃가루 데이터 추가 ──────────────────────────────────────────────
-        # pollen 센서는 SENSOR_API_GROUPS[None]에 포함되어 항상 등록되며,
-        # coordinator.data["pollen"]이 없으면 native_value가 "좋음"(fallback)을 반환하지만
-        # extra_state_attributes에서 KeyError 없이 동작하려면 키가 있어야 한다.
+        # pollen 센서는 pollen API 승인 시에만 등록(SENSOR_API_GROUPS["pollen"]).
+        # full_test 시나리오는 pollen API가 승인된 상태이므로 데이터를 포함한다.
         "pollen": {
             "oak": "좋음",
             "pine": "좋음",
