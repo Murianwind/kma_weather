@@ -1,8 +1,9 @@
+import logging
+from datetime import datetime, timedelta
+
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from datetime import datetime, timedelta
-import logging
-# CONF_LOCATION_ENTITY 추가 임포트
+
 from .const import DOMAIN, CONF_PREFIX, CONF_LOCATION_ENTITY
 
 _LOGGER = logging.getLogger(__name__)
