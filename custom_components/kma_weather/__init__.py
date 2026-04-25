@@ -119,7 +119,7 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
     반환 필드:
       address, resolved_address, date, time, latitude, longitude,
       sunrise, sunset, dawn, dusk, astro_dawn, astro_dusk,
-      moonrise, moonset, moon_phase, moon_illumination,
+      moonrise, moonset,
       observation_condition, observation_attrs
     """
     hass: HomeAssistant = call.hass
@@ -223,8 +223,6 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
         "astro_dusk":        astro.get("astro_dusk"),
         "moonrise":          astro.get("moonrise"),
         "moonset":           astro.get("moonset"),
-        "moon_phase":        astro.get("moon_phase"),
-        "moon_illumination": astro.get("moon_illumination"),
         "observation_condition": astro.get("observation_condition"),
         "observation_attrs":     astro.get("observation_attrs"),
         # 관측 조건 평가에 현지 날씨가 반영됐는지 여부
