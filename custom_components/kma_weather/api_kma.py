@@ -627,7 +627,9 @@ class KMAWeatherAPI:
                     "pageNo": "1",
                 },
             )
+            _LOGGER.debug("pollen API 응답: data=%s", data)
             code = self._extract_result_code(data)
+            _LOGGER.debug("pollen resultCode: %s", code)
             if code and self._check_unsubscribed("pollen", code):
                 # 미신청: 빈 dict 반환 → 센서 미생성
                 return {}
@@ -635,6 +637,7 @@ class KMAWeatherAPI:
             # resultCode=00 확인 시에만 승인 처리
             # code가 None(응답 없음/파싱 실패)이면 승인 상태 변경 없이 유지
             if code != "00":
+                _LOGGER.warning("pollen 응답이 00이 아님: code=%s, data=%s", code, data)
                 return {}
             self._mark_approved("pollen")
 
