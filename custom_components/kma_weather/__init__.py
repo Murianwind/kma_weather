@@ -120,7 +120,7 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
       address, resolved_address, date, time, latitude, longitude,
       sunrise, sunset, dawn, dusk, astro_dawn, astro_dusk,
       moonrise, moonset, moon_phase, moon_illumination,
-      observation_condition, observation_reason
+      observation_condition, observation_attrs
     """
     hass: HomeAssistant = call.hass
     raw_address: str = call.data.get("address", "").strip()
@@ -226,7 +226,7 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
         "moon_phase":        astro.get("moon_phase"),
         "moon_illumination": astro.get("moon_illumination"),
         "observation_condition": astro.get("observation_condition"),
-        "observation_reason":    astro.get("observation_reason"),
+        "observation_attrs":     astro.get("observation_attrs"),
         # 관측 조건 평가에 현지 날씨가 반영됐는지 여부
         # "날씨+천문": 단기예보 조회 성공, 날씨 반영
         # "천문만":    단기예보 미승인 또는 조회 실패, 달 조명율+달 고도+태양고도만 사용
