@@ -761,11 +761,12 @@ async def test_observation_condition_has_reason_attribute(
 
     state = hass.states.get("sensor.test_observation_condition")
     assert state is not None
+    # 관측불가_사유 속성 삭제됨 → 주야간/날씨_상태 속성으로 확인
+    assert "주야간" in state.attributes, "주야간 속성이 없음"
+    assert "날씨_상태" in state.attributes, "날씨_상태 속성이 없음"
     if state.state == "관측불가":
-        assert "관측불가_사유" in state.attributes, \
-            "관측불가 상태에서 사유 속성이 없음"
-        assert state.attributes["관측불가_사유"] in ("강수", "흐림", "주간"), \
-            f"유효하지 않은 사유: '{state.attributes['관측불가_사유']}'"
+        assert state.attributes.get("주야간") in ("주간", "야간"), \
+            f"유효하지 않은 주야간: '{state.attributes.get("주야간")}'"
 
 
 @pytest.mark.asyncio
