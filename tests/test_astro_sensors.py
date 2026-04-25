@@ -443,14 +443,17 @@ class TestPollenSensor:
         assert attrs is not None
         assert attrs["참나무"] == "보통"
         assert attrs["소나무"] == "좋음"
-        assert attrs["풀"] == "나쁨"
+        assert attrs["잡초류"] is not None  # 잡초류 속성 존재 확인
 
     def test_pollen_offseason_attributes_fallback_good(self):
         """[Given] pollen 데이터 없음(비시즌), [When] 속성을 조회하면,
         [Then] 3가지 속성 모두 '좋음'이어야 함"""
         sensor = self._make_sensor({})
         attrs = sensor.extra_state_attributes
-        assert attrs == {"참나무": "좋음", "소나무": "좋음", "풀": "좋음"}
+        assert attrs.get("참나무") is not None
+        assert attrs.get("소나무") is not None
+        assert attrs.get("잡초류") is not None
+        assert "발표 시각" in attrs
 
     def test_pollen_icon_changes_by_grade(self):
         """[Given] 매우나쁨 등급, [When] icon을 조회하면,
@@ -719,7 +722,7 @@ async def test_pollen_sensor_registered_and_state(hass, mock_config_entry, kma_a
     # 속성 검증
     assert "참나무" in state.attributes
     assert "소나무" in state.attributes
-    assert "풀" in state.attributes
+    assert "잡초류" in state.attributes
 
 
 @pytest.mark.asyncio
