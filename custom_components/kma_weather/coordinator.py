@@ -133,6 +133,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._api_call_store = Store(hass, version=1, key=f"{DOMAIN}_global_api_calls")
         self._api_call_store_loaded = False
 
+        # 승인된 API 목록 저장 (재시작/재로드 후 복구)
+        self._approved_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_approved_apis")
+        self._approved_store_loaded = False
+
         # api 객체에 카운터 콜백 주입 (api는 이미 위에서 생성됨)
         self._inject_counter()
 
@@ -286,6 +290,30 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             pass
 
     # ── 저장소 복구/저장 ────────────────────────────────────────────────────
+    async def _restore_approved_apis(self) -> None:
+        """재시작/재로드 후 승인된 API 목록을 복구한다."""
+        if self._approved_store_loaded:
+            return
+        try:
+            stored = await self._approved_store.async_load()
+            if stored and isinstance(stored.get("approved"), list):
+                for key in stored["approved"]:
+                    self.api._approved_apis.add(key)
+                    self.api._pending_apis.discard(key)
+                _LOGGER.debug("승인 API 복구: %s", self.api._approved_apis)
+        except Exception as e:
+            _LOGGER.debug("승인 API 복구 실패 (무시): %s", e)
+        self._approved_store_loaded = True
+
+    async def _save_approved_apis(self) -> None:
+        """승인된 API 목록을 저장한다."""
+        try:
+            await self._approved_store.async_save({
+                "approved": list(self.api._approved_apis)
+            })
+        except Exception as e:
+            _LOGGER.debug("승인 API 저장 실패 (무시): %s", e)
+
     async def _restore_daily_temps(self):
         if self._store_loaded:
             return
@@ -377,6 +405,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
             try:
+                await self._restore_approved_apis()
                 await self._restore_daily_temps()
                 await self._restore_api_calls()
                 # 업데이트 이유를 카운터에 반영 (기본: 자동 업데이트)
@@ -465,6 +494,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 weather["observation_attrs"]     = obs_attrs
 
                 self._cached_data = new_data
+                # 승인 API 목록 변경 시 저장 (await로 확실히 저장)
+                await self._save_approved_apis()
                 # 카운터 저장 (매 업데이트마다 영속화)
                 await self._save_api_calls()
                 return new_data
