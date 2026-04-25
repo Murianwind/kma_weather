@@ -145,10 +145,9 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
         self._attr_entity_category = details[5]
 
-        if sensor_type == "WSD":
-            self._attr_suggested_unit_of_measurement = UnitOfSpeed.METERS_PER_SECOND
-
-        if details[1] is not None and sensor_type not in ("api_expire",):
+        if sensor_type == "api_calls_today":
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        elif details[1] is not None and sensor_type not in ("api_expire",):
             self._attr_state_class = SensorStateClass.MEASUREMENT
 
         self._attr_device_info = DeviceInfo(
@@ -261,13 +260,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        if not self.coordinator.data:
-            return None
-
-        w = self.coordinator.data.get("weather", {})
-        a = self.coordinator.data.get("air", {})
-
-        # ── API 호출 카운터 센서 ────────────────────────────────────────────────
+        # ── API 호출 카운터 센서: coordinator.data 유무와 무관하게 항상 반환 ────
         if self._type == "api_calls_today":
             # 전체 기기 합산 공유 카운터 사용
             counts = self.coordinator._shared_counts
