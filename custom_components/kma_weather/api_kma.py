@@ -606,25 +606,20 @@ class KMAWeatherAPI:
             }
 
         # 발표 시각 결정
-        # 00~17시: 당일 06시 발표 (오늘/내일/모레)
-        # 18~23시: 당일 18시 발표 (내일/모레/글피) → 오늘값은 없음
+        # 00~05시: 전날 18시 발표, tomorrow = 오늘값
+        # 06~23시: 당일 06시 발표, today = 오늘값 (하루 종일 유지)
         h = now.hour
         if h < 6:
-            # 자정~06시: 전날 18시 발표 사용 (내일=오늘 값)
-            base_dt   = now - timedelta(days=1)
-            time_str  = base_dt.strftime("%Y%m%d") + "18"
-            today_key = "tomorrow"        # 전날 18시 발표의 "내일"이 오늘
+            # 자정~06시: 전날 18시 발표, tomorrow = 오늘값
+            base_dt      = now - timedelta(days=1)
+            time_str     = base_dt.strftime("%Y%m%d") + "18"
+            today_key    = "tomorrow"
             announcement = base_dt.strftime("%Y년 %m월 %d일") + " 18시 발표"
-        elif h < 18:
-            # 06~17시: 당일 06시 발표 (오늘값 있음)
-            time_str  = now.strftime("%Y%m%d") + "06"
-            today_key = "today"
-            announcement = now.strftime("%Y년 %m월 %d일") + " 06시 발표"
         else:
-            # 18~23시: 당일 18시 발표 (오늘값 없음 → 캐시된 06시 발표의 today 사용)
-            time_str  = now.strftime("%Y%m%d") + "18"
-            today_key = "today"           # 18시 발표엔 없지만 캐시에서 유지됨
-            announcement = now.strftime("%Y년 %m월 %d일") + " 18시 발표"
+            # 06~23시: 당일 06시 발표, today = 오늘값 (자정까지 유지)
+            time_str     = now.strftime("%Y%m%d") + "06"
+            today_key    = "today"
+            announcement = now.strftime("%Y년 %m월 %d일") + " 06시 발표"
 
         base_url = "https://apis.data.go.kr/1360000/HealthWthrIdxServiceV3"
         base_params = {
