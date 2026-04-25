@@ -753,12 +753,20 @@ class KMAWeatherAPI:
                 self._pollen_today_date = today_str
                 self._pollen_tomorrow = None       # tomorrow 캐시 삭제
                 self._pollen_tomorrow_date = None
+                return result
             else:
-                _LOGGER.debug("꽃가루 tomorrow 캐시 저장")
+                _LOGGER.debug("꽃가루 tomorrow 캐시 저장 (자정 이후 표시)")
                 self._pollen_tomorrow = result
                 self._pollen_tomorrow_date = today_str
-
-            return result
+                # tomorrow는 자정 이후에만 표시 → 지금은 today 없으므로 unknown 반환
+                return {
+                    "oak":   None if in_season["oak"]   else "좋음",
+                    "pine":  None if in_season["pine"]  else "좋음",
+                    "grass": None if in_season["grass"] else "좋음",
+                    "worst": None,
+                    "area_name": area_name, "area_no": area_no,
+                    "announcement": "-",
+                }
 
         except Exception as e:
             _LOGGER.error("꽃가루 조회 오류: %s", e)
