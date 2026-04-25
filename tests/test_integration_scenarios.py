@@ -47,6 +47,9 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     # 1. [Given] 초기 환경 설정 및 통합 구성요소 로드
     hass.config.latitude = 37.56
     hass.config.longitude = 126.98
+    # 미터법 단위 시스템 설정 (미설정 시 US 단위계로 m/s → km/h 자동 변환됨)
+    from homeassistant.util.unit_system import METRIC_SYSTEM
+    hass.config.units = METRIC_SYSTEM
 
     kma_api_mock_factory("full_test")
     mock_config_entry.add_to_hass(hass)
