@@ -702,7 +702,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         except (TypeError, ValueError):
             illum = 100
 
-        if not moon_up:
+        if not moon_up or illum == 0:
+            # 달 없음 또는 삭(조명율=0%) → 최우수
             moon_cond = "최우수"
         else:
             # 달 있음 → 조명율로 판단
