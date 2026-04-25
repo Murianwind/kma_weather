@@ -609,8 +609,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         """
         현재 날씨·태양 고도·달 고도·달 조명율·풍속을 종합하여 관측 조건과 속성을 반환한다.
 
-        달이 떠 있을 때 달 조명율 등급을 한 단계 낮춤:
-          달 없음: 최우수 / 달 있음: 최우수→우수, 우수→보통, 보통→불량, 불량→관측불가
+        달 조명율 등급:
+          달 없음: 최우수 / 달 있음: ≤25%→우수, ≤50%→보통, ≤75%→불량, >75%→관측불가
 
         풍속 등급 (m/s):
           1.5 미만 → 우수
@@ -705,18 +705,15 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         if not moon_up:
             moon_cond = "최우수"
         else:
-            # 달 있음 → 조명율로 판단 후 한 단계 낮춤
+            # 달 있음 → 조명율로 판단
             if illum <= 25:
-                base = "최우수"
+                moon_cond = "우수"
             elif illum <= 50:
-                base = "우수"
+                moon_cond = "보통"
             elif illum <= 75:
-                base = "보통"
+                moon_cond = "불량"
             else:
-                base = "불량"
-            # 달 있을 때 한 단계 낮춤
-            down = {"최우수": "우수", "우수": "보통", "보통": "불량", "불량": "관측불가"}
-            moon_cond = down.get(base, "관측불가")
+                moon_cond = "관측불가"
 
         # ── 5. 풍속 등급 ─────────────────────────────────────────────────────
         from .const import safe_float as _sf
