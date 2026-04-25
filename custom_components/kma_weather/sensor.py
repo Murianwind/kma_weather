@@ -275,6 +275,12 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 "마지막_호출_이유": counts.get("last_reason") or "-",
             }
 
+        if not self.coordinator.data:
+            return None
+
+        w = self.coordinator.data.get("weather", {})
+        a = self.coordinator.data.get("air", {})
+
         # ── location 센서 (address) ──────────────────────────────────────────
         if self._type == "address":
             attrs: dict = {}
