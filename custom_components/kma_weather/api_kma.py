@@ -195,12 +195,16 @@ class KMAWeatherAPI:
         if service_key not in self._pending_apis:
             self._pending_apis.add(service_key)
 
-        # HA 알림은 최초 1회만 (중복 방지)
+        name, url = _API_SERVICES.get(service_key, (service_key, ""))
+
+        # WARNING 로그는 매번 출력 (사용자가 로그에서 확인 가능)
+        _LOGGER.warning("API 미신청 감지 [%s]: resultCode=%s → %s", service_key, result_code, url)
+
+        # HA 알림(persistent_notification)은 최초 1회만 (중복 방지)
         if service_key in self._notified_unsubscribed:
             return True
 
         self._notified_unsubscribed.add(service_key)
-        name, url = _API_SERVICES.get(service_key, (service_key, ""))
 
         msg = (
             f"**기상청 스마트 날씨 — API 미신청 감지**\n\n"
@@ -210,8 +214,6 @@ class KMAWeatherAPI:
             f"[{name} 신청하기]({url})\n\n"
             f"신청 후 HA를 재시작하거나 수동 업데이트를 누르면 정상 작동합니다."
         )
-        _LOGGER.warning("API 미신청 감지 [%s]: resultCode=%s → %s", service_key, result_code, url)
-
         if self.hass:
             try:
                 self.hass.components.persistent_notification.async_create(
@@ -256,7 +258,8 @@ class KMAWeatherAPI:
             ) as response:
                 if response.status == 401 or response.status == 403:
                     # 인증 실패 → 미신청/만료와 동일하게 처리
-                    _LOGGER.warning("API 인증 실패 (%s): HTTP %s", url, response.status)
+                    # WARNING은 _check_unsubscribed에서 출력하므로 여기서는 DEBUG만
+                    _LOGGER.debug("API 인증 실패 (%s): HTTP %s", url, response.status)
                     return {"_http_error": str(response.status)}
                 if response.status == 404:
                     # 404는 API URL 문제 또는 서비스 비활성화
