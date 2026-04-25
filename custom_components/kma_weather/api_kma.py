@@ -297,15 +297,9 @@ class KMAWeatherAPI:
         nx: int, ny: int,
         reg_id_temp: str, reg_id_land: str,
         warn_area_code: str | None,
-        force_check: bool = False,
     ) -> dict | None:
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
-
-        # force_check=True (버튼/다시읽기): 미신청 알림 기록 초기화
-        # → 재신청 후 HA 알림이 다시 출력되도록
-        if force_check:
-            self._notified_unsubscribed.clear()
 
         async def _skip_coro(default):
             return default
