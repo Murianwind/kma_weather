@@ -733,8 +733,12 @@ class KMAWeatherAPI:
                 return display or {}
 
             order  = ["좋음", "보통", "나쁨", "매우나쁨"]
-            grades = [g for g in (pine_grade, oak_grade, grass_grade) if g is not None]
-            worst  = max(grades, key=lambda g: order.index(g)) if grades else None
+            all_grades = [pine_grade, oak_grade, grass_grade]
+            # None(알 수 없음)이 하나라도 있으면 worst도 None
+            if any(g is None for g in all_grades):
+                worst = None
+            else:
+                worst = max(all_grades, key=lambda g: order.index(g))
 
             result = {
                 "oak":          oak_grade,
