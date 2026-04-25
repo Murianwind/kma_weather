@@ -329,10 +329,13 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         # ── 꽃가루 센서 ──────────────────────────────────────────────────────
         if self._type == "pollen":
             pollen = self.coordinator.data.get("pollen", {})
+            def _disp(v):
+                return v if v is not None else "알 수 없음"
             attrs = {
-                "참나무": pollen.get("oak")   if pollen.get("oak")   is not None else "좋음",
-                "소나무": pollen.get("pine")  if pollen.get("pine")  is not None else "좋음",
-                "풀":     pollen.get("grass") if pollen.get("grass") is not None else "좋음",
+                "소나무":    _disp(pollen.get("pine")),
+                "참나무":    _disp(pollen.get("oak")),
+                "잡초류":    _disp(pollen.get("grass")),
+                "발표 시각": pollen.get("announcement", "-"),
             }
             return attrs
 
