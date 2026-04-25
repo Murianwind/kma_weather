@@ -5,11 +5,12 @@
   - 월출/월몰 오늘/내일 접두어
   - 일출/일몰/새벽/황혼 오늘/내일 접두어
   - 천문 박명(18°) 오늘/내일 접두어
-  - 천문 관측 조건 평가 (날씨·태양 고도·달 조명율)
-    → _eval_observation은 (condition, reason) 튜플을 반환한다.
+  - 천문 관측 조건 평가 (날씨·태양 고도·달 고도·달 조명율·풍속)
+    → _eval_observation은 (condition, attrs_dict) 튜플을 반환한다.
+    → attrs: 풍속, 달_조명율, 달_고도, 날씨_상태, 주야간, 달_위상
   - 자정 unknown 방지 (_REALTIME_KEYS: 키 있고 값 '-'/None → 캐시 복원)
-  - 꽃가루 센서: 비시즌/API 미신청 시 좋음 fallback
-  - 관측불가 사유 속성 노출
+  - 꽃가루 센서: 비시즌 또는 데이터 없음 시 좋음 fallback, 시즌 중 데이터 없으면 unknown
+  - 관측 조건 속성 노출 (풍속/달_조명율/달_고도/날씨_상태/주야간/달_위상)
   - 동적 센서 등록 (API 승인 후 short 센서 추가)
 """
 import pytest
@@ -319,12 +320,22 @@ class TestEvalObservation:
 class TestEvalObservationReason:
     """_eval_observation: reason(사유) 검증 — 아이콘 분기 및 속성 노출에 사용"""
 
+    _COND_KOR = {
+        "sunny": "맑음", "partlycloudy": "구름많음", "cloudy": "흐림",
+        "rainy": "비", "pouring": "소나기", "snowy": "눈", "snowy-rainy": "비/눈", "": "맑음",
+    }
+
     def _eval_full(self, hour, condition, illum):
         coord = MagicMock()
         coord.api.tz = TZ
         coord._sf_ts  = _TEST_SF_TS
         coord._sf_eph = _TEST_SF_EPH
-        weather = {"current_condition": condition, "moon_illumination": illum}
+        weather = {
+            "current_condition": condition,
+            "current_condition_kor": self._COND_KOR.get(condition, condition),
+            "moon_illumination": illum,
+            "moon_phase": "",
+        }
         now = datetime(2026, 4, 21, hour, 0, tzinfo=TZ)
         return KMAWeatherUpdateCoordinator._eval_observation(coord, weather, now, LAT, LON)
 
@@ -339,13 +350,14 @@ class TestEvalObservationReason:
         for cond in ("rainy", "pouring", "snowy", "snowy-rainy"):
             _, attrs = self._eval_full(22, cond, 5)
             assert isinstance(attrs, dict), f"{cond} → attrs가 dict여야 함"
-            assert attrs.get("날씨_상태") == cond, f"{cond} → 날씨_상태 기대={cond}, 실제={attrs.get('날씨_상태')}"
+            kor = self._COND_KOR.get(cond, cond)
+            assert attrs.get("날씨_상태") == kor, f"{cond} → 날씨_상태 기대={kor}, 실제={attrs.get('날씨_상태')}"
 
     def test_cloudy_reason_흐림(self):
         """[Given] 흐린 날씨, [When] 평가하면, [Then] attrs에 날씨_상태='cloudy'이어야 함"""
         _, attrs = self._eval_full(22, "cloudy", 5)
         assert isinstance(attrs, dict)
-        assert attrs.get("날씨_상태") == "cloudy"
+        assert attrs.get("날씨_상태") == "흐림"
 
     def test_partlycloudy_reason_구름많음(self):
         """[Given] 구름많음, [When] 평가하면, [Then] attrs에 날씨_상태='구름많음'이어야 함"""
@@ -415,7 +427,7 @@ class TestEvalObservationReason:
 # ── 꽃가루 센서 ───────────────────────────────────────────────────────────────
 
 class TestPollenSensor:
-    """꽃가루 센서: 비시즌/API 미신청 시 좋음 fallback, 속성 출력, 항상 등록"""
+    """꽃가루 센서: 비시즌 또는 데이터 미수신 시 좋음 fallback, 속성 출력, 항상 등록"""
 
     def _make_sensor(self, pollen_data):
         from custom_components.kma_weather.sensor import KMACustomSensor
