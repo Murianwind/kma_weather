@@ -116,6 +116,11 @@ class KMAWeatherAPI:
         self._pollen_cached_lat: float | None = None
         self._pollen_cached_lon: float | None = None
         # pollen_area_map.json은 첫 _find_pollen_area 호출 시 로드됨 (lazy)
+        # 꽃가루 캐시: today/tomorrow 각각 별도 관리
+        self._pollen_today: dict | None = None        # 06시 발표 today 값
+        self._pollen_tomorrow: dict | None = None     # 18시 발표 tomorrow 값
+        self._pollen_today_date: str | None = None    # today 캐시 날짜 (YYYYMMDD)
+        self._pollen_tomorrow_date: str | None = None # tomorrow 캐시 날짜
 
     def _build_nominatim_user_agent(self):
         base = "HomeAssistant-KMA-Weather"
@@ -581,11 +586,12 @@ class KMAWeatherAPI:
         - 참나무: getOakPollenRiskIdxV3   (시즌: 4~6월)
         - 잡초류: getWeedsPollenRiskndxV3 (시즌: 8~10월, 비시즌 시 resultCode=99)
 
-        발표 시각:
-        - 06시 발표: 오늘/내일/모레 (00~17시 접속 시)
-        - 18시 발표: 내일/모레/글피 (18~23시 접속 시, 오늘 값은 06시 발표에서 유지)
-
-        areaNo: 읍면동 단위 코드 (pollen_area_map.json 룩업)
+        캐시 전략:
+        - 05~17시: today 캐시 획득 시도 (성공 시 API 호출 중단)
+        - 17~05시: tomorrow 캐시 획득 시도 (성공 시 API 호출 중단)
+        - today 캐시: 자정에 삭제
+        - tomorrow 캐시: today 캐시 획득 시 삭제
+        - 비시즌 + 승인됨: API 호출 없이 좋음 반환
         """
         month = now.month
         in_season = {
@@ -597,29 +603,54 @@ class KMAWeatherAPI:
         # 읍면동 areaNo 및 지역명
         area_no, area_name = await self._find_pollen_area(lat, lon)
 
-        # 비시즌 + 이미 승인 확인됨 → API 호출 없이 좋음 반환
-        if offseason and "pollen" in self._approved_apis:
-            return {
-                "oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음",
-                "area_name": area_name, "area_no": area_no,
-                "announcement": "비시즌",
-            }
-
-        # 발표 시각 결정
-        # 00~05시: 전날 18시 발표, tomorrow = 오늘값
-        # 06~23시: 당일 06시 발표, today = 오늘값 (하루 종일 유지)
+        today_str = now.strftime("%Y%m%d")
         h = now.hour
-        if h < 6:
-            # 자정~06시: 전날 18시 발표, tomorrow = 오늘값
-            base_dt      = now - timedelta(days=1)
-            time_str     = base_dt.strftime("%Y%m%d") + "18"
-            today_key    = "tomorrow"
-            announcement = base_dt.strftime("%Y년 %m월 %d일") + " 18시 발표"
+
+        # ── 자정 캐시 정리 ────────────────────────────────────────────────────
+        # today 캐시가 어제 날짜면 삭제
+        if self._pollen_today_date and self._pollen_today_date != today_str:
+            _LOGGER.debug("꽃가루 today 캐시 만료 → 삭제")
+            self._pollen_today = None
+            self._pollen_today_date = None
+
+        # ── 비시즌 처리 ───────────────────────────────────────────────────────
+        if offseason:
+            if "pollen" in self._approved_apis:
+                # 승인됨 → API 호출 없이 좋음 반환
+                return {
+                    "oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음",
+                    "area_name": area_name, "area_no": area_no,
+                    "announcement": "비시즌",
+                }
+            # 미승인 상태에서 비시즌이면 승인 확인 위해 아래로 진행
+
+        # ── 캐시 반환 ─────────────────────────────────────────────────────────
+        # 05~17시: today 캐시 있으면 반환
+        if 5 <= h < 17 and self._pollen_today is not None:
+            _LOGGER.debug("꽃가루 today 캐시 사용")
+            return self._pollen_today
+
+        # 17~05시: tomorrow 캐시 있으면 반환
+        if (h >= 17 or h < 5) and self._pollen_tomorrow is not None:
+            _LOGGER.debug("꽃가루 tomorrow 캐시 사용")
+            return self._pollen_tomorrow
+
+        # ── API 호출 ──────────────────────────────────────────────────────────
+        # 05~17시: 06시 발표 today 조회
+        # 17~05시: 18시 발표 tomorrow 조회
+        if 5 <= h < 17:
+            if h < 6:
+                # 05시: 아직 06시 발표 전이므로 전날 18시 발표 사용
+                time_str  = (now - timedelta(days=1)).strftime("%Y%m%d") + "18"
+            else:
+                time_str  = today_str + "06"
+            fetch_key    = "today" if h >= 6 else "tomorrow"
+            announcement = today_str[:4] + "년 " + today_str[4:6] + "월 " + today_str[6:] + "일 06시 발표"
         else:
-            # 06~23시: 당일 06시 발표, today = 오늘값 (자정까지 유지)
-            time_str     = now.strftime("%Y%m%d") + "06"
-            today_key    = "today"
-            announcement = now.strftime("%Y년 %m월 %d일") + " 06시 발표"
+            time_str     = today_str + "18"
+            fetch_key    = "tomorrow"
+            ann_date     = today_str
+            announcement = ann_date[:4] + "년 " + ann_date[4:6] + "월 " + ann_date[6:] + "일 18시 발표"
 
         base_url = "https://apis.data.go.kr/1360000/HealthWthrIdxServiceV3"
         base_params = {
@@ -642,7 +673,7 @@ class KMAWeatherAPI:
             oak_data   = None if isinstance(oak_data,   Exception) else oak_data
             grass_data = None if isinstance(grass_data, Exception) else grass_data
 
-            # 소나무 응답으로 승인 여부 확인 (대표 오퍼레이션)
+            # 소나무 응답으로 승인 여부 확인
             code = self._extract_result_code(pine_data)
             _LOGGER.debug("pollen pine resultCode: %s, time: %s", code, time_str)
 
@@ -655,7 +686,7 @@ class KMAWeatherAPI:
 
             self._mark_approved("pollen")
 
-            # 비시즌: 승인 확인 후 좋음 반환
+            # 비시즌: 좋음 반환 (캐시 저장 불필요)
             if offseason:
                 return {
                     "oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음",
@@ -663,17 +694,16 @@ class KMAWeatherAPI:
                     "announcement": "비시즌",
                 }
 
-            def _get_grade(data, in_season_flag: bool, key: str) -> str:
-                """응답에서 지정 키(today/tomorrow 등)의 등급을 반환한다."""
+            def _get_grade(data, in_season_flag: bool, key: str) -> str | None:
                 if not in_season_flag:
                     return "좋음"
                 if not data:
-                    return None   # 데이터 없음 → 알 수 없음
+                    return None
                 rc = self._extract_result_code(data)
-                if rc == "99":    # 비시즌 응답
+                if rc == "99":
                     return "좋음"
-                if rc != "00":    # 기타 오류
-                    return None   # 알 수 없음
+                if rc != "00":
+                    return None
                 items = (
                     data.get("response", {})
                         .get("body", {})
@@ -687,15 +717,25 @@ class KMAWeatherAPI:
                 val = items[0].get(key, "0")
                 return _POLLEN_GRADE.get(str(val)) if val else None
 
-            pine_grade  = _get_grade(pine_data,  in_season["pine"],  today_key)
-            oak_grade   = _get_grade(oak_data,   in_season["oak"],   today_key)
-            grass_grade = _get_grade(grass_data, in_season["grass"], today_key)
+            pine_grade  = _get_grade(pine_data,  in_season["pine"],  fetch_key)
+            oak_grade   = _get_grade(oak_data,   in_season["oak"],   fetch_key)
+            grass_grade = _get_grade(grass_data, in_season["grass"], fetch_key)
 
+            # 데이터 없음 (발표 전) → 캐시 저장하지 않고 기존 캐시 유지
+            if pine_grade is None and oak_grade is None and grass_grade is None:
+                _LOGGER.debug("꽃가루 데이터 아직 없음 (발표 전), time=%s", time_str)
+                # 이전 캐시라도 반환
+                if self._pollen_today is not None:
+                    return self._pollen_today
+                if self._pollen_tomorrow is not None:
+                    return self._pollen_tomorrow
+                return {}
+
+            order = ["좋음", "보통", "나쁨", "매우나쁨"]
             grades = [g for g in (pine_grade, oak_grade, grass_grade) if g is not None]
-            order  = ["좋음", "보통", "나쁨", "매우나쁨"]
             worst  = max(grades, key=lambda g: order.index(g)) if grades else None
 
-            return {
+            result = {
                 "oak":          oak_grade,
                 "pine":         pine_grade,
                 "grass":        grass_grade,
@@ -704,6 +744,21 @@ class KMAWeatherAPI:
                 "area_no":      area_no,
                 "announcement": announcement,
             }
+
+            # ── 캐시 저장 ────────────────────────────────────────────────────
+            if fetch_key == "today":
+                _LOGGER.debug("꽃가루 today 캐시 저장: %s", today_str)
+                self._pollen_today = result
+                self._pollen_today_date = today_str
+                # tomorrow 캐시 삭제 (today가 생겼으므로)
+                self._pollen_tomorrow = None
+                self._pollen_tomorrow_date = None
+            else:  # tomorrow
+                _LOGGER.debug("꽃가루 tomorrow 캐시 저장")
+                self._pollen_tomorrow = result
+                self._pollen_tomorrow_date = today_str
+
+            return result
 
         except Exception as e:
             _LOGGER.error("꽃가루 조회 오류: %s", e)
