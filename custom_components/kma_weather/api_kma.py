@@ -38,14 +38,14 @@ _API_SERVICES = {
 }
 
 # 미신청으로 판단하는 resultCode 목록
-_UNSUBSCRIBED_CODES = {"20", "22", "30", "31", "33"}
+_UNSUBSCRIBED_CODES = {"20", "21", "22", "30", "31", "32", "33"}
 
 # ── 꽃가루 관련 상수 ──────────────────────────────────────────────────────────
 # 단계: 낮음=0, 보통=1, 높음=2, 매우높음=3 (문서 기준)
 _POLLEN_GRADE = {"0": "좋음", "1": "보통", "2": "나쁨", "3": "매우나쁨"}
 _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 # 꽃가루 제공 시즌 (시작월, 종료월 포함)
-_POLLEN_SEASONS = {"oak": (3, 6), "pine": (3, 6), "grass": (4, 10)}
+_POLLEN_SEASONS = {"oak": (4, 6), "pine": (4, 6), "grass": (8, 10)}
 
 
 
@@ -239,7 +239,7 @@ class KMAWeatherAPI:
         "MsrstnInfoInqireSvc":       "에어코리아_측정소",
         "ArpltnInforInqireSvc":      "에어코리아_대기",
         "WthrWrnInfoService":        "기상특보",
-        "LivingWthrIdxServiceV4":    "꽃가루",
+        "HealthWthrIdxServiceV3":    "꽃가루",
     }
 
     async def _fetch(self, url, params, headers=None, timeout=15):
@@ -579,14 +579,16 @@ class KMAWeatherAPI:
         """
         꽃가루 농도 위험지수를 조회한다.
 
-        areaNo에 읍면동 단위 코드를 직접 전달하여 정확한 동 단위 데이터를 얻는다.
-        (pollen_area_map.json에서 현재 위경도에 가장 가까운 읍면동 코드를 룩업)
+        API: HealthWthrIdxServiceV3
+        - 소나무: getPinePollenRiskIdxV3  (시즌: 4~6월)
+        - 참나무: getOakPollenRiskIdxV3   (시즌: 4~6월)
+        - 잡초류: getWeedsPollenRiskndxV3 (시즌: 8~10월, 비시즌 시 resultCode=99)
 
-        API: LivingWthrIdxServiceV4/getPollenRiskIdxV4
-        응답 필드: code(지수종류), areaNo, date, today, tomorrow, dayaftertomorrow, twodaysaftertomorrow
-        단계: 0=낮음(좋음), 1=보통, 2=높음(나쁨), 3=매우높음(매우나쁨)
+        발표 시각:
+        - 06시 발표: 오늘/내일/모레 (00~17시 접속 시)
+        - 18시 발표: 내일/모레/글피 (18~23시 접속 시, 오늘 값은 06시 발표에서 유지)
 
-        비시즌에도 API 승인 여부가 미확인이면 한 번 호출하여 확인한다.
+        areaNo: 읍면동 단위 코드 (pollen_area_map.json 룩업)
         """
         month = now.month
         in_season = {
@@ -595,7 +597,7 @@ class KMAWeatherAPI:
         }
         offseason = not any(in_season.values())
 
-        # 현재 위치의 읍면동 areaNo 및 지역명 (JSON 룩업, 캐시 활용)
+        # 읍면동 areaNo 및 지역명
         area_no, area_name = await self._find_pollen_area(lat, lon)
 
         # 비시즌 + 이미 승인 확인됨 → API 호출 없이 좋음 반환
@@ -603,112 +605,116 @@ class KMAWeatherAPI:
             return {
                 "oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음",
                 "area_name": area_name, "area_no": area_no,
+                "announcement": "비시즌",
             }
 
         # 발표 시각 결정
-        # 문서 기준: 06시 발표(오늘/내일/모레), 18시 발표(내일/모레/글피)
+        # 00~17시: 당일 06시 발표 (오늘/내일/모레)
+        # 18~23시: 당일 18시 발표 (내일/모레/글피) → 오늘값은 없음
         h = now.hour
         if h < 6:
-            time_str = (now - timedelta(days=1)).strftime("%Y%m%d") + "18"
+            # 자정~06시: 전날 18시 발표 사용 (내일=오늘 값)
+            base_dt   = now - timedelta(days=1)
+            time_str  = base_dt.strftime("%Y%m%d") + "18"
+            today_key = "tomorrow"        # 전날 18시 발표의 "내일"이 오늘
+            announcement = base_dt.strftime("%Y년 %m월 %d일") + " 18시 발표"
         elif h < 18:
-            time_str = now.strftime("%Y%m%d") + "06"
+            # 06~17시: 당일 06시 발표 (오늘값 있음)
+            time_str  = now.strftime("%Y%m%d") + "06"
+            today_key = "today"
+            announcement = now.strftime("%Y년 %m월 %d일") + " 06시 발표"
         else:
-            time_str = now.strftime("%Y%m%d") + "18"
+            # 18~23시: 당일 18시 발표 (오늘값 없음 → 캐시된 06시 발표의 today 사용)
+            time_str  = now.strftime("%Y%m%d") + "18"
+            today_key = "today"           # 18시 발표엔 없지만 캐시에서 유지됨
+            announcement = now.strftime("%Y년 %m월 %d일") + " 18시 발표"
+
+        base_url = "https://apis.data.go.kr/1360000/HealthWthrIdxServiceV3"
+        base_params = {
+            "serviceKey": self.api_key,
+            "dataType":   "JSON",
+            "areaNo":     area_no,
+            "time":       time_str,
+            "numOfRows":  "10",
+            "pageNo":     "1",
+        }
 
         try:
-            data = await self._fetch(
-                "https://apis.data.go.kr/1360000/LivingWthrIdxServiceV4/getPollenRiskIdxV4",
-                {
-                    "serviceKey": self.api_key,
-                    "dataType": "JSON",
-                    "areaNo": area_no,
-                    "time": time_str,
-                    "numOfRows": "10",
-                    "pageNo": "1",
-                },
+            pine_data, oak_data, grass_data = await asyncio.gather(
+                self._fetch(f"{base_url}/getPinePollenRiskIdxV3",  base_params),
+                self._fetch(f"{base_url}/getOakPollenRiskIdxV3",   base_params),
+                self._fetch(f"{base_url}/getWeedsPollenRiskndxV3", base_params),
+                return_exceptions=True,
             )
-            _LOGGER.debug("pollen API 응답: data=%s", data)
-            code = self._extract_result_code(data)
-            _LOGGER.debug("pollen resultCode: %s", code)
+            pine_data  = None if isinstance(pine_data,  Exception) else pine_data
+            oak_data   = None if isinstance(oak_data,   Exception) else oak_data
+            grass_data = None if isinstance(grass_data, Exception) else grass_data
+
+            # 소나무 응답으로 승인 여부 확인 (대표 오퍼레이션)
+            code = self._extract_result_code(pine_data)
+            _LOGGER.debug("pollen pine resultCode: %s, time: %s", code, time_str)
+
             if code and self._check_unsubscribed("pollen", code):
-                # 미신청: 빈 dict 반환 → 센서 미생성
                 return {}
 
-            # resultCode=00 확인 시에만 승인 처리
-            # code가 None(응답 없음/파싱 실패)이면 승인 상태 변경 없이 유지
             if code != "00":
-                _LOGGER.warning("pollen 응답이 00이 아님: code=%s, data=%s", code, data)
+                _LOGGER.warning("pollen 소나무 응답 이상: code=%s, time=%s", code, time_str)
                 return {}
+
             self._mark_approved("pollen")
 
-            # 비시즌: 데이터 파싱 없이 좋음 반환
+            # 비시즌: 승인 확인 후 좋음 반환
             if offseason:
                 return {
                     "oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음",
                     "area_name": area_name, "area_no": area_no,
+                    "announcement": "비시즌",
                 }
 
-            items = (
-                (data or {})
-                .get("response", {})
-                .get("body", {})
-                .get("items", {})
-                .get("item", [])
-            )
-            if not items:
-                return {
-                    "oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음",
-                    "area_name": area_name, "area_no": area_no,
-                }
-
-            if not isinstance(items, list):
-                items = [items]
-
-            # ── 응답 파싱 ────────────────────────────────────────────────────
-            # V4 응답 구조: code(지수종류), areaNo, date, today, tomorrow, ...
-            # areaNo에 읍면동 코드를 전달하면 해당 동 1건만 반환됨
-            # code별로 분리: D07=참나무, D08=소나무, D09=잡초류
-            code_map: dict[str, dict] = {}
-            for item in items:
-                c = str(item.get("code", ""))
-                code_map[c] = item
-
-            def _grade(item: dict | None) -> str:
-                if not item:
+            def _get_grade(data, in_season_flag: bool, key: str) -> str:
+                """응답에서 지정 키(today/tomorrow 등)의 등급을 반환한다."""
+                if not in_season_flag:
                     return "좋음"
-                val = str(item.get("today") or "")
-                return _POLLEN_GRADE.get(val, "좋음")
+                if not data:
+                    return None   # 데이터 없음 → 알 수 없음
+                rc = self._extract_result_code(data)
+                if rc == "99":    # 비시즌 응답
+                    return "좋음"
+                if rc != "00":    # 기타 오류
+                    return None   # 알 수 없음
+                items = (
+                    data.get("response", {})
+                        .get("body", {})
+                        .get("items", {})
+                        .get("item", [])
+                )
+                if isinstance(items, dict):
+                    items = [items]
+                if not items:
+                    return None
+                val = items[0].get(key, "0")
+                return _POLLEN_GRADE.get(str(val)) if val else None
 
-            # code가 있으면 code별로, 없으면 첫 번째 item에서 직접 읽기
-            if "D07" in code_map or "D08" in code_map or "D09" in code_map:
-                oak_item   = code_map.get("D07")
-                pine_item  = code_map.get("D08")
-                grass_item = code_map.get("D09")
-            else:
-                # code 구분 없이 단일 item인 경우
-                oak_item = pine_item = grass_item = items[0]
+            pine_grade  = _get_grade(pine_data,  in_season["pine"],  today_key)
+            oak_grade   = _get_grade(oak_data,   in_season["oak"],   today_key)
+            grass_grade = _get_grade(grass_data, in_season["grass"], today_key)
 
-            result: dict = {
-                "oak":   _grade(oak_item)   if in_season["oak"]   else "좋음",
-                "pine":  _grade(pine_item)  if in_season["pine"]  else "좋음",
-                "grass": _grade(grass_item) if in_season["grass"] else "좋음",
+            grades = [g for g in (pine_grade, oak_grade, grass_grade) if g is not None]
+            order  = ["좋음", "보통", "나쁨", "매우나쁨"]
+            worst  = max(grades, key=lambda g: order.index(g)) if grades else None
+
+            return {
+                "oak":          oak_grade,
+                "pine":         pine_grade,
+                "grass":        grass_grade,
+                "worst":        worst,
+                "area_name":    area_name,
+                "area_no":      area_no,
+                "announcement": announcement,
             }
-            result["worst"] = max(
-                (result[k] for k in ("oak", "pine", "grass")),
-                key=lambda g: _POLLEN_GRADE_RANK.get(g, 1),
-                default="좋음",
-            )
-            result["area_name"] = area_name
-            result["area_no"]   = area_no
-            return result
 
         except Exception as e:
             _LOGGER.error("꽃가루 조회 오류: %s", e)
-            if "pollen" in self._approved_apis:
-                return {
-                    "oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음",
-                    "area_name": area_name, "area_no": area_no,
-                }
             return {}
 
     # ── 유틸리티 ────────────────────────────────────────────────────────────
