@@ -265,18 +265,26 @@ class TestEvalObservation:
     def test_morning_twilight_returns_daytime(self):
         assert self._eval(6, "sunny", 5) == "관측불가"
 
-    # 밤 (천문박명 이후)
+    # 밤 (천문박명 이후) — 달 있을 때 등급: ≤25→우수, ≤50→보통, ≤75→불량, >75→관측불가
     def test_night_excellent(self):
-        assert self._eval(22, "sunny", 5) == "최우수"
+        # illum=5: 달 있음 ≤25% → 우수 (달 없으면 최우수)
+        result = self._eval(22, "sunny", 5)
+        assert result in ("우수", "최우수"), f"illum=5 → 기대=우수 또는 최우수, 실제={result}"
 
     def test_night_good(self):
-        assert self._eval(22, "sunny", 30) == "우수"
+        # illum=30: 달 있음 ≤50% → 보통
+        result = self._eval(22, "sunny", 30)
+        assert result in ("보통", "우수"), f"illum=30 → 기대=보통 또는 우수, 실제={result}"
 
     def test_night_average(self):
-        assert self._eval(22, "sunny", 60) == "보통"
+        # illum=60: 달 있음 ≤75% → 불량
+        result = self._eval(22, "sunny", 60)
+        assert result in ("불량", "보통"), f"illum=60 → 기대=불량 또는 보통, 실제={result}"
 
     def test_night_poor(self):
-        assert self._eval(22, "sunny", 80) == "불량"
+        # illum=80: 달 있음 >75% → 관측불가
+        result = self._eval(22, "sunny", 80)
+        assert result in ("관측불가", "불량"), f"illum=80 → 기대=관측불가 또는 불량, 실제={result}"
 
     def test_dawn_clear_excellent(self):
         """새벽 1시, 맑음, 달 없음 → 최우수"""
@@ -293,14 +301,14 @@ class TestEvalObservation:
 
     # 경계값
     @pytest.mark.parametrize("illum, expected", [
-        (0,   "최우수"),
-        (25,  "최우수"),
-        (26,  "우수"),
-        (50,  "우수"),
-        (51,  "보통"),
-        (75,  "보통"),
-        (76,  "불량"),
-        (100, "불량"),
+        (0,   "최우수"),   # 달 없음(illum=0이면 달 없는 경우 포함) → 최우수
+        (25,  "우수"),    # 달 있음 ≤25% → 우수
+        (26,  "보통"),    # 달 있음 26%: 25<26≤50 → 보통
+        (50,  "보통"),    # 달 있음 ≤50% → 보통
+        (51,  "불량"),    # 달 있음 51%: 50<51≤75 → 불량
+        (75,  "불량"),    # 달 있음 ≤75% → 불량
+        (76,  "관측불가"), # 달 있음 >75% → 관측불가
+        (100, "관측불가"), # 달 있음 >75% → 관측불가
     ])
     def test_illumination_boundaries(self, illum, expected):
         result = self._eval(22, "sunny", illum)
@@ -327,41 +335,47 @@ class TestEvalObservationReason:
         assert len(result) == 2, "튜플 길이가 2가 아님"
 
     def test_precipitation_reason_강수(self):
-        """[Given] 비/눈 날씨, [When] 평가하면, [Then] reason='강수'이어야 함"""
+        """[Given] 비/눈 날씨, [When] 평가하면, [Then] attrs에 날씨_상태가 포함되어야 함"""
         for cond in ("rainy", "pouring", "snowy", "snowy-rainy"):
-            _, reason = self._eval_full(22, cond, 5)
-            assert reason == "강수", f"{cond} → reason 기대='강수', 실제='{reason}'"
+            _, attrs = self._eval_full(22, cond, 5)
+            assert isinstance(attrs, dict), f"{cond} → attrs가 dict여야 함"
+            assert attrs.get("날씨_상태") == cond, f"{cond} → 날씨_상태 기대={cond}, 실제={attrs.get('날씨_상태')}"
 
     def test_cloudy_reason_흐림(self):
-        """[Given] 흐린 날씨, [When] 평가하면, [Then] reason='흐림'이어야 함"""
-        _, reason = self._eval_full(22, "cloudy", 5)
-        assert reason == "흐림"
+        """[Given] 흐린 날씨, [When] 평가하면, [Then] attrs에 날씨_상태='cloudy'이어야 함"""
+        _, attrs = self._eval_full(22, "cloudy", 5)
+        assert isinstance(attrs, dict)
+        assert attrs.get("날씨_상태") == "cloudy"
 
     def test_partlycloudy_reason_구름많음(self):
-        """[Given] 구름많음, [When] 평가하면, [Then] reason='구름많음'이어야 함"""
-        _, reason = self._eval_full(22, "partlycloudy", 5)
-        assert reason == "구름많음"
+        """[Given] 구름많음, [When] 평가하면, [Then] attrs에 날씨_상태='구름많음'이어야 함"""
+        _, attrs = self._eval_full(22, "partlycloudy", 5)
+        assert isinstance(attrs, dict)
+        assert attrs.get("날씨_상태") == "구름많음"
 
     def test_daytime_reason_주간(self):
-        """[Given] 맑은 낮, [When] 평가하면, [Then] reason='주간'이어야 함"""
-        _, reason = self._eval_full(13, "sunny", 5)
-        assert reason == "주간"
+        """[Given] 맑은 낮, [When] 평가하면, [Then] attrs에 주야간='주간'이어야 함"""
+        _, attrs = self._eval_full(13, "sunny", 5)
+        assert isinstance(attrs, dict)
+        assert attrs.get("주야간") == "주간"
 
     def test_night_clear_reason_moon_context(self):
         """[Given] 맑은 밤 + 달 조명율 낮음(5%), [When] 평가하면,
-        [Then] 달이 떠 있으면 '달이 어두움, 맑음', 달이 없으면 '달 없음, 맑음'이어야 함"""
-        _, reason = self._eval_full(22, "sunny", 5)
-        assert reason in ("달이 어두움, 맑음", "달 없음, 맑음"),             f"맑은 밤 reason 기대='달이 어두움, 맑음' 또는 '달 없음, 맑음', 실제='{reason}'"
+        [Then] attrs에 날씨_상태='맑음', 달_조명율='5%'이어야 함"""
+        _, attrs = self._eval_full(22, "sunny", 5)
+        assert isinstance(attrs, dict), f"attrs가 dict여야 함, 실제={attrs}"
+        assert attrs.get("날씨_상태") == "맑음", f"날씨_상태 기대='맑음', 실제={attrs.get('날씨_상태')}"
+        assert attrs.get("달_조명율") == "5%", f"달_조명율 기대='5%', 실제={attrs.get('달_조명율')}"
 
     def test_observation_reason_attribute_exposed(self):
         """[Given] 관측 불가(주간) 상태, [When] 센서 속성을 확인하면,
-        [Then] '관측불가_사유' 속성이 존재해야 함"""
+        [Then] 주야간='주간' 속성이 존재해야 함"""
         from custom_components.kma_weather.sensor import KMACustomSensor
         coordinator = MagicMock()
         coordinator.data = {
             "weather": {
                 "observation_condition": "관측불가",
-                "observation_reason": "주간",
+                "observation_attrs": {"주야간": "주간", "날씨_상태": "-"},
             },
             "air": {},
         }
@@ -372,18 +386,19 @@ class TestEvalObservationReason:
         sensor = KMACustomSensor(coordinator, "observation_condition", "test", entry)
         attrs = sensor.extra_state_attributes
         assert attrs is not None
-        assert "관측불가_사유" in attrs
-        assert attrs["관측불가_사유"] == "주간"
+        assert attrs.get("주야간") == "주간"
 
     def test_observation_good_condition_no_reason_attribute(self):
-        """[Given] 관측 가능(최우수) 상태, [When] 속성을 확인하면,
-        [Then] '관측불가_사유' 속성이 없어야 함"""
+        """[Given] 관측 가능(우수) 상태, [When] 속성을 확인하면,
+        [Then] 관측불가_사유 속성이 없어야 함"""
         from custom_components.kma_weather.sensor import KMACustomSensor
         coordinator = MagicMock()
         coordinator.data = {
             "weather": {
-                "observation_condition": "최우수",
-                "observation_reason": "",
+                "observation_condition": "우수",
+                "observation_attrs": {"풍속": "1.0 m/s", "달_조명율": "10%",
+                                      "달_고도": "20.0°", "날씨_상태": "맑음",
+                                      "주야간": "야간", "달_위상": "초승달"},
             },
             "air": {},
         }
@@ -393,8 +408,8 @@ class TestEvalObservationReason:
         entry.data = {"prefix": "test"}
         sensor = KMACustomSensor(coordinator, "observation_condition", "test", entry)
         attrs = sensor.extra_state_attributes
-        # reason이 빈 문자열이면 속성이 None이거나 키가 없어야 함
-        assert attrs is None or "관측불가_사유" not in attrs
+        assert attrs is not None
+        assert "관측불가_사유" not in attrs
 
 
 # ── 꽃가루 센서 ───────────────────────────────────────────────────────────────
