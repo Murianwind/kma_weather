@@ -623,9 +623,9 @@ class KMAWeatherAPI:
             display = self._pollen_tomorrow
 
         # ── API 호출 여부 결정 ────────────────────────────────────────────────
-        # today 캐시 없고 05시 이후: today 획득 시도
-        need_today    = (self._pollen_today is None and h >= 5)
-        # tomorrow 캐시 없고 17시 이후: tomorrow 획득 시도
+        # 05~16시: today 획득 시도 (17시 이후에는 today 시도 안 함)
+        need_today    = (self._pollen_today is None and 5 <= h < 17)
+        # 17시 이후: tomorrow 획득 시도
         need_tomorrow = (self._pollen_tomorrow is None and h >= 17)
 
         if not need_today and not need_tomorrow:
