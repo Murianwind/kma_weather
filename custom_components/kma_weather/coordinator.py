@@ -458,11 +458,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 weather.update(sun_times)
 
                 # ── 천문 관측 조건 평가 ────────────────────────────────────
-                obs_cond, obs_reason = self._eval_observation(
+                obs_cond, obs_attrs = self._eval_observation(
                     weather, datetime.now(self.api.tz), curr_lat, curr_lon
                 )
                 weather["observation_condition"] = obs_cond
-                weather["observation_reason"]    = obs_reason
+                weather["observation_attrs"]     = obs_attrs
 
                 self._cached_data = new_data
                 # 카운터 저장 (매 업데이트마다 영속화)
@@ -592,34 +592,63 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         elif d < 337.5: return "그믐달"
         return "삭"
 
+    # 관측 조건 등급 순서 (낮을수록 나쁨)
+    _OBS_ORDER = ["관측불가", "불량", "보통", "우수", "최우수"]
+
+    @staticmethod
+    def _obs_min(cond_a: str, cond_b: str) -> str:
+        """두 조건 중 더 나쁜 것을 반환한다."""
+        order = KMAWeatherUpdateCoordinator._OBS_ORDER
+        a_idx = order.index(cond_a) if cond_a in order else 0
+        b_idx = order.index(cond_b) if cond_b in order else 0
+        return order[min(a_idx, b_idx)]
+
     def _eval_observation(
         self, weather: dict, now: "datetime", lat: float, lon: float
-    ) -> "tuple[str, str]":
+    ) -> "tuple[str, dict]":
         """
-        현재 날씨·태양 고도·달 고도·달 조명율을 종합하여 관측 조건과 사유를 반환한다.
+        현재 날씨·태양 고도·달 고도·달 조명율·풍속을 종합하여 관측 조건과 속성을 반환한다.
+
+        달이 떠 있을 때 달 조명율 등급을 한 단계 낮춤:
+          달 없음: 최우수 / 달 있음: 최우수→우수, 우수→보통, 보통→불량, 불량→관측불가
+
+        풍속 등급 (m/s):
+          1.5 미만 → 우수
+          1.5~3.0 미만 → 최우수
+          3.0~5.0 미만 → 보통
+          5.0~8.0 미만 → 불량
+          8.0 이상 → 관측불가
+
+        최종 등급: 달 조명율 등급과 풍속 등급 중 더 나쁜 것
 
         Returns:
-            (condition, reason)
-            condition : "최우수" | "우수" | "보통" | "불량" | "관측불가" | "분석불가"
-            reason    : 조건 사유 (속성에 표시)
-                        관측 불가 — "강수" | "흐림" | "주간"
-                        관측 가능 — "달 없음, 맑음" | "달이 어두움, 맑음" | "달이 어두움"
-                                    | "달이 밝지 않음" | "달이 밝음" | "달이 환함"
-                                    | "구름많음"
+            (condition, attrs_dict)
         """
         condition_eng = weather.get("current_condition", "")
+        wsd = weather.get("WSD")
+        moon_phase = weather.get("moon_phase", "")
 
-        # 1. 기상 상태 체크
+        # ── 1. 기상 상태 체크 ────────────────────────────────────────────────
         if condition_eng in {"rainy", "pouring", "snowy", "snowy-rainy"}:
-            return "관측불가", "강수"
+            attrs = {
+                "날씨_상태": condition_eng,
+                "주야간": "야간",
+                "달_위상": moon_phase,
+            }
+            return "관측불가", attrs
 
         if condition_eng == "cloudy":
-            return "관측불가", "흐림"
+            attrs = {
+                "날씨_상태": condition_eng,
+                "주야간": "야간",
+                "달_위상": moon_phase,
+            }
+            return "관측불가", attrs
 
-        # 2. 태양 고도 체크 (skyfield 필요)
+        # ── 2. 태양 고도 체크 ────────────────────────────────────────────────
         try:
             if self._sf_eph is None or self._sf_ts is None:
-                return "분석불가", "분석불가"
+                return "분석불가", {"날씨_상태": "분석불가"}
 
             sf_loc = _wgs84.latlon(lat, lon)
             t_now = self._sf_ts.from_datetime(now)
@@ -629,10 +658,21 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(self._sf_eph["Sun"])
             )
             sun_alt, _, _ = sun_astr.apparent().altaz()
-            if sun_alt.degrees > -18:
-                return "관측불가", "주간"
 
-            # 달 고도 (지평선 7° 초과면 달이 떠 있음)
+            day_night = "주간" if sun_alt.degrees > -18 else "야간"
+
+            if sun_alt.degrees > -18:
+                attrs = {
+                    "풍속": f"{wsd} m/s" if wsd is not None else "-",
+                    "달_조명율": "-",
+                    "달_고도": "-",
+                    "날씨_상태": condition_eng or "-",
+                    "주야간": "주간",
+                    "달_위상": moon_phase,
+                }
+                return "관측불가", attrs
+
+            # 달 고도
             moon_astr = (
                 (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(self._sf_eph["Moon"])
             )
@@ -640,39 +680,75 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             moon_up = moon_alt.degrees > 7.0
 
         except Exception:
-            return "분석불가", "분석불가"
+            return "분석불가", {"날씨_상태": "분석불가"}
 
-        # 3. 구름 많음 (달 유무와 무관하게 불량)
+        # ── 3. 구름 많음 ─────────────────────────────────────────────────────
         if condition_eng == "partlycloudy":
-            return "불량", "구름많음"
+            attrs = {
+                "풍속": f"{wsd} m/s" if wsd is not None else "-",
+                "달_조명율": f"{weather.get('moon_illumination', '-')}%",
+                "달_고도": f"{moon_alt.degrees:.1f}°",
+                "날씨_상태": "구름많음",
+                "주야간": "야간",
+                "달_위상": moon_phase,
+            }
+            return "불량", attrs
 
-        # 날씨 맑음 여부
+        # ── 4. 달 조명율 기반 등급 ───────────────────────────────────────────
         is_clear = condition_eng in ("", "sunny")
-
-        # 날씨 미확인 suffix (단기예보 미승인/조회 실패 시)
-        weather_suffix = "" if is_clear else " (날씨 미확인)"
-
-        # 4. 달이 떠 있지 않은 경우 → 최우수
-        if not moon_up:
-            reason = f"달 없음, 맑음" if is_clear else f"달 없음{weather_suffix}"
-            return "최우수", reason
-
-        # 5. 달이 떠 있음 → 달 조명율로 판단
         illum = weather.get("moon_illumination", 100)
         try:
             illum = int(illum)
         except (TypeError, ValueError):
             illum = 100
 
-        clear_suffix = ", 맑음" if is_clear else weather_suffix
-        if illum <= 25:
-            return "최우수", f"달이 어두움{clear_suffix}"
-        elif illum <= 50:
-            return "우수", f"달이 밝지 않음{clear_suffix}"
-        elif illum <= 75:
-            return "보통", f"달이 밝음{clear_suffix}"
+        if not moon_up:
+            moon_cond = "최우수"
         else:
-            return "불량", f"달이 환함{weather_suffix}"
+            # 달 있음 → 조명율로 판단 후 한 단계 낮춤
+            if illum <= 25:
+                base = "최우수"
+            elif illum <= 50:
+                base = "우수"
+            elif illum <= 75:
+                base = "보통"
+            else:
+                base = "불량"
+            # 달 있을 때 한 단계 낮춤
+            down = {"최우수": "우수", "우수": "보통", "보통": "불량", "불량": "관측불가"}
+            moon_cond = down.get(base, "관측불가")
+
+        # ── 5. 풍속 등급 ─────────────────────────────────────────────────────
+        from .const import safe_float as _sf
+        wsd_val = _sf(wsd)
+        if wsd_val is None:
+            # 풍속 데이터 없음 → 달 조명율로만 판단
+            wind_cond = None
+        elif wsd_val < 1.5:
+            wind_cond = "우수"
+        elif wsd_val < 3.0:
+            wind_cond = "최우수"
+        elif wsd_val < 5.0:
+            wind_cond = "보통"
+        elif wsd_val < 8.0:
+            wind_cond = "불량"
+        else:
+            wind_cond = "관측불가"
+
+        # ── 6. 최종 등급: 풍속 있으면 달+풍속 조합, 없으면 달만 ──────────────
+        final_cond = self._obs_min(moon_cond, wind_cond) if wind_cond is not None else moon_cond
+
+        attrs = {
+            "풍속": f"{wsd} m/s" if wsd is not None else "-",
+            "달_조명율": f"{illum}%",
+            "달_고도": f"{moon_alt.degrees:.1f}°",
+            "날씨_상태": "맑음" if is_clear else (condition_eng or "미확인"),
+            "주야간": "야간",
+            "달_위상": moon_phase,
+        }
+
+        return final_cond, attrs
+
 
     # ── 날짜 지정 천문 계산 (HA 서비스용) ──────────────────────────────────
     async def calc_astronomical_for_date(
@@ -798,6 +874,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                                 weather_for_obs["current_condition"] = cond_eng
                                 weather_source = "날씨+천문"
                                 weather_kor = kor
+                            wsd_val = slot.get("WSD")
+                            if wsd_val is not None:
+                                weather_for_obs["WSD"] = wsd_val
                             _LOGGER.debug(
                                 "천문 액션 단기예보 조회 성공: (%s, %s) → %s (%s)",
                                 lat, lon, kor, ref_dt.strftime("%Y%m%d %H:%M")
@@ -810,9 +889,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             # ── 관측 조건 평가 ────────────────────────────────────────────────
             obs_dt = eval_dt or datetime(
                 target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=tz)
-            obs_cond, obs_reason = self._eval_observation(weather_for_obs, obs_dt, lat, lon)
+            obs_cond, obs_attrs = self._eval_observation(weather_for_obs, obs_dt, lat, lon)
             result["observation_condition"] = obs_cond
-            result["observation_reason"]    = obs_reason
+            result["observation_attrs"]     = obs_attrs
             result["weather_source"]        = weather_source
             result["weather_condition"]     = weather_kor
             return result
