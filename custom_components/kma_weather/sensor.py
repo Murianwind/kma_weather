@@ -201,11 +201,17 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                     return self._MOON_PHASE_ICONS[phase]
 
             elif self._type == "observation_condition":
-                reason = w.get("observation_reason", "")
-                icon_by_reason = self._OBSERVATION_ICONS_BY_REASON.get(reason)
-                if icon_by_reason is not None:
-                    return icon_by_reason
+                attrs = w.get("observation_attrs", {})
+                weather_state = attrs.get("날씨_상태", "")
+                day_night = attrs.get("주야간", "야간")
                 cond = w.get("observation_condition", "")
+                if day_night == "주간":
+                    return "mdi:weather-sunny"
+                if weather_state in ("rainy", "pouring", "snowy", "snowy-rainy", "cloudy", "강수", "흐림"):
+                    return self._OBSERVATION_ICONS_BY_REASON.get(
+                        "강수" if weather_state in ("rainy","pouring","snowy","snowy-rainy") else "흐림",
+                        self._attr_icon
+                    )
                 return self._OBSERVATION_ICONS_BY_CONDITION.get(cond, self._attr_icon)
 
             elif self._type == "pollen":
@@ -344,9 +350,6 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
         # ── 관측 조건 센서 ───────────────────────────────────────────────────
         if self._type == "observation_condition":
-            reason = w.get("observation_reason", "")
-            if reason:
-                return {"관측불가_사유": reason}
-            return None
+            return w.get("observation_attrs") or {}
 
         return None
