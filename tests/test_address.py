@@ -13,6 +13,9 @@ class MockAiohttpResponse:
         if self._should_raise:
             raise Exception("HTTP 500 Internal Server Error")
     async def json(self, *args, **kwargs): return self._json_data
+    async def text(self, *args, **kwargs):
+        import json
+        return json.dumps(self._json_data)
     async def __aenter__(self): return self
     async def __aexit__(self, exc_type, exc, tb): pass
 
