@@ -210,7 +210,9 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
             elif self._type == "pollen":
                 pollen = self.coordinator.data.get("pollen", {})
-                worst = pollen.get("worst") or "좋음"
+                worst = pollen.get("worst")
+                if worst is None:
+                    return self._attr_icon
                 return self._POLLEN_ICONS.get(worst, self._attr_icon)
 
         return self._attr_icon
@@ -236,7 +238,7 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         if self._type == "pollen":
             pollen = self.coordinator.data.get("pollen", {})
             worst = pollen.get("worst")
-            return worst if worst is not None else "좋음"
+            return worst  # None이면 HA에서 unknown으로 표시
 
         if self._type == "TMN_today":
             val = self.coordinator._daily_min_temp
