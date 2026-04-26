@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from unittest.mock import patch, MagicMock, AsyncMock
 from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+Coord = KMAWeatherUpdateCoordinator
 from custom_components.kma_weather.api_kma import KMAWeatherAPI
 from custom_components.kma_weather.coordinator import _SKYFIELD_OK
 from custom_components.kma_weather.const import DOMAIN
@@ -1136,8 +1137,8 @@ class TestEvalObservationWindAndMoon:
         coord.api.tz = TZ
         coord._sf_ts  = _TEST_SF_TS
         coord._sf_eph = _TEST_SF_EPH
-        # _obs_min은 실제 메서드 연결 (MagicMock이 덮어쓰지 않도록)
-        coord._obs_min = KMAWeatherUpdateCoordinator._obs_min.__get__(coord, type(coord))
+        # _obs_min은 staticmethod → MagicMock 대신 실제 함수 직접 연결
+        coord._obs_min = KMAWeatherUpdateCoordinator._obs_min
         weather = {
             "current_condition":     condition,
             "current_condition_kor": self._COND_KOR.get(condition, condition),
@@ -1254,8 +1255,11 @@ class TestPollenCacheAndGrade:
         api._fetch = mock_fetch
         now = datetime(2026, 4, 25, 20, 0, tzinfo=ZoneInfo("Asia/Seoul"))
         result = await api._get_pollen(now, 37.58, 126.97)
-        # today 캐시 있으면 API 호출 없이 반환
-        assert result["worst"] == "보통"
+        # 20시: need_tomorrow=True → tomorrow 캐시 저장 → unknown 반환
+        # today 캐시는 유지되지만 17시 이후 tomorrow 없으면 API 호출
+        assert api._pollen_today is not None  # today 캐시 유지
+        # tomorrow 저장 후 unknown 반환 (자정 이후에 표시)
+        assert result.get("worst") is None
 
     @pytest.mark.asyncio
     async def test_midnight_today_cache_cleared(self):
