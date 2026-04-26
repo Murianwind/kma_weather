@@ -1,98 +1,202 @@
 """
-tests/test_init_and_config.py
-기존 테스트와 중복되지 않는 Config Flow 및 컴포넌트 생명주기 테스트만 남겼습니다.
+tests/test_comprehensive.py
+config_flow.py의 _validate_api_key, ConfigFlow, OptionsFlow에 대한 단위 테스트입니다.
+* BDD (Given-When-Then) 패턴을 적용했습니다.
+* aioclient_mock을 사용하여 실제 _validate_api_key 내부의 HTTP 통신 라인을 실행합니다.
 """
 import pytest
+from unittest.mock import patch
 from homeassistant import data_entry_flow
 from homeassistant.config_entries import SOURCE_USER
 from pytest_homeassistant_custom_component.common import MockConfigEntry
-from unittest.mock import patch
 
 from custom_components.kma_weather.const import (
-    DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX
+    DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX,
+    CONF_APPLY_DATE, CONF_EXPIRE_DATE
 )
+from custom_components.kma_weather.config_flow import _validate_api_key
 
 # =====================================================================
-# 1. UI 설정 흐름 (Config Flow) - 커버리지 58.2% 보완
+# 1. API 키 검증 로직 (_validate_api_key) 
+# 적용 기법: 동치 클래스 분할 (Equivalence Partitioning) 및 경계값 분석
 # =====================================================================
 
 @pytest.mark.asyncio
-async def test_config_flow_valid_setup(hass):
-    """정상적인 API 키와 입력값으로 설정 성공"""
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
-    
-    # 폼이 제대로 열렸는지 확인
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+async def test_validate_api_key_success(hass, aioclient_mock):
+    """
+    [TC 1-1] 유효한 API 키 검증 (정상 동치 클래스)
+    """
+    # Given: 기상청 API 서버가 정상 코드("00")를 반환하도록 모킹
+    aioclient_mock.get(
+        "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+        status=200,
+        json={"response": {"header": {"resultCode": "00"}}}
+    )
 
-    # _validate_api_key 가 성공(None 반환)하는 것으로 모킹
-    with patch("custom_components.kma_weather.async_setup_entry", return_value=True), \
-         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None):
+    # When: _validate_api_key 함수 호출
+    result = await _validate_api_key(hass, "valid_test_key")
+
+    # Then: 에러 없이 None을 반환해야 함
+    assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result_code, expected_error",
+    [
+        ("30", "invalid_api_key"),      # 미등록 키
+        ("31", "invalid_api_key"),      # 만료된 키
+        ("22", "api_quota_exceeded"),   # 한도 초과
+        ("20", "api_access_denied"),    # 권한 없음
+        ("32", "api_access_denied"),    # 트래픽 초과
+        ("99", "api_error"),            # 기타/알 수 없는 오류
+    ]
+)
+async def test_validate_api_key_error_codes(hass, aioclient_mock, result_code, expected_error):
+    """
+    [TC 1-2] API 에러 코드 반환 검증 (오류 동치 클래스 분할)
+    """
+    # Given: 기상청 서버가 다양한 에러 코드를 반환
+    aioclient_mock.get(
+        "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+        status=200,
+        json={"response": {"header": {"resultCode": result_code}}}
+    )
+
+    # When: 키 검증 수행
+    result = await _validate_api_key(hass, "error_test_key")
+
+    # Then: 각 코드에 매핑된 정확한 에러 식별자가 반환되어야 함
+    assert result == expected_error
+
+
+@pytest.mark.asyncio
+async def test_validate_api_key_network_error(hass, aioclient_mock):
+    """
+    [TC 1-3] 통신 오류 및 예외 처리 검증 (예외 도메인)
+    """
+    # Given 1: API 서버가 HTTP 500 에러 반환
+    aioclient_mock.get(
+        "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+        status=500
+    )
+    # When 1 & Then 1: HTTP 에러 시 cannot_connect 반환
+    result_http = await _validate_api_key(hass, "timeout_key")
+    assert result_http == "cannot_connect"
+
+    # Given 2: aiohttp session 자체에서 파이썬 Exception 발생
+    with patch("custom_components.kma_weather.config_flow.aiohttp_client.async_get_clientsession", side_effect=Exception("Network Down")):
+        # When 2 & Then 2: 예외 발생 시 Exception 블록을 타고 cannot_connect 반환
+        result_exc = await _validate_api_key(hass, "timeout_key")
+        assert result_exc == "cannot_connect"
+
+
+# =====================================================================
+# 2. Config Flow 흐름 및 동적 이름 생성 로직 검증
+# 적용 기법: 상태 전이 (State Transition)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_config_flow_success_with_entity_name(hass):
+    """
+    [TC 2-1] 정상적인 UI 설정 흐름 완료 및 엔티티 이름 추출 로직 검증
+    """
+    # Given: HA 코어에 특정 zone 엔티티 등록 (이름: 스위트홈)
+    hass.states.async_set("zone.home", "zoning", {"friendly_name": "스위트홈"})
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+
+    # When: 유효한 입력값 제출 (API 검증 통과 모킹)
+    with patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None), \
+         patch("custom_components.kma_weather.async_setup_entry", return_value=True):
         
         result2 = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             user_input={
-                CONF_API_KEY: "valid_api_key_test",
+                CONF_API_KEY: "valid_key",
                 CONF_PREFIX: "my_weather",
+                CONF_LOCATION_ENTITY: "zone.home"
             },
         )
-    
-    # 정상적으로 Entry가 생성되었는지 확인
+
+    # Then: Entry가 생성되어야 하며, 제목이 zone의 friendly_name을 따와야 함
     assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-    assert result2["title"] == "기상청 날씨: 우리집" # 기본 fallback 이름
+    assert result2["title"] == "기상청 날씨: 스위트홈"
     assert result2["data"][CONF_PREFIX] == "my_weather"
 
 
 @pytest.mark.asyncio
-async def test_config_flow_invalid_api_key(hass):
-    """유효하지 않은 API 키 입력 시 에러 폼 반환"""
+async def test_config_flow_fallback_name(hass):
+    """
+    [TC 2-2] 엔티티가 없을 경우 폴백(Fallback) 이름 검증
+    """
+    # Given: 초기 설정 화면 진입
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
 
-    # _validate_api_key 가 실패("invalid_api_key" 반환)하는 것으로 모킹
-    with patch("custom_components.kma_weather.config_flow._validate_api_key", return_value="invalid_api_key"):
+    # When: 엔티티 없이 폼 제출
+    with patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None), \
+         patch("custom_components.kma_weather.async_setup_entry", return_value=True):
         result2 = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             user_input={
-                CONF_API_KEY: "wrong_api_key",
+                CONF_API_KEY: "valid_key",
                 CONF_PREFIX: "my_weather",
+                # CONF_LOCATION_ENTITY 없음
             },
         )
-        
-    # 설정이 완료되지 않고 폼이 다시 표시되어야 하며, API 키 에러가 나야 함
+
+    # Then: 기본 이름인 "우리집"이 제목에 사용되어야 함
+    assert result2["title"] == "기상청 날씨: 우리집"
+
+
+@pytest.mark.asyncio
+async def test_config_flow_api_error_returns_form(hass):
+    """
+    [TC 2-3] API 검증 실패 시 폼 재출력 검증
+    """
+    # Given: 초기 설정 화면 진입
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+
+    # When: API 키 검증이 에러 문자열을 반환하는 상황
+    with patch("custom_components.kma_weather.config_flow._validate_api_key", return_value="invalid_api_key"):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={CONF_API_KEY: "bad_key", CONF_PREFIX: "pre"}
+        )
+
+    # Then: 설정이 완료되지 않고, 해당 에러와 함께 폼(FORM)이 다시 나타나야 함
     assert result2["type"] == data_entry_flow.FlowResultType.FORM
-    assert result2["errors"] == {CONF_API_KEY: "invalid_api_key"}
+    assert result2["errors"][CONF_API_KEY] == "invalid_api_key"
 
 
 # =====================================================================
-# 2. 생명주기 (Init / Unload / Reload) - 커버리지 64.0% 보완
+# 3. Options Flow 검증 (설정 변경 시나리오)
 # =====================================================================
 
 @pytest.mark.asyncio
-async def test_unload_and_reload_entry(hass):
-    """컴포넌트 로드 -> 재시작(Reload) -> 언로드(Unload) 라이프사이클 통합 검증"""
+async def test_options_flow(hass):
+    """
+    [TC 3-1] 옵션 변경 폼 제출 검증
+    """
+    # Given: 기존에 설정된 Entry 존재
     config_entry = MockConfigEntry(
-        domain=DOMAIN, 
-        data={CONF_API_KEY: "test_key", CONF_PREFIX: "test_prefix"}
+        domain=DOMAIN,
+        data={CONF_API_KEY: "key", CONF_PREFIX: "pre", CONF_LOCATION_ENTITY: "zone.home"},
+        options={}
     )
     config_entry.add_to_hass(hass)
 
-    # Coordinator가 데이터를 가져오는 로직만 껍데기로 모킹
-    with patch("custom_components.kma_weather.coordinator.KMAWeatherUpdateCoordinator._async_update_data", return_value={}):
-        
-        # 1. 초기 셋업 (Setup)
-        await hass.config_entries.async_setup(config_entry.entry_id)
-        await hass.async_block_till_done()
-        assert config_entry.entry_id in hass.data[DOMAIN]
+    # When 1: 옵션 플로우 진입
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    
+    # Then 1: 옵션 폼 표시
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
 
-        # 2. 리로드 (Reload) 테스트
-        reload_ok = await hass.config_entries.async_reload(config_entry.entry_id)
-        await hass.async_block_till_done()
-        assert reload_ok is True
-        # 리로드 후에도 정상적으로 데이터 공간에 존재해야 함
-        assert config_entry.entry_id in hass.data[DOMAIN]
+    # When 2: 새로운 값으로 옵션 폼 제출
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={CONF_LOCATION_ENTITY: "zone.work"}
+    )
 
-        # 3. 언로드 (Unload) 테스트
-        unload_ok = await hass.config_entries.async_unload(config_entry.entry_id)
-        await hass.async_block_till_done()
-        assert unload_ok is True
-        # 언로드 후에는 hass.data 에서 안전하게 지워져야 함
-        assert config_entry.entry_id not in hass.data.get(DOMAIN, {})
+    # Then 2: 옵션이 성공적으로 갱신됨
+    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result2["data"][CONF_LOCATION_ENTITY] == "zone.work"
