@@ -19,7 +19,8 @@ from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from unittest.mock import patch, MagicMock, AsyncMock
 from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-from custom_components.kma_weather.api_kma import KMAWeatherAPI, _SKYFIELD_OK
+from custom_components.kma_weather.api_kma import KMAWeatherAPI
+from custom_components.kma_weather.coordinator import _SKYFIELD_OK
 from custom_components.kma_weather.const import DOMAIN
 
 # 테스트용 skyfield 객체 (GitHub Actions에서 de440s.bsp 자동 다운로드)
