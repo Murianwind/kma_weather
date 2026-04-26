@@ -55,12 +55,11 @@ async def test_config_flow_error_codes(hass: HomeAssistant, aioclient_mock, res_
 
 @pytest.mark.asyncio
 async def test_astro_service_exact_logic(hass: HomeAssistant):
-    """[TC 2-1] 지오코딩 실패 및 통합 구성요소 미등록 에러 메시지 대조"""
     call = MagicMock(spec=ServiceCall); call.hass = hass
+    # 날짜를 오늘(date.today())로 설정하여 과거 날짜 에러 방지
+    call.data = {"address": "유령주소", "date": date.today()} 
     
-    # 1. 지오코딩 실패 (Line 175)
     with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(None, None, None)):
-        call.data = {"address": "유령주소", "date": datetime.now().date()}
         with pytest.raises(HomeAssistantError, match="주소를 찾을 수 없습니다"):
             await _handle_get_astronomical_info(call)
 
@@ -213,15 +212,10 @@ async def test_api_merge_all_past_date_fallback_coverage(mock_api):
 
 @pytest.mark.asyncio
 async def test_init_handle_astro_geocode_fail_coverage(hass):
-    """
-    [TC 2-5] __init__.py 189-211 타격
-    시나리오: get_astronomical_info 호출 시 주소 변환(_geocode_ko)이 실패할 경우의 예외 처리
-    """
-    call = MagicMock(spec=ServiceCall)
-    call.hass = hass
-    call.data = {"address": "존재하지 않는 가상의 주소", "date": datetime.now().date()}
+    call = MagicMock(spec=ServiceCall); call.hass = hass
+    # 날짜를 오늘로 수정
+    call.data = {"address": "존재하지 않는 가상의 주소", "date": date.today()} 
     
-    # _geocode_ko가 None을 반환하도록 설정하여 에러 핸들링 구문 타격
     with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(None, None, None)):
         with pytest.raises(HomeAssistantError, match="주소를 찾을 수 없습니다"):
             await _handle_get_astronomical_info(call)
@@ -322,9 +316,7 @@ async def test_init_unload_entry_full_logic(hass):
 
 @pytest.mark.asyncio
 async def test_init_astro_service_error_traps(hass):
-    """Line 176, 189-211: 서비스 핸들러 내부의 모든 에러 트랩 타격"""
-    call = MagicMock(spec=ServiceCall)
-    call.hass = hass
+    call = MagicMock(spec=ServiceCall); call.hass = hass
     
     # 1. 주소 공백 (Line 176)
     call.data = {"address": " ", "date": date.today()} # date.today() 사용
