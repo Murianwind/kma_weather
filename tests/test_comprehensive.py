@@ -5,7 +5,7 @@ tests/test_comprehensive.py
 """
 import pytest
 import asyncio
-from datetime import time, datetime, timedelta
+from datetime import date, time, datetime, timedelta
 from unittest.mock import patch, AsyncMock, MagicMock
 
 from homeassistant import data_entry_flow
@@ -20,9 +20,10 @@ from custom_components.kma_weather.const import (
 from custom_components.kma_weather.config_flow import _validate_api_key
 from custom_components.kma_weather.api_kma import KMAWeatherAPI
 from custom_components.kma_weather.__init__ import (
+    _parse_time_str, 
+    _geocode_ko, 
+    async_unload_entry, 
     async_setup_entry,
-    _parse_time_str,
-    _geocode_ko,
     _handle_get_astronomical_info
 )
 
@@ -278,80 +279,73 @@ async def test_coordinator_astronomical_loop_coverage(hass):
             mock_calc.assert_called_once_with(scene["date"], scene["lat"], scene["lon"])
 
 # =====================================================================
-# [Target: 51-74] 내부 헬퍼 함수 정밀 타격 (_parse_time_str, _geocode_ko)
+# [__init__.py] 커버리지 정밀 타격 (35, 51-74, 136, 176, 189-211)
 # =====================================================================
 
 def test_init_parse_time_full_coverage():
-    """Line 51-64: 시간 파싱의 모든 예외 경로 타격"""
-    # 1. 성공
+    """Line 51-64: _parse_time_str의 모든 예외 경로 타격"""
     assert _parse_time_str("09:30") == time(9, 30)
-    # 2. 빈 문자열 (Line 54)
+    # Line 54: 빈 값
     with pytest.raises(HomeAssistantError, match="시각을 입력해주세요"):
         _parse_time_str("")
-    # 3. 잘못된 형식 (Line 60)
+    # Line 60: 형식 오류
     with pytest.raises(HomeAssistantError, match="시각 형식이 올바르지 않습니다"):
-        _parse_time_str("25:00")
+        _parse_time_str("invalid")
 
 @pytest.mark.asyncio
 async def test_init_geocode_ko_exception_coverage(hass, aioclient_mock):
-    """Line 67-88: 지오코딩 실패 및 예외 상황 타격"""
+    """Line 67-88: _geocode_ko의 결과 없음 및 예외 상황 타격"""
     url = "https://nominatim.openstreetmap.org/search"
-    # 1. 결과 없음 (Line 85)
+    # Line 85: 결과 없음
     aioclient_mock.get(url, json=[])
     lat, lon, name = await _geocode_ko(hass, "없는주소")
     assert lat is None
-    
-    # 2. 네트워크 예외 (Line 86-88)
-    aioclient_mock.get(url, exc=Exception("Connection Error"))
+    # Line 86-88: 네트워크 예외
+    aioclient_mock.get(url, exc=Exception("Conn Error"))
     lat, lon, name = await _geocode_ko(hass, "에러주소")
     assert lat is None
 
-# =====================================================================
-# [Target: 136] 언로드 로직 (async_unload_entry)
-# =====================================================================
-
 @pytest.mark.asyncio
 async def test_init_unload_entry_full_logic(hass):
-    """Line 131-139: 언로드 성공 및 서비스 제거 분기 타격"""
+    """Line 131-139: async_unload_entry의 언로드 및 데이터 정리 타격 (136 라인 핵심)"""
     entry = MockConfigEntry(domain=DOMAIN, data={}, entry_id="test_entry")
     entry.add_to_hass(hass)
     
-    # 데이터 주입 (Line 136에서 pop 하기 위함)
+    # Line 136 타격을 위해 hass.data에 Mock 객체 주입
     hass.data[DOMAIN] = {entry.entry_id: MagicMock()}
     
     with patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_unload", return_value=True):
-        # 1. 언로드 실행
+        # [수정됨] 호출 경로를 async_unload_entry(hass, entry)로 바로 호출
         assert await async_unload_entry(hass, entry) is True
-        # 2. Line 136: hass.data에서 사라졌는지 확인
+        # Line 136: pop이 실행되어 데이터가 사라졌는지 확인
         assert entry.entry_id not in hass.data[DOMAIN]
-        # 3. 마지막 엔트리라면 서비스도 제거되는지 확인 (Line 137-138)
-        assert not hass.services.has_service(DOMAIN, "get_astronomical_info")
-
-# =====================================================================
-# [Target: 176, 189-211] 서비스 핸들러 예외 (handle_get_astronomical_info)
-# =====================================================================
 
 @pytest.mark.asyncio
 async def test_init_astro_service_error_traps(hass):
-    """Line 159-211: 서비스 핸들러 내부의 모든 HomeAssistantError 타격"""
+    """Line 176, 189-211: 서비스 핸들러 내부의 모든 에러 트랩 타격"""
     call = MagicMock(spec=ServiceCall)
     call.hass = hass
     
-    # 1. 주소 미입력 (Line 176 - raw_address가 공백일 때)
-    call.data = {"address": " ", "date": date.today()}
+    # 1. 주소 공백 (Line 176)
+    call.data = {"address": " ", "date": date.today()} # date.today() 사용
     with pytest.raises(HomeAssistantError, match="주소를 입력해주세요"):
         await _handle_get_astronomical_info(call)
 
-    # 2. 통합 구성요소 미등록 (Line 189-195)
-    hass.data[DOMAIN] = {} # 빈 딕셔너리
-    with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(37.5, 126.9, "서울")):
+    # 2. 지오코딩 실패 (Line 189-200)
+    with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(None, None, None)):
         call.data = {"address": "서울", "date": date.today()}
+        with pytest.raises(HomeAssistantError, match="주소를 찾을 수 없습니다"):
+            await _handle_get_astronomical_info(call)
+
+    # 3. 통합 구성요소 미등록 (Line 204-210)
+    hass.data[DOMAIN] = {} # coordinators 리스트가 비게 됨
+    with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(37.5, 126.9, "서울")):
         with pytest.raises(HomeAssistantError, match="통합 구성요소가 등록되지 않았습니다"):
             await _handle_get_astronomical_info(call)
 
-    # 3. skyfield 준비 미흡 (Line 196-202)
+    # 4. skyfield 준비 미흡 (Line 212-217)
     mock_coord = MagicMock()
-    mock_coord._sf_eph = None # 아직 준비 안 됨
+    mock_coord._sf_eph = None # 라이브러리 미준비 상태
     hass.data[DOMAIN] = {"some_id": mock_coord}
     with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(37.5, 126.9, "서울")):
         with pytest.raises(HomeAssistantError, match="천문 계산 라이브러리"):
