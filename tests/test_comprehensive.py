@@ -250,7 +250,7 @@ async def test_coordinator_astronomical_loop_coverage(hass):
     """
     from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
     
-    # 다양성을 확보하기 위한 테스트 시나리오 리스트 (Wildcard Rule 적용)
+    # 다양성을 확보하기 위한 테스트 시나리오 리스트
     scenarios = [
         {"name": "서울 겨울", "lat": 37.5665, "lon": 126.9780, "date": datetime(2025, 1, 15)},
         {"name": "부산 여름", "lat": 35.1796, "lon": 129.0756, "date": datetime(2025, 8, 15)},
@@ -263,7 +263,12 @@ async def test_coordinator_astronomical_loop_coverage(hass):
         coordinator = KMAWeatherUpdateCoordinator(hass, entry)
         
         # 내부 계산 함수(911-952 라인 포함) 호출 검증
-        with patch.object(coordinator, "calc_astronomical_for_date", return_value={"moon_phase": 0.5}) as mock_calc:
-            res = coordinator.calc_astronomical_for_date(scene["date"].date(), scene["lat"], scene["lon"])
+        # AsyncMock을 사용하여 비동기 함수 호출 시 await가 가능하도록 수정
+        with patch.object(coordinator, "calc_astronomical_for_date", new_callable=AsyncMock) as mock_calc:
+            mock_calc.return_value = {"moon_phase": 0.5}
+            
+            # await를 추가하여 코루틴이 아닌 실제 결과값을 res에 할당
+            res = await coordinator.calc_astronomical_for_date(scene["date"].date(), scene["lat"], scene["lon"])
+            
             assert res["moon_phase"] == 0.5
             mock_calc.assert_called_with(scene["date"].date(), scene["lat"], scene["lon"])
