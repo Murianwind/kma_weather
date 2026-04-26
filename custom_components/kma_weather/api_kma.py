@@ -47,10 +47,6 @@ _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 # 꽃가루 제공 시즌 (시작월, 종료월 포함)
 _POLLEN_SEASONS = {"oak": (4, 6), "pine": (4, 6), "grass": (8, 10)}
 
-
-
-
-
 KOR_TO_CONDITION: dict[str, str] = {
     "맑음": "sunny",
     "구름많음": "partlycloudy",
@@ -71,7 +67,6 @@ KOR_TO_CONDITION: dict[str, str] = {
     "흐리고 비/눈": "snowy-rainy",
     "흐리고 소나기": "pouring",
 }
-
 
 class KMAWeatherAPI:
     def __init__(self, session, api_key, hass=None):
@@ -582,8 +577,8 @@ class KMAWeatherAPI:
         꽃가루 농도 위험지수를 조회한다.
 
         캐시 전략:
-        - today 캐시: 05시 이후 획득, 자정에 삭제. 취득 전까지 매 업데이트마다 API 호출
-        - tomorrow 캐시: 17시 이후 획득, today 캐시 저장 시 삭제. 취득 전까지 매 업데이트마다 API 호출
+        - today 캐시: 06시 이후 획득, 자정에 삭제. 취득 전까지 매 업데이트마다 API 호출
+        - tomorrow 캐시: 18시 이후 획득, today 캐시 저장 시 삭제. 취득 전까지 매 업데이트마다 API 호출
         - 상태 출력: today 캐시 우선, 없으면 자정 이후 tomorrow 캐시, 둘 다 없으면 None
         - 비시즌 항목: 항상 좋음
         - 비시즌 전체 + 승인됨: API 호출 없이 좋음 반환
@@ -616,17 +611,13 @@ class KMAWeatherAPI:
         # ── 현재 표시할 데이터 결정 ───────────────────────────────────────────
         # today 캐시: 항상 우선
         # tomorrow 캐시: today 없고 자정(00시) 이후일 때만 표시
-        display = None
-        if self._pollen_today is not None:
-            display = self._pollen_today
-        elif h < 5 and self._pollen_tomorrow is not None:
-            display = self._pollen_tomorrow
+        display = self._pollen_today or self._pollen_tomorrow
 
         # ── API 호출 여부 결정 ────────────────────────────────────────────────
-        # 05~16시: today 획득 시도 (17시 이후에는 today 시도 안 함)
-        need_today    = (self._pollen_today is None and 5 <= h < 17)
-        # 17시 이후: tomorrow 획득 시도
-        need_tomorrow = (self._pollen_tomorrow is None and h >= 17)
+        # 06~16시: today 획득 시도 (17시 이후에는 today 시도 안 함)
+        need_today    = (self._pollen_today is None and 6 <= h < 17)
+        # 18시 이후: tomorrow 획득 시도
+        need_tomorrow = (self._pollen_tomorrow is None and h >= 18)
 
         if not need_today and not need_tomorrow:
             # 호출 불필요 → 현재 표시값 반환
@@ -764,12 +755,13 @@ class KMAWeatherAPI:
                 self._pollen_tomorrow_date = today_str
                 # tomorrow는 자정 이후에만 표시 → 지금은 today 없으므로 unknown 반환
                 return {
-                    "oak":   None if in_season["oak"]   else "좋음",
-                    "pine":  None if in_season["pine"]  else "좋음",
-                    "grass": None if in_season["grass"] else "좋음",
-                    "worst": None,
-                    "area_name": area_name, "area_no": area_no,
-                    "announcement": "-",
+                    "oak":   (display.get("oak") if display else None) if in_season["oak"] else "좋음",
+                    "pine":  (display.get("pine") if display else None) if in_season["pine"] else "좋음",
+                    "grass": (display.get("grass") if display else None) if in_season["grass"] else "좋음",
+                    "worst": display.get("worst") if display else None,
+                    "area_name": area_name, 
+                    "area_no": area_no,
+                    "announcement": display.get("announcement") if display else "-",
                 }
 
         except Exception as e:
