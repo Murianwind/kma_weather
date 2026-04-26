@@ -1,7 +1,7 @@
 """
 tests/test_comprehensive.py
 config_flow.py, __init__.py, api_kma.py의 모든 누락된 분기를 100% 통합 검증합니다.
-* 적용 원칙: BDD(Given-When-Then), 동치 클래스 분할(ECP), 실제 소스코드 메서드 명칭 반영
+* 실제 소스코드의 if문 우선순위와 튜플 반환 구조를 완벽히 반영했습니다.
 """
 import pytest
 from datetime import time, datetime, timedelta
@@ -44,7 +44,7 @@ async def test_validate_api_key_flow(hass: HomeAssistant, aioclient_mock):
 
 @pytest.mark.asyncio
 async def test_config_flow_full_path(hass: HomeAssistant):
-    """[TC 1-2] UI 설정 성공 및 옵션 변경 흐름"""
+    """[TC 1-2] UI 설정 성공 시나리오"""
     hass.states.async_set("zone.home", "zoning", {"friendly_name": "스위트홈"})
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     
@@ -56,6 +56,17 @@ async def test_config_flow_full_path(hass: HomeAssistant):
         )
     assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result2["title"] == "기상청 날씨: 스위트홈"
+
+@pytest.mark.asyncio
+async def test_options_flow_logic(hass: HomeAssistant):
+    """[TC 1-3] 옵션 변경 흐름 검증"""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_API_KEY: "k", CONF_PREFIX: "p"})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={CONF_LOCATION_ENTITY: "zone.work"}
+    )
+    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
 
 # =====================================================================
 # [Part 2] __init__.py : 지오코딩 및 천문 서비스
@@ -108,81 +119,80 @@ async def test_setup_entry_already_registered(hass: HomeAssistant):
         assert await async_setup_entry(hass, entry) is True
 
 # =====================================================================
-# [Part 3] api_kma.py : API 통신 및 데이터 처리 (누락 라인 집중 타격)
+# [Part 3] api_kma.py : 로직 우선순위 및 예외 처리 (67라인 집중 타격)
 # =====================================================================
 
 @pytest.fixture
 def mock_api(hass):
-    """KMAWeatherAPI 인스턴스를 실제 인자(session, key, hass)에 맞춰 생성"""
+    """실제 KMAWeatherAPI(session, api_key, hass) 시그니처 반영"""
     return KMAWeatherAPI(MagicMock(), "test_key", hass)
 
 @pytest.mark.asyncio
 async def test_api_pollen_map_error(mock_api):
-    """[TC 3-1] 꽃가루 지역 맵 로드 실패 처리"""
+    """[TC 3-1] 꽃가루 지역 맵 파일 누락 대응"""
     with patch("builtins.open", side_effect=FileNotFoundError):
         mock_api._load_pollen_area_map()
         assert mock_api._pollen_area_data is None
 
 @pytest.mark.asyncio
 async def test_api_fetch_xml_and_404(mock_api):
-    """[TC 3-2] XML 응답 파싱 및 404 에러 처리"""
+    """[TC 3-2] XML 응답 파싱 및 404 에러 대응"""
     xml_text = "<?xml version='1.0'?><response><header><resultCode>22</resultCode></header></response>"
     mock_api._parse_xml_to_dict = MagicMock(return_value={"response": {"header": {"resultCode": "22"}}})
     
     with patch.object(mock_api.session, "get") as mock_get:
-        resp = AsyncMock()
-        resp.status = 200
+        resp = AsyncMock(); resp.status = 200
         resp.text.return_value = xml_text
         mock_get.return_value.__aenter__.return_value = resp
         
-        # XML 파싱 분기 강제 실행
+        # XML 응답 시 파싱 로직 실행 확인
         res = await mock_api._fetch("http://test.xml", {})
         assert res["response"]["header"]["resultCode"] == "22"
 
 @pytest.mark.asyncio
 async def test_api_mid_term_tuple(mock_api):
-    """[TC 3-3] 중기예보 튜플 반환 및 Fallback 로직"""
-    with patch.object(mock_api, "_fetch", side_effect=[
-        {}, {}, # 첫 시도 실패
-        {"response": {"body": {"items": {"item": [{"taMin3": 10}]}}}},
-        {"response": {"body": {"items": {"item": [{"wf3Am": "맑음"}]}}}}
-    ]):
+    """[TC 3-3] 중기예보 튜플 반환 구조 검증 (육상, 기온, 시각)"""
+    land_data = {"response": {"body": {"items": {"item": [{"wf3Am": "맑음"}]}}}}
+    temp_data = {"response": {"body": {"items": {"item": [{"taMin3": 10}]}}}}
+    
+    with patch.object(mock_api, "_fetch", side_effect=[{}, {}, land_data, temp_data]):
+        # result = (land_dict, temp_dict, datetime_obj)
         result = await mock_api._get_mid_term(datetime.now(), "reg1", "reg2")
-        # 반환값은 (land_data, temp_data, tm_fc_dt) 형태의 튜플임
+        assert "wf3Am" in str(result[0])
         assert "taMin3" in str(result[1])
 
 @pytest.mark.asyncio
-async def test_api_pollen_logic_errors(mock_api):
-    """[TC 3-4] 꽃가루 지수 조회 중 예외 발생 시 방어"""
+async def test_get_pollen_index_logic(mock_api):
+    """[TC 3-4] 꽃가루 지수 조회 예외 시 안전한 반환"""
     mock_api._approved_apis.add("pollen")
-    # _get_pollen 내부의 예외 처리를 확인하기 위해 Exception 유도
     with patch.object(mock_api, "_find_pollen_area", side_effect=Exception("Pollen Error")):
-        try:
-            res = await mock_api._get_pollen(datetime.now(), 37.5, 126.9)
-            assert isinstance(res, dict)
-        except Exception:
-            pass # 소스코드 구조상 catch되지 않을 경우 통과
+        res = await mock_api._get_pollen(datetime.now(), 37.5, 126.9)
+        assert isinstance(res, dict)
 
-def test_api_merge_and_ampm_logic(mock_api):
-    """[TC 3-5] 단기예보 데이터 병합 및 오전/오후 추출"""
-    # 1. am/pm 데이터가 없을 때 기본값
+def test_get_short_ampm_and_merge_logic(mock_api):
+    """[TC 3-5] 단기예보 데이터 병합 및 오전/오후 날씨 추출"""
+    # 데이터가 없을 때 폴백
     assert mock_api._get_short_ampm({}) == ("맑음", "맑음")
     
-    # 2. 과거 데이터 병합 (TMP 등)
+    # 병합 로직 초기화 확인
     now = datetime.now()
-    past_str = (now - timedelta(days=1)).strftime("%Y%m%d")
-    short_res = {"response": {"body": {"items": {"item": [
-        {"fcstDate": past_str, "fcstTime": "2300", "category": "TMP", "fcstValue": "15"}
-    ]}}}}
-    res = mock_api._merge_all(now, short_res, None, None)
-    # 딕셔너리 업데이트 결과 확인
-    assert res.get("TMP") == "15" or res.get("TMP") is None
+    res = mock_api._merge_all(now, {}, {}, {}, address="서울")
+    assert res["address"] == "서울"
+    assert "forecast_daily" in res
 
-def test_api_condition_translation(mock_api):
-    """[TC 3-6] 한국어 기상 상태 텍스트 치환 검증"""
-    # '흐림' 단어가 포함된 경우
-    assert mock_api._translate_mid_condition_kor("전국이 흐림") == "흐림"
-    # '흐리' 단어가 포함된 경우
-    assert mock_api._translate_mid_condition_kor("흐리고 비") == "흐림"
-    # 매칭되지 않는 경우 기본값
-    assert mock_api._translate_mid_condition_kor("알수없음") == "맑음"
+def test_translate_mid_condition_kor_logic(mock_api):
+    """[TC 3-6] 기상 상태 치환 우선순위 검증 (비 > 흐림)"""
+    # 1. '비'가 있으면 '흐림'보다 우선함
+    assert mock_api._translate_mid_condition_kor("흐리고 비") == "비"
+    # 2. '비'가 없고 '흐림'이 있으면 흐림
+    assert mock_api._translate_mid_condition_kor("구름많고 흐림") == "흐림"
+    # 3. 매칭 안 되면 맑음
+    assert mock_api._translate_mid_condition_kor("알수없는날씨") == "맑음"
+
+@pytest.mark.asyncio
+async def test_api_check_unsubscribed_logic(mock_api):
+    """[TC 3-7] API 미신청/만료 감지 로직 (_notified_unsubscribed 사용)"""
+    mock_api._notified_unsubscribed.clear()
+    with patch("homeassistant.components.persistent_notification.async_create", side_effect=Exception):
+        # 22 코드는 미신청 코드임
+        assert mock_api._check_unsubscribed("air", "22") is True
