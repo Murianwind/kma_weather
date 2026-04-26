@@ -276,3 +276,92 @@ async def test_coordinator_astronomical_loop_coverage(hass):
             # 결과 확인 및 호출 여부 검증
             assert res["moon_phase"] == 0.5
             mock_calc.assert_called_once_with(scene["date"], scene["lat"], scene["lon"])
+
+# =====================================================================
+# [Target: 51-74] 내부 헬퍼 함수 정밀 타격 (_parse_time_str, _geocode_ko)
+# =====================================================================
+
+def test_init_parse_time_full_coverage():
+    """Line 51-64: 시간 파싱의 모든 예외 경로 타격"""
+    # 1. 성공
+    assert _parse_time_str("09:30") == time(9, 30)
+    # 2. 빈 문자열 (Line 54)
+    with pytest.raises(HomeAssistantError, match="시각을 입력해주세요"):
+        _parse_time_str("")
+    # 3. 잘못된 형식 (Line 60)
+    with pytest.raises(HomeAssistantError, match="시각 형식이 올바르지 않습니다"):
+        _parse_time_str("25:00")
+
+@pytest.mark.asyncio
+async def test_init_geocode_ko_exception_coverage(hass, aioclient_mock):
+    """Line 67-88: 지오코딩 실패 및 예외 상황 타격"""
+    url = "https://nominatim.openstreetmap.org/search"
+    # 1. 결과 없음 (Line 85)
+    aioclient_mock.get(url, json=[])
+    lat, lon, name = await _geocode_ko(hass, "없는주소")
+    assert lat is None
+    
+    # 2. 네트워크 예외 (Line 86-88)
+    aioclient_mock.get(url, exc=Exception("Connection Error"))
+    lat, lon, name = await _geocode_ko(hass, "에러주소")
+    assert lat is None
+
+# =====================================================================
+# [Target: 136] 언로드 로직 (async_unload_entry)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_init_unload_entry_full_logic(hass):
+    """Line 131-139: 언로드 성공 및 서비스 제거 분기 타격"""
+    entry = MockConfigEntry(domain=DOMAIN, data={}, entry_id="test_entry")
+    entry.add_to_hass(hass)
+    
+    # 데이터 주입 (Line 136에서 pop 하기 위함)
+    hass.data[DOMAIN] = {entry.entry_id: MagicMock()}
+    
+    with patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_unload", return_value=True):
+        # 1. 언로드 실행
+        assert await async_unload_entry(hass, entry) is True
+        # 2. Line 136: hass.data에서 사라졌는지 확인
+        assert entry.entry_id not in hass.data[DOMAIN]
+        # 3. 마지막 엔트리라면 서비스도 제거되는지 확인 (Line 137-138)
+        assert not hass.services.has_service(DOMAIN, "get_astronomical_info")
+
+# =====================================================================
+# [Target: 176, 189-211] 서비스 핸들러 예외 (handle_get_astronomical_info)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_init_astro_service_error_traps(hass):
+    """Line 159-211: 서비스 핸들러 내부의 모든 HomeAssistantError 타격"""
+    call = MagicMock(spec=ServiceCall)
+    call.hass = hass
+    
+    # 1. 주소 미입력 (Line 176 - raw_address가 공백일 때)
+    call.data = {"address": " ", "date": date.today()}
+    with pytest.raises(HomeAssistantError, match="주소를 입력해주세요"):
+        await _handle_get_astronomical_info(call)
+
+    # 2. 통합 구성요소 미등록 (Line 189-195)
+    hass.data[DOMAIN] = {} # 빈 딕셔너리
+    with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(37.5, 126.9, "서울")):
+        call.data = {"address": "서울", "date": date.today()}
+        with pytest.raises(HomeAssistantError, match="통합 구성요소가 등록되지 않았습니다"):
+            await _handle_get_astronomical_info(call)
+
+    # 3. skyfield 준비 미흡 (Line 196-202)
+    mock_coord = MagicMock()
+    mock_coord._sf_eph = None # 아직 준비 안 됨
+    hass.data[DOMAIN] = {"some_id": mock_coord}
+    with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(37.5, 126.9, "서울")):
+        with pytest.raises(HomeAssistantError, match="천문 계산 라이브러리"):
+            await _handle_get_astronomical_info(call)
+
+    # 4. 천문 계산 중 내부 오류 (Line 207-211)
+    mock_coord._sf_eph = MagicMock()
+    mock_coord._sf_ts = MagicMock()
+    # coordinator의 calc_astronomical_for_date가 "error" 키를 반환하게 함
+    mock_coord.calc_astronomical_for_date = AsyncMock(return_value={"error": "Unknown Calc Error"})
+    with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(37.5, 126.9, "서울")):
+        with pytest.raises(HomeAssistantError, match="천문 계산 중 오류가 발생했습니다"):
+            await _handle_get_astronomical_info(call)
