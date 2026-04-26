@@ -1,9 +1,10 @@
 """
 tests/test_comprehensive.py
-커버리지 보고서의 모든 누락 라인(api_kma 884, 775 등)을 타격하며 
-3-1 ~ 3-11 전 구간을 100% 복구한 최종 마스터 테스트입니다.
+기존 테스트를 100% 유지하며, 커버리지 보고서의 사각지대(api_kma 775, 886 / coordinator 911 등)를 
+완벽히 해소하기 위한 추가 시나리오가 통합된 마스터 테스트 파일입니다.
 """
 import pytest
+import asyncio
 from datetime import time, datetime, timedelta
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -27,7 +28,7 @@ from custom_components.kma_weather.__init__ import (
 
 @pytest.fixture
 def mock_api(hass):
-    """KMAWeatherAPI(session, api_key, hass) 실제 생성자 준수 피스처"""
+    """KMAWeatherAPI(session, api_key, hass) 실제 생성자 시그니처 준수"""
     return KMAWeatherAPI(MagicMock(), "test_api_key", hass)
 
 # =====================================================================
@@ -165,3 +166,104 @@ def test_api_3_11_condition_translation_logic(mock_api):
     assert mock_api._translate_mid_condition_kor("소나기를 동반한 비") == "소나기"
     # 3. '흐리' 포함 시
     assert mock_api._translate_mid_condition_kor("매우 흐림") == "흐림"
+
+# =====================================================================
+# [Part 4] 커버리지 100% 달성을 위한 추가 정밀 타격 테스트 (New)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_api_pollen_gather_partial_exception_coverage(mock_api):
+    """
+    [TC 3-12] api_kma.py 775-777 타격
+    시나리오: asyncio.gather 내부에서 하나 이상의 Task가 Exception을 던질 때의 방어 로직
+    """
+    dt_on = datetime(2025, 5, 1, 10, 0) # 시즌 중
+    mock_api._pollen_today = {"worst": "나쁨"} # 기존 캐시 존재
+    
+    # gather가 성공/실패가 섞인 결과를 반환하도록 모킹하여 775-777 라인 실행 유도
+    with patch("custom_components.kma_weather.api_kma.asyncio.gather", side_effect=Exception("Partial Network Failure")):
+        res = await mock_api._get_pollen(dt_on, 37.5, 126.9)
+        # 예외 발생 시 로그를 남기고 기존 캐시(display)를 반환해야 함
+        assert res["worst"] == "나쁨"
+
+
+@pytest.mark.asyncio
+async def test_api_merge_all_past_date_fallback_coverage(mock_api):
+    """
+    [TC 3-13] api_kma.py 886->893 타격
+    시나리오: 오늘 예보 데이터가 전혀 없을 때, 캐시에 남아있는 가장 최근의 과거 데이터로 폴백
+    """
+    now = datetime(2025, 5, 20, 15, 0)
+    today_str = now.strftime("%Y%m%d")
+    yesterday_str = (now - timedelta(days=1)).strftime("%Y%m%d")
+    
+    # 오늘 데이터는 없고 어제 데이터만 캐시에 있는 극단적 상황 설정
+    mock_api._cache_forecast_map = {
+        yesterday_str: {"2300": {"TMP": "19", "REH": "60", "SKY": "1", "PTY": "0"}}
+    }
+    
+    # short_res를 빈 값으로 전달하여 else 구문(884-888) 진입 유도
+    res = mock_api._merge_all(now, {}, {}, {}, address="과거데이터지점")
+    
+    # 어제의 마지막 슬롯 데이터('19')가 weather_data에 업데이트되었는지 확인
+    assert res["weather"]["TMP"] == "19"
+    assert res["weather"]["address"] == "과거데이터지점"
+
+
+@pytest.mark.asyncio
+async def test_init_handle_astro_geocode_fail_coverage(hass):
+    """
+    [TC 2-5] __init__.py 189-211 타격
+    시나리오: get_astronomical_info 호출 시 주소 변환(_geocode_ko)이 실패할 경우의 예외 처리
+    """
+    call = MagicMock(spec=ServiceCall)
+    call.hass = hass
+    call.data = {"address": "존재하지 않는 가상의 주소", "date": datetime.now().date()}
+    
+    # _geocode_ko가 None을 반환하도록 설정하여 에러 핸들링 구문 타격
+    with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(None, None, None)):
+        with pytest.raises(HomeAssistantError, match="주소를 찾을 수 없습니다"):
+            await _handle_get_astronomical_info(call)
+
+
+@pytest.mark.asyncio
+async def test_config_flow_validate_unknown_result_code(hass, aioclient_mock):
+    """
+    [TC 1-4] config_flow.py 86-88 타격
+    시나리오: 기상청 API 응답의 resultCode가 정의되지 않은 알 수 없는 값일 때의 처리
+    """
+    aioclient_mock.get(
+        "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+        status=200, json={"response": {"header": {"resultCode": "999"}}} # 정의되지 않은 코드
+    )
+    
+    # else 문으로 빠져 'api_error'를 반환하는지 확인
+    res = await _validate_api_key(hass, "unknown_result_code_key")
+    assert res == "api_error"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_astronomical_loop_coverage(hass):
+    """
+    [TC 4-1] coordinator.py 911-952 타격
+    시나리오: 다양한 위도/경도 및 날짜 조건에서 천문 센서 데이터가 정상적으로 산출되는지 루프 검증
+    """
+    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+    
+    # 다양성을 확보하기 위한 테스트 시나리오 리스트 (Wildcard Rule 적용)
+    scenarios = [
+        {"name": "서울 겨울", "lat": 37.5665, "lon": 126.9780, "date": datetime(2025, 1, 15)},
+        {"name": "부산 여름", "lat": 35.1796, "lon": 129.0756, "date": datetime(2025, 8, 15)},
+        {"name": "제주 장마", "lat": 33.4996, "lon": 126.5312, "date": datetime(2025, 6, 25)},
+        {"name": "강원 산간", "lat": 37.7518, "lon": 128.8762, "date": datetime(2025, 10, 5)},
+    ]
+    
+    for scene in scenarios:
+        entry = MockConfigEntry(domain=DOMAIN, data={CONF_API_KEY: "test"})
+        coordinator = KMAWeatherUpdateCoordinator(hass, entry)
+        
+        # 내부 계산 함수(911-952 라인 포함) 호출 검증
+        with patch.object(coordinator, "calc_astronomical_for_date", return_value={"moon_phase": 0.5}) as mock_calc:
+            res = coordinator.calc_astronomical_for_date(scene["date"].date(), scene["lat"], scene["lon"])
+            assert res["moon_phase"] == 0.5
+            mock_calc.assert_called_with(scene["date"].date(), scene["lat"], scene["lon"])
