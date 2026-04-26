@@ -1115,3 +1115,217 @@ class TestAstronomicalActionService:
                 return_response=True,
             )
         assert "형식" in str(exc_info.value) or exc_info.type.__name__ in ("HomeAssistantError", "ServiceValidationError", "vol.Invalid")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 커버리지 보완 테스트
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestEvalObservationWindAndMoon:
+    """_eval_observation 풍속+달 조명율 조합 분기 커버리지."""
+
+    _COND_KOR = {
+        "sunny": "맑음", "partlycloudy": "구름많음", "cloudy": "흐림",
+        "rainy": "비", "pouring": "소나기", "snowy": "눈", "snowy-rainy": "비/눈", "": "맑음",
+    }
+
+    def _eval_full(self, hour, condition, illum, wsd=None):
+        coord = MagicMock()
+        coord.api.tz = TZ
+        coord._sf_ts  = _TEST_SF_TS
+        coord._sf_eph = _TEST_SF_EPH
+        weather = {
+            "current_condition":     condition,
+            "current_condition_kor": self._COND_KOR.get(condition, condition),
+            "moon_illumination":     illum,
+            "moon_phase":            "보름달",
+            "WSD":                   wsd,
+        }
+        now = datetime(2026, 4, 21, hour, 0, tzinfo=TZ)
+        return KMAWeatherUpdateCoordinator._eval_observation(coord, weather, now, LAT, LON)
+
+    def test_wind_excellent_moon_excellent(self):
+        """달 없음(illum=0) + 풍속 최우수(1.5~3.0) → 최우수"""
+        cond, attrs = self._eval_full(22, "sunny", 0, wsd=2.0)
+        assert cond == "최우수"
+        assert attrs["풍속"] == "2.0 m/s"
+
+    def test_wind_good_moon_excellent(self):
+        """달 없음(illum=0) + 풍속 우수(<1.5) → 우수"""
+        cond, attrs = self._eval_full(22, "sunny", 0, wsd=1.0)
+        assert cond == "우수"
+
+    def test_wind_poor_moon_excellent(self):
+        """달 없음(최우수) + 풍속 불량(5~8) → 불량"""
+        cond, attrs = self._eval_full(22, "sunny", 0, wsd=6.0)
+        assert cond == "불량"
+        assert attrs["풍속"] == "6.0 m/s"
+
+    def test_wind_unavailable_moon_good(self):
+        """달 있음 ≤25%(우수) + 풍속 관측불가(≥8) → 관측불가"""
+        cond, attrs = self._eval_full(22, "sunny", 20, wsd=9.0)
+        assert cond == "관측불가"
+
+    def test_no_wind_data_uses_moon_only(self):
+        """풍속 없음 → 달 조명율로만 판단"""
+        cond_no_wind, _ = self._eval_full(22, "sunny", 0, wsd=None)
+        # 달 없음(illum=0) → 최우수, 풍속 없으면 달로만
+        assert cond_no_wind == "최우수"
+
+    def test_attrs_always_have_all_keys(self):
+        """모든 분기에서 6개 속성 항상 출력"""
+        required = {"풍속", "달_조명율", "달_고도", "날씨_상태", "주야간", "달_위상"}
+        for hour, cond, illum, wsd in [
+            (22, "sunny",       0,  1.0),
+            (22, "sunny",      50,  6.0),
+            (22, "partlycloudy", 5, 2.0),
+            (13, "sunny",       5,  1.0),  # 주간
+            (22, "rainy",       5,  2.0),  # 강수
+            (22, "cloudy",      5,  2.0),  # 흐림
+        ]:
+            _, attrs = self._eval_full(hour, cond, illum, wsd)
+            missing = required - set(attrs.keys())
+            assert not missing, f"hour={hour},cond={cond}: {missing} 누락"
+
+
+class TestPollenCacheAndGrade:
+    """_get_pollen 캐시 저장 및 등급 분기 커버리지."""
+
+    def _make_api(self):
+        api = KMAWeatherAPI(MagicMock(), "test_key")
+        api.hass = None
+        api._pollen_area_data = [{"c": "1111051500", "n": "서울특별시 종로구 청운효자동",
+                                   "la": 37.58, "lo": 126.97}]
+        api._pollen_cached_lat = api._pollen_cached_lon = None
+        api._pollen_cached_area_no = api._pollen_cached_area_name = None
+        return api
+
+    def _make_response(self, result_code="00", today="1", code="D07"):
+        if result_code != "00":
+            return {"response": {"header": {"resultCode": result_code, "resultMsg": "ERROR"}}}
+        return {"response": {"header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                "body": {"dataType": "JSON", "items": {"item": [{
+                    "code": code, "areaNo": "1111051500",
+                    "today": today, "tomorrow": "2", "dayaftertomorrow": "2",
+                }]}, "pageNo": 1, "numOfRows": 10, "totalCount": 1}}}
+
+    @pytest.mark.asyncio
+    async def test_today_cache_stored_at_06(self):
+        """06시 이후 today 획득 시 today 캐시 저장"""
+        api = self._make_api()
+        async def mock_fetch(url, params):
+            return self._make_response(today="2")
+        api._fetch = mock_fetch
+        now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        result = await api._get_pollen(now, 37.58, 126.97)
+        assert api._pollen_today is not None
+        assert api._pollen_today_date == "20260425"
+        assert api._pollen_tomorrow is None  # today 저장 시 tomorrow 삭제
+
+    @pytest.mark.asyncio
+    async def test_tomorrow_cache_stored_at_17(self):
+        """17시 이후 tomorrow 획득 시 tomorrow 캐시 저장, 상태는 unknown"""
+        api = self._make_api()
+        async def mock_fetch(url, params):
+            return self._make_response(today="1")
+        api._fetch = mock_fetch
+        now = datetime(2026, 4, 25, 19, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        result = await api._get_pollen(now, 37.58, 126.97)
+        assert api._pollen_tomorrow is not None
+        # 17~23시 → tomorrow 저장 후 unknown 반환
+        assert result.get("worst") is None
+
+    @pytest.mark.asyncio
+    async def test_today_cache_used_after_17(self):
+        """today 캐시 있으면 17시 이후에도 today 캐시 반환"""
+        api = self._make_api()
+        api._pollen_today = {"oak": "보통", "pine": "좋음", "grass": "좋음",
+                              "worst": "보통", "area_name": "테스트", "area_no": "1111051500",
+                              "announcement": "2026년 04월 25일 06시 발표"}
+        api._pollen_today_date = "20260425"
+        called = []
+        async def mock_fetch(url, params):
+            called.append(url)
+            return self._make_response()
+        api._fetch = mock_fetch
+        now = datetime(2026, 4, 25, 20, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        result = await api._get_pollen(now, 37.58, 126.97)
+        # today 캐시 있으면 API 호출 없이 반환
+        assert result["worst"] == "보통"
+
+    @pytest.mark.asyncio
+    async def test_midnight_today_cache_cleared(self):
+        """자정 지나면 today 캐시 삭제, tomorrow 캐시 반환"""
+        api = self._make_api()
+        api._pollen_today = {"worst": "좋음", "oak": "좋음", "pine": "좋음",
+                              "grass": "좋음", "area_name": "", "area_no": "1111051500",
+                              "announcement": "-"}
+        api._pollen_today_date = "20260424"  # 어제 날짜
+        api._pollen_tomorrow = {"worst": "보통", "oak": "보통", "pine": "보통",
+                                 "grass": "좋음", "area_name": "", "area_no": "1111051500",
+                                 "announcement": "-"}
+        api._pollen_tomorrow_date = "20260424"
+        now = datetime(2026, 4, 25, 2, 0, tzinfo=ZoneInfo("Asia/Seoul"))  # 새벽 2시
+        # _find_pollen_area mock
+        async def mock_fetch(url, params):
+            return self._make_response()
+        api._fetch = mock_fetch
+        result = await api._get_pollen(now, 37.58, 126.97)
+        # today 캐시 만료 삭제, tomorrow 캐시 반환 (h<5)
+        assert api._pollen_today is None
+        assert result["worst"] == "보통"
+
+    @pytest.mark.asyncio
+    async def test_none_grade_means_unknown_worst(self):
+        """시즌 중 일부 None → worst=None"""
+        api = self._make_api()
+        api._approved_apis.add("pollen")
+        async def mock_fetch(url, params):
+            if "Pine" in url:
+                return self._make_response(result_code="30")  # 미신청
+            return self._make_response(today="2")
+        api._fetch = mock_fetch
+        now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        result = await api._get_pollen(now, 37.58, 126.97)
+        # pine None, oak 나쁨, grass 좋음 → worst None
+        assert result.get("worst") is None
+
+
+class TestSensorCoverageBoost:
+    """sensor.py 미커버 분기 (211, 334)."""
+
+    def _make_sensor(self, pollen_data, obs_attrs=None):
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {
+            "weather": {
+                "observation_condition": "우수",
+                "observation_attrs": obs_attrs or {
+                    "풍속": "1.0 m/s", "달_조명율": "10%", "달_고도": "20.0°",
+                    "날씨_상태": "맑음", "주야간": "야간", "달_위상": "초승달",
+                },
+                "moon_phase": "초승달",
+            },
+            "air": {},
+            "pollen": pollen_data,
+        }
+        entry = MagicMock()
+        entry.entry_id = "cov_test"
+        entry.options = {}
+        entry.data = {"prefix": "test"}
+        return KMACustomSensor(coordinator, "pollen", "test", entry), \
+               KMACustomSensor(coordinator, "observation_condition", "test", entry)
+
+    def test_pollen_icon_none_worst(self):
+        """worst=None → 기본 아이콘 반환 (sensor.py:211)"""
+        pollen_sensor, _ = self._make_sensor({"worst": None, "pine": None, "oak": None, "grass": "좋음"})
+        icon = pollen_sensor.icon
+        assert icon == "mdi:flower-pollen-outline"
+
+    def test_observation_attrs_returned(self):
+        """observation_condition → observation_attrs dict 반환 (sensor.py:334)"""
+        _, obs_sensor = self._make_sensor({})
+        attrs = obs_sensor.extra_state_attributes
+        assert isinstance(attrs, dict)
+        assert "풍속" in attrs
+        assert "달_위상" in attrs
