@@ -57,7 +57,7 @@ async def test_config_flow_error_codes(hass: HomeAssistant, aioclient_mock, res_
 async def test_astro_service_exact_logic(hass: HomeAssistant):
     call = MagicMock(spec=ServiceCall); call.hass = hass
     # 날짜를 오늘(date.today())로 설정하여 과거 날짜 에러 방지
-    call.data = {"address": "유령주소", "date": date.today()} 
+    call.data = {"address": "유령주소", "date": datetime.now().date()}
     
     with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(None, None, None)):
         with pytest.raises(HomeAssistantError, match="주소를 찾을 수 없습니다"):
