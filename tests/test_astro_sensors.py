@@ -1259,7 +1259,7 @@ class TestPollenCacheAndGrade:
         # today 캐시는 유지되지만 17시 이후 tomorrow 없으면 API 호출
         assert api._pollen_today is not None  # today 캐시 유지
         # tomorrow 저장 후 unknown 반환 (자정 이후에 표시)
-        assert result.get("worst") is == '보통'
+        assert result.get("worst") == '보통'
 
     @pytest.mark.asyncio
     async def test_midnight_today_cache_cleared(self):
