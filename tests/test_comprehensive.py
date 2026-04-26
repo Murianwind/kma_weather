@@ -196,10 +196,12 @@ async def test_async_setup_entry_already_registered(hass: HomeAssistant):
     """[TC 2-7] 생명주기: 기존 서비스 존재 시 분기 스킵 (88->97)"""
     hass.data[DOMAIN] = {"existing": True}
     config_entry = MockConfigEntry(domain=DOMAIN, data={})
-    hass.services.async_register(DOMAIN, SERVICE_GET_ASTRONOMICAL_INFO, AsyncMock())
 
+    # hass.services.has_service 가 무조건 True를 반환하도록 Mocking (상수 import 불필요)
     with patch("custom_components.kma_weather.__init__.KMAWeatherUpdateCoordinator") as mock_coord, \
-         patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_setups"):
+         patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_setups"), \
+         patch.object(hass.services, "has_service", return_value=True):
+         
         mock_coord.return_value.async_config_entry_first_refresh = AsyncMock()
         assert await async_setup_entry(hass, config_entry) is True
 
