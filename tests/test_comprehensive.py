@@ -15,7 +15,7 @@ from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.kma_weather.const import (
-    DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX, SERVICE_GET_ASTRONOMICAL_INFO
+    DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX
 )
 from custom_components.kma_weather.config_flow import _validate_api_key
 from custom_components.kma_weather.api_kma import KMAWeatherAPI
