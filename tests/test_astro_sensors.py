@@ -18,7 +18,8 @@ import asyncio
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from unittest.mock import patch, MagicMock, AsyncMock
-from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator, _SKYFIELD_OK
+from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+from custom_components.kma_weather.api_kma import KMAWeatherAPI, _SKYFIELD_OK
 from custom_components.kma_weather.const import DOMAIN
 
 # 테스트용 skyfield 객체 (GitHub Actions에서 de440s.bsp 자동 다운로드)
@@ -563,7 +564,7 @@ class TestDynamicSensorRegistration:
             "air": {},
         }
 
-        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator as Coord
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
         _real_init = Coord.__init__
         def _no_api_init(self_c, hass_arg, entry_arg):
             _real_init(self_c, hass_arg, entry_arg)
@@ -601,7 +602,7 @@ class TestDynamicSensorRegistration:
             "pollen": {"oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음"},
         }
 
-        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator as Coord
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
         _real_init = Coord.__init__
         def _no_api_init(self_c, hass_arg, entry_arg):
             _real_init(self_c, hass_arg, entry_arg)
@@ -963,7 +964,7 @@ class TestCalcAstronomicalForDate:
             "weather": {"address": "경기도 화성시", "forecast_twice_daily": []},
             "air": {},
         }
-        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator as Coord
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
         _real_init = Coord.__init__
 
         def _no_short_init(self_c, hass_arg, entry_arg):
@@ -1134,6 +1135,8 @@ class TestEvalObservationWindAndMoon:
         coord.api.tz = TZ
         coord._sf_ts  = _TEST_SF_TS
         coord._sf_eph = _TEST_SF_EPH
+        # _obs_min은 실제 메서드 연결 (MagicMock이 덮어쓰지 않도록)
+        coord._obs_min = KMAWeatherUpdateCoordinator._obs_min.__get__(coord, type(coord))
         weather = {
             "current_condition":     condition,
             "current_condition_kor": self._COND_KOR.get(condition, condition),
