@@ -32,16 +32,11 @@ _WARN_AREA: list[list] = json.loads(
     (pathlib.Path(__file__).parent / "warn_area.json").read_text(encoding="utf-8")
 )
 
-
-
-
-
 def _land_code(temp_id: str) -> str:
     for prefix, land in _LAND_CODE_MAP_SORTED:
         if temp_id.startswith(prefix):
             return land
     return "11B00000"
-
 
 def _calc_reg_ids(lat: float, lon: float) -> tuple[str | None, str | None]:
     """좌표 → (reg_id_temp, reg_id_land)"""
@@ -54,7 +49,6 @@ def _calc_reg_ids(lat: float, lon: float) -> tuple[str | None, str | None]:
             best_dist, best_id = d, tid
     return (best_id, _land_code(best_id)) if best_id else (None, None)
 
-
 def _calc_warn_area_code(lat: float, lon: float) -> str | None:
     """좌표 → 특보구역코드"""
     best_code, best_dist = None, float("inf")
@@ -63,10 +57,6 @@ def _calc_warn_area_code(lat: float, lon: float) -> str | None:
         if d < best_dist:
             best_dist, best_code = d, row[2]
     return best_code
-
-
-
-
 
 class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
@@ -115,7 +105,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
             # 메인 이벤트 루프 블로킹을 방지하기 위해 파일 로드를 항상 백그라운드 태스크로 위임
             hass.async_create_task(self._async_init_skyfield(_sf_dir))
-
 
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
         safe_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
@@ -822,7 +811,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         }
 
         return final_cond, attrs
-
 
     # ── 날짜 지정 천문 계산 (HA 서비스용) ──────────────────────────────────
     async def calc_astronomical_for_date(
