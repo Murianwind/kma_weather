@@ -354,19 +354,19 @@ class TestEvalObservationReason:
             _, attrs = self._eval_full(22, cond, 5)
             assert isinstance(attrs, dict), f"{cond} → attrs가 dict여야 함"
             kor = self._COND_KOR.get(cond, cond)
-            assert attrs.get("날씨_상태") == kor, f"{cond} → 날씨_상태 기대={kor}, 실제={attrs.get('날씨_상태')}"
+            assert attrs.get("날씨") == kor, f"{cond} → 날씨 기대={kor}, 실제={attrs.get('날씨')}"
 
     def test_cloudy_reason_흐림(self):
         """[Given] 흐린 날씨, [When] 평가하면, [Then] attrs에 날씨_상태='cloudy'이어야 함"""
         _, attrs = self._eval_full(22, "cloudy", 5)
         assert isinstance(attrs, dict)
-        assert attrs.get("날씨_상태") == "흐림"
+        assert attrs.get("날씨") == "흐림"
 
     def test_partlycloudy_reason_구름많음(self):
         """[Given] 구름많음, [When] 평가하면, [Then] attrs에 날씨_상태='구름많음'이어야 함"""
         _, attrs = self._eval_full(22, "partlycloudy", 5)
         assert isinstance(attrs, dict)
-        assert attrs.get("날씨_상태") == "구름많음"
+        assert attrs.get("날씨") == "구름많음"
 
     def test_daytime_reason_주간(self):
         """[Given] 맑은 낮, [When] 평가하면, [Then] attrs에 주야간='주간'이어야 함"""
@@ -379,7 +379,7 @@ class TestEvalObservationReason:
         [Then] attrs에 날씨_상태='맑음', 달_조명율='5%'이어야 함"""
         _, attrs = self._eval_full(22, "sunny", 5)
         assert isinstance(attrs, dict), f"attrs가 dict여야 함, 실제={attrs}"
-        assert attrs.get("날씨_상태") == "맑음", f"날씨_상태 기대='맑음', 실제={attrs.get('날씨_상태')}"
+        assert attrs.get("날씨") == "맑음", f"날씨 기대='맑음', 실제={attrs.get('날씨')}"
         assert attrs.get("달_조명율") == "5%", f"달_조명율 기대='5%', 실제={attrs.get('달_조명율')}"
 
     def test_observation_reason_attribute_exposed(self):
@@ -778,7 +778,7 @@ async def test_observation_condition_has_reason_attribute(
     assert state is not None
     # 관측불가_사유 속성 삭제됨 → 주야간/날씨_상태 속성으로 확인
     assert "주야간" in state.attributes, "주야간 속성이 없음"
-    assert "날씨_상태" in state.attributes, "날씨_상태 속성이 없음"
+    assert "날씨" in state.attributes, "날씨 속성이 없음"
     if state.state == "관측불가":
         assert state.attributes.get("주야간") in ("주간", "야간"), \
             f"유효하지 않은 주야간: '{state.attributes.get("주야간")}'"
@@ -1137,8 +1137,8 @@ class TestEvalObservationWindAndMoon:
         coord.api.tz = TZ
         coord._sf_ts  = _TEST_SF_TS
         coord._sf_eph = _TEST_SF_EPH
-        # _obs_min은 staticmethod → MagicMock 대신 실제 함수 직접 연결
         coord._obs_min = KMAWeatherUpdateCoordinator._obs_min
+        coord._OBS_ORDER = KMAWeatherUpdateCoordinator._OBS_ORDER
         weather = {
             "current_condition":     condition,
             "current_condition_kor": self._COND_KOR.get(condition, condition),
@@ -1199,10 +1199,6 @@ class TestPollenCacheAndGrade:
     def _make_api(self):
         api = KMAWeatherAPI(MagicMock(), "test_key")
         api.hass = None
-        api._pollen_area_data = [{"c": "1111051500", "n": "서울특별시 종로구 청운효자동",
-                                   "la": 37.58, "lo": 126.97}]
-        api._pollen_cached_lat = api._pollen_cached_lon = None
-        api._pollen_cached_area_no = api._pollen_cached_area_name = None
         return api
 
     def _make_response(self, result_code="00", today="1", code="D07"):
@@ -1222,23 +1218,23 @@ class TestPollenCacheAndGrade:
             return self._make_response(today="2")
         api._fetch = mock_fetch
         now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        result = await api._get_pollen(now, 37.58, 126.97)
+        result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
         assert api._pollen_today is not None
         assert api._pollen_today_date == "20260425"
         assert api._pollen_tomorrow is None  # today 저장 시 tomorrow 삭제
 
     @pytest.mark.asyncio
-    async def test_tomorrow_cache_stored_at_17(self):
-        """17시 이후 tomorrow 획득 시 tomorrow 캐시 저장, 상태는 unknown"""
+    async def test_19h_gets_today_from_morning_broadcast(self):
+        """19시 → h>=6이므로 06시 발표 today 호출 → today 캐시 저장 및 반환"""
         api = self._make_api()
         async def mock_fetch(url, params):
             return self._make_response(today="1")
         api._fetch = mock_fetch
         now = datetime(2026, 4, 25, 19, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        result = await api._get_pollen(now, 37.58, 126.97)
-        assert api._pollen_tomorrow is not None
-        # 17~23시 → tomorrow 저장 후 unknown 반환
-        assert result.get("worst") is None
+        result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
+        # h>=6 → 06시 발표 today 호출 → today 캐시 저장
+        assert api._pollen_today is not None
+        assert result.get("worst") is not None
 
     @pytest.mark.asyncio
     async def test_today_cache_used_after_17(self):
@@ -1254,13 +1250,10 @@ class TestPollenCacheAndGrade:
             return self._make_response()
         api._fetch = mock_fetch
         now = datetime(2026, 4, 25, 20, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        result = await api._get_pollen(now, 37.58, 126.97)
-        # 20시: need_tomorrow=True → tomorrow 캐시 저장 → unknown 반환
-        # today 캐시는 유지되지만 17시 이후 tomorrow 없으면 API 호출
-        assert api._pollen_today is not None  # today 캐시 유지
-        # tomorrow 저장 후 unknown 반환 (자정 이후에 표시)
-        assert result.get("worst") is None
-
+        result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
+        # today 캐시 있으면 API 호출 없이 바로 반환
+        assert len(called) == 0, f"today 캐시 있으면 API 호출 없어야 함: {called}"
+        assert result["worst"] == "보통"  # today 캐시 반환
     @pytest.mark.asyncio
     async def test_midnight_today_cache_cleared(self):
         """자정 지나면 today 캐시 삭제, tomorrow 캐시 반환"""
@@ -1278,7 +1271,7 @@ class TestPollenCacheAndGrade:
         async def mock_fetch(url, params):
             return self._make_response()
         api._fetch = mock_fetch
-        result = await api._get_pollen(now, 37.58, 126.97)
+        result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
         # today 캐시 만료 삭제, tomorrow 캐시 반환 (h<5)
         assert api._pollen_today is None
         assert result["worst"] == "보통"
@@ -1294,8 +1287,8 @@ class TestPollenCacheAndGrade:
             return self._make_response(today="2")
         api._fetch = mock_fetch
         now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        result = await api._get_pollen(now, 37.58, 126.97)
-        # pine None, oak 나쁨, grass 좋음 → worst None
+        result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
+        # pine 미신청(30) → None 반환 (미신청/만료)
         assert result.get("worst") is None
 
 
@@ -1344,50 +1337,56 @@ class TestSensorCoverageBoost:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestPollenLocationCache:
-    """꽃가루 위치 캐시 무효화 테스트 (페어와이즈: 거리 x 캐시 상태)."""
+    """꽃가루 위치 캐시 무효화 테스트 - coordinator.find_pollen_area 담당."""
 
-    def _make_api(self):
-        api = KMAWeatherAPI(MagicMock(), "test_key")
-        api.hass = None
-        api._pollen_area_data = [
+    def _make_coordinator(self):
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+        coord = MagicMock(spec=KMAWeatherUpdateCoordinator)
+        coord._pollen_area_data = [
             {"c": "1111051500", "n": "서울특별시 종로구 청운효자동", "la": 37.58, "lo": 126.97},
             {"c": "2611010100", "n": "부산광역시 중구 중앙동", "la": 35.10, "lo": 129.03},
         ]
-        return api
+        coord._pollen_cached_lat = None
+        coord._pollen_cached_lon = None
+        coord._pollen_cached_area_no = None
+        coord._pollen_cached_area_name = ""
+        coord.hass = MagicMock()
+        coord.hass.async_add_executor_job = AsyncMock(return_value=None)
+        return coord
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("move_km,expect_reset", [
         (0.0,  False),  # 동일 위치 → 캐시 유지
-        (1.9,  False),  # 2km 미만 → 캐시 유지
-        (2.0,  False),  # 경계 2km → 캐시 유지 (≤2.0)
-        (2.1,  True),   # 2km 초과 → 캐시 무효화
-        (10.0, True),   # 10km 이동 → 캐시 무효화
+        (1.9,  False),  # 2km 미만 → 캐시 유지 (coordinator에서 처리)
+        (2.0,  False),  # 경계 2km → 캐시 유지
+        (2.1,  True),   # 2km 초과 → coordinator가 캐시 무효화 후 재탐색
+        (10.0, True),   # 10km 이동 → 재탐색
     ])
     async def test_location_cache_invalidation(self, move_km, expect_reset):
         """
-        [Given] 초기 위치로 한 번 조회 후 캐시 저장됨
+        [Given] coordinator.find_pollen_area로 초기 위치 조회 후 캐시 저장됨
         [When] move_km만큼 이동한 위치로 재조회
-        [Then] 2km 초과 이동 시에만 캐시 무효화
+        [Then] 좌표가 다르면 새로 탐색
         """
-        api = self._make_api()
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+        coord = self._make_coordinator()
         lat0, lon0 = 37.58, 126.97
-        # 위도 1도 ≈ 111km이므로 move_km에 해당하는 위도 오프셋 계산
         lat1 = lat0 + move_km / 111.0
         lon1 = lon0
 
         # 초기 조회
-        area_no_0, _ = await api._find_pollen_area(lat0, lon0)
-        cached_no = api._pollen_cached_area_no
+        area_no_0, _ = await KMAWeatherUpdateCoordinator.find_pollen_area(coord, lat0, lon0)
+        cached_no = coord._pollen_cached_area_no
 
         # 이동 후 재조회
-        area_no_1, _ = await api._find_pollen_area(lat1, lon1)
+        area_no_1, _ = await KMAWeatherUpdateCoordinator.find_pollen_area(coord, lat1, lon1)
 
         if expect_reset:
-            # 캐시 무효화 후 새로 조회됨
-            assert api._pollen_cached_lat == lat1 or api._pollen_cached_lat is None
+            # 좌표가 달라 새로 탐색
+            assert coord._pollen_cached_lat == lat1
         else:
-            # 캐시 유지
-            assert api._pollen_cached_area_no == cached_no
+            # 동일 좌표면 캐시 유지
+            assert coord._pollen_cached_area_no == cached_no
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1442,7 +1441,7 @@ class TestPollenTodayPriority:
 
         api._fetch = mock_fetch
         now = datetime(2026, 4, 26, hour, 0, tzinfo=ZoneInfo("Asia/Seoul"))
-        result = await api._get_pollen(now, 37.58, 126.97)
+        result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
 
         if expected_fetch_key is None:
             assert len(called_times) == 0, f"캐시 있으면 API 호출 없어야 함, 호출됨: {called_times}"
@@ -1522,6 +1521,7 @@ class TestObservationReason:
         coord._sf_ts  = _TEST_SF_TS
         coord._sf_eph = _TEST_SF_EPH
         coord._obs_min = KMAWeatherUpdateCoordinator._obs_min
+        coord._OBS_ORDER = KMAWeatherUpdateCoordinator._OBS_ORDER
         weather = {
             "current_condition":     condition,
             "current_condition_kor": self._COND_KOR.get(condition, condition),
@@ -1590,6 +1590,7 @@ class TestObservationReason:
         coord._sf_ts  = _TEST_SF_TS
         coord._sf_eph = _TEST_SF_EPH
         coord._obs_min = KMAWeatherUpdateCoordinator._obs_min
+        coord._OBS_ORDER = KMAWeatherUpdateCoordinator._OBS_ORDER
         return coord
 
 
