@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
-from .const import haversine as _haversine_fn, safe_float as _safe_float
+from .const import safe_float as _safe_float
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ _POLLEN_GRADE = {"0": "좋음", "1": "보통", "2": "나쁨", "3": "매우나쁨
 _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 # 꽃가루 제공 시즌 (시작월, 종료월 포함)
 _POLLEN_SEASONS = {"oak": (4, 6), "pine": (4, 6), "grass": (8, 10)}
+
 
 KOR_TO_CONDITION: dict[str, str] = {
     "맑음": "sunny",
@@ -104,14 +105,6 @@ class KMAWeatherAPI:
         # coordinator가 없는 단독 테스트 환경에서는 None
         self._call_counter_ref = None
 
-        # ── 꽃가루 지역코드 룩업 (JSON, 읍면동 단위) ─────────────────────────
-        # pollen_area_map.json: [{"c":"1111051500","n":"서울특별시 종로구 청운효자동","la":37.58,"lo":126.97},...]
-        self._pollen_area_data: list[dict] | None = None
-        self._pollen_cached_area_no: str | None = None
-        self._pollen_cached_area_name: str = ""
-        self._pollen_cached_lat: float | None = None
-        self._pollen_cached_lon: float | None = None
-        # pollen_area_map.json은 첫 _find_pollen_area 호출 시 로드됨 (lazy)
         # 꽃가루 캐시: today/tomorrow 각각 별도 관리
         self._pollen_today: dict | None = None        # 06시 발표 today 값
         self._pollen_tomorrow: dict | None = None     # 18시 발표 tomorrow 값
@@ -134,62 +127,6 @@ class KMAWeatherAPI:
             return base
 
     # ── 꽃가루 지역코드 룩업 ────────────────────────────────────────────────
-    def _load_pollen_area_map(self) -> None:
-        """pollen_area_map.json을 로드한다."""
-        try:
-            json_path = Path(__file__).parent / "pollen_area_map.json"
-            with open(json_path, encoding="utf-8") as f:
-                self._pollen_area_data = json.load(f)
-            _LOGGER.debug("꽃가루 지역코드 룩업 로드 완료: %d개 읍면동", len(self._pollen_area_data))
-        except Exception as e:
-            _LOGGER.warning("꽃가루 지역코드 룩업 로드 실패 (pollen_area_map.json 누락?): %s", e)
-            self._pollen_area_data = None
-
-    async def _find_pollen_area(self, lat: float, lon: float) -> tuple[str, str]:
-        """
-        위경도로 가장 가까운 읍면동의 (areaNo, 지역명)을 반환한다.
-        좌표가 이전과 2km 이상 떨어져 있으면 캐시를 무효화한다.
-        JSON이 아직 로딩되지 않았으면 executor에서 로딩한다.
-        JSON 로드 실패 시 서울 fallback을 반환한다.
-        """
-        if (self._pollen_cached_lat is not None
-                and self._pollen_cached_lon is not None
-                and self._pollen_cached_area_no):
-            dist = _haversine_fn(self._pollen_cached_lat, self._pollen_cached_lon, lat, lon)
-            if dist <= 2.0:
-                return self._pollen_cached_area_no, self._pollen_cached_area_name
-            _LOGGER.debug(
-                "꽃가루 위치 변경 감지 (%.2fkm) → 캐시 무효화", dist
-            )
-            self._pollen_cached_lat  = None
-            self._pollen_cached_lon  = None
-            self._pollen_cached_area_no   = self._pollen_cached_area_no   # fallback 유지
-            self._pollen_cached_area_name = self._pollen_cached_area_name
-
-        if not self._pollen_area_data:
-            if self.hass:
-                try:
-                    await self.hass.async_add_executor_job(self._load_pollen_area_map)
-                except Exception as e:
-                    _LOGGER.warning("pollen_area_map.json 로드 실패: %s", e)
-            if not self._pollen_area_data:
-                return "1100000000", ""
-
-        best, best_d = None, float("inf")
-        for r in self._pollen_area_data:
-            d = (r["la"] - lat) ** 2 + (r["lo"] - lon) ** 2
-            if d < best_d:
-                best_d, best = d, r
-
-        if best:
-            self._pollen_cached_lat = lat
-            self._pollen_cached_lon = lon
-            self._pollen_cached_area_no = best["c"]
-            self._pollen_cached_area_name = best["n"]
-            _LOGGER.debug("꽃가루 지역 매칭: (%.4f, %.4f) → %s (%s)", lat, lon, best["n"], best["c"])
-            return best["c"], best["n"]
-
-        return "1100000000", ""
 
     # ── API 미신청 감지 및 알림 ─────────────────────────────────────────────
     def _check_unsubscribed(self, service_key: str, result_code: str) -> bool:
@@ -310,6 +247,8 @@ class KMAWeatherAPI:
         nx: int, ny: int,
         reg_id_temp: str, reg_id_land: str,
         warn_area_code: str | None,
+        pollen_area_no: str = "1100000000",
+        pollen_area_name: str = "",
     ) -> dict | None:
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
@@ -336,7 +275,7 @@ class KMAWeatherAPI:
             self._get_warning(warn_area_code)
                 if _should_call("warning")
                 else _skip_coro(None),
-            self._get_pollen(now, lat, lon)
+            self._get_pollen(now, pollen_area_no, pollen_area_name)
                 if _should_call("pollen")
                 else _skip_coro(None),
         ]
@@ -582,7 +521,7 @@ class KMAWeatherAPI:
             return None
 
     # ── 꽃가루 농도 위험지수 ────────────────────────────────────────────────
-    async def _get_pollen(self, now: datetime, lat: float, lon: float) -> dict:
+    async def _get_pollen(self, now: datetime, area_no: str, area_name: str) -> dict:
         """
         꽃가루 농도 위험지수를 조회한다.
 
@@ -605,7 +544,6 @@ class KMAWeatherAPI:
         }
         offseason = not any(in_season.values())
 
-        area_no, area_name = await self._find_pollen_area(lat, lon)
         today_str = now.strftime("%Y%m%d")
         h = now.hour
 
@@ -752,6 +690,7 @@ class KMAWeatherAPI:
             return {}
 
     # ── 유틸리티 ────────────────────────────────────────────────────────────
+
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
         t, rh, v = _safe_float(temp), _safe_float(reh), _safe_float(wsd)
