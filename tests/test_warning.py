@@ -395,7 +395,7 @@ class TestCoordinatorApiIntegration:
         coord._store_loaded = True
         captured = {}
 
-        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code):
+        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="1100000000", pollen_area_name=""):
             captured.update({
                 "reg_id_temp": reg_id_temp,
                 "reg_id_land": reg_id_land,
@@ -446,7 +446,7 @@ class TestAirQualityStationCache:
         api._cached_station_lon = 126.98
 
         call_count = {"n": 0}
-        air_resp = {"response": {"body": {"items": [{"pm10Value": "30", "pm10Grade": "1",
+        air_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": [{"pm10Value": "30", "pm10Grade": "1",
                                                       "pm25Value": "15", "pm25Grade": "1"}]}}}
 
         async def mock_fetch(url, params, **kwargs):
@@ -467,7 +467,7 @@ class TestAirQualityStationCache:
         api._cached_station_lon = 126.98
 
         station_resp = {"response": {"body": {"items": [{"stationName": "강남"}]}}}
-        air_resp = {"response": {"body": {"items": [{"pm10Value": "30", "pm10Grade": "1",
+        air_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": [{"pm10Value": "30", "pm10Grade": "1",
                                                       "pm25Value": "15", "pm25Grade": "1"}]}}}
 
         async def mock_fetch(url, params, **kwargs):
