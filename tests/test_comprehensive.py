@@ -77,9 +77,14 @@ async def test_astro_service_exact_logic(hass: HomeAssistant):
 @pytest.mark.asyncio
 async def test_api_3_1_pollen_map_error(mock_api):
     """[TC 3-1] 꽃가루 맵 파일 로드 실패 대응 (Line 146)"""
+    # _load_pollen_area_map은 coordinator로 이동됨
+    # coordinator에서 직접 테스트
+    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+    coord = MagicMock()
+    coord._pollen_area_data = None
     with patch("builtins.open", side_effect=FileNotFoundError):
-        mock_api._load_pollen_area_map()
-        assert mock_api._pollen_area_data is None
+        KMAWeatherUpdateCoordinator._load_pollen_area_map(coord)
+        assert coord._pollen_area_data is None
 
 @pytest.mark.asyncio
 async def test_api_3_2_fetch_xml_and_401(mock_api):
@@ -144,9 +149,9 @@ async def test_api_3_9_pollen_grade_99_fix(mock_api):
     oak_99 = {"response": {"header": {"resultCode": "99"}}}
     with patch("custom_components.kma_weather.api_kma.asyncio.gather", new_callable=AsyncMock) as mock_gather:
         mock_gather.return_value = (pine_ok, oak_99, pine_ok)
-        with patch.object(mock_api, "_find_pollen_area", return_value=("110", "서울")):
-            res = await mock_api._get_pollen(dt_on, 37.5, 126.9)
-            assert res["oak"] == "좋음" # rc=99는 '좋음' 반환
+        # _get_pollen 시그니처 변경: (now, area_no, area_name)
+        res = await mock_api._get_pollen(dt_on, "110", "서울")
+        assert res["oak"] == "좋음" # rc=99는 '좋음' 반환
 
 @pytest.mark.asyncio
 async def test_api_3_10_merge_fallback_to_past(mock_api):
