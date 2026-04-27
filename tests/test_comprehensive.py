@@ -6,7 +6,9 @@ tests/test_comprehensive.py
 import pytest
 import asyncio
 from datetime import date, time, datetime, timedelta
+from zoneinfo import ZoneInfo
 from unittest.mock import patch, AsyncMock, MagicMock
+_KST = ZoneInfo("Asia/Seoul")
 
 from homeassistant import data_entry_flow
 from homeassistant.config_entries import SOURCE_USER
@@ -56,8 +58,8 @@ async def test_config_flow_error_codes(hass: HomeAssistant, aioclient_mock, res_
 @pytest.mark.asyncio
 async def test_astro_service_exact_logic(hass: HomeAssistant):
     call = MagicMock(spec=ServiceCall); call.hass = hass
-    # 날짜를 오늘(date.today())로 설정하여 과거 날짜 에러 방지
-    call.data = {"address": "유령주소", "date": datetime.now().date()}
+    # 날짜를 오늘(datetime.now(_KST).date())로 설정하여 과거 날짜 에러 방지
+    call.data = {"address": "유령주소", "date": datetime.now(_KST).date()}
     
     with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(None, None, None)):
         with pytest.raises(HomeAssistantError, match="주소를 찾을 수 없습니다"):
@@ -219,7 +221,7 @@ async def test_api_merge_all_past_date_fallback_coverage(mock_api):
 async def test_init_handle_astro_geocode_fail_coverage(hass):
     call = MagicMock(spec=ServiceCall); call.hass = hass
     # 날짜를 오늘로 수정
-    call.data = {"address": "존재하지 않는 가상의 주소", "date": date.today()} 
+    call.data = {"address": "존재하지 않는 가상의 주소", "date": datetime.now(_KST).date()} 
     
     with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(None, None, None)):
         with pytest.raises(HomeAssistantError, match="주소를 찾을 수 없습니다"):
@@ -324,13 +326,13 @@ async def test_init_astro_service_error_traps(hass):
     call = MagicMock(spec=ServiceCall); call.hass = hass
     
     # 1. 주소 공백 (Line 176)
-    call.data = {"address": " ", "date": date.today()} # date.today() 사용
+    call.data = {"address": " ", "date": datetime.now(_KST).date()} # datetime.now(_KST).date() 사용
     with pytest.raises(HomeAssistantError, match="주소를 입력해주세요"):
         await _handle_get_astronomical_info(call)
 
     # 2. 지오코딩 실패 (Line 189-200)
     with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(None, None, None)):
-        call.data = {"address": "서울", "date": date.today()}
+        call.data = {"address": "서울", "date": datetime.now(_KST).date()}
         with pytest.raises(HomeAssistantError, match="주소를 찾을 수 없습니다"):
             await _handle_get_astronomical_info(call)
 
