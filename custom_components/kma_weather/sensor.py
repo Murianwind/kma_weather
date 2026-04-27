@@ -191,10 +191,32 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         "매우나쁨": "mdi:gas-mask",
     }
 
+    _WEATHER_COND_ICONS: dict[str, str] = {
+        "맑음":     "mdi:weather-sunny",
+        "구름많음": "mdi:weather-partly-cloudy",
+        "흐림":     "mdi:weather-cloudy",
+        "비":       "mdi:weather-rainy",
+        "비/눈":    "mdi:weather-snowy-rainy",
+        "눈":       "mdi:weather-snowy",
+        "소나기":   "mdi:weather-pouring",
+        "빗방울":   "mdi:weather-rainy",
+        "눈날림":   "mdi:weather-snowy",
+    }
+    _WEATHER_COND_TYPES = frozenset({
+        "current_condition_kor", "wf_am_today", "wf_pm_today",
+        "wf_am_tomorrow", "wf_pm_tomorrow",
+    })
+
     @property
     def icon(self) -> str:
         if self.coordinator.data:
             w = self.coordinator.data.get("weather", {})
+            # 날씨 상태값 기반 아이콘
+            if self._type in self._WEATHER_COND_TYPES:
+                val = w.get(self._type)
+                if val and val in self._WEATHER_COND_ICONS:
+                    return self._WEATHER_COND_ICONS[val]
+                return self._attr_icon
             if self._type == "moon_phase":
                 phase = w.get("moon_phase")
                 if phase and phase in self._MOON_PHASE_ICONS:
@@ -215,7 +237,9 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 return self._OBSERVATION_ICONS_BY_CONDITION.get(cond, self._attr_icon)
 
             elif self._type == "pollen":
-                pollen = self.coordinator.data.get("pollen", {})
+                pollen = self.coordinator.data.get("pollen")
+                if not pollen:
+                    return self._attr_icon
                 worst = pollen.get("worst")
                 if worst is None:
                     return self._attr_icon
@@ -242,7 +266,10 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
         a = self.coordinator.data.get("air", {})
 
         if self._type == "pollen":
-            pollen = self.coordinator.data.get("pollen", {})
+            pollen = self.coordinator.data.get("pollen")
+            if pollen is None:
+                # 미신청/만료 → unavailable
+                return None
             if "worst" not in pollen:
                 # 데이터 미수신 (비시즌 등) → 좋음 fallback
                 return "좋음"
@@ -337,7 +364,9 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
 
         # ── 꽃가루 센서 ──────────────────────────────────────────────────────
         if self._type == "pollen":
-            pollen = self.coordinator.data.get("pollen", {})
+            pollen = self.coordinator.data.get("pollen")
+            if pollen is None:
+                return None  # 미신청/만료
             def _disp(v):
                 return v if v is not None else "알 수 없음"
             attrs = {
