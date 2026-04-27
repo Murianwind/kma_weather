@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
-from .const import safe_float as _safe_float
+from .const import haversine as _haversine_fn, safe_float as _safe_float
 
 _LOGGER = logging.getLogger(__name__)
 
