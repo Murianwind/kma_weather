@@ -1259,7 +1259,7 @@ class TestPollenCacheAndGrade:
         # today 캐시는 유지되지만 17시 이후 tomorrow 없으면 API 호출
         assert api._pollen_today is not None  # today 캐시 유지
         # tomorrow 저장 후 unknown 반환 (자정 이후에 표시)
-        assert result.get("worst") == '보통'
+        assert result.get("worst") is None
 
     @pytest.mark.asyncio
     async def test_midnight_today_cache_cleared(self):
@@ -1337,3 +1337,311 @@ class TestSensorCoverageBoost:
         assert isinstance(attrs, dict)
         assert "풍속" in attrs
         assert "달_위상" in attrs
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 요구사항 1/2: 위치 변경 시 꽃가루 캐시 무효화
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPollenLocationCache:
+    """꽃가루 위치 캐시 무효화 테스트 (페어와이즈: 거리 x 캐시 상태)."""
+
+    def _make_api(self):
+        api = KMAWeatherAPI(MagicMock(), "test_key")
+        api.hass = None
+        api._pollen_area_data = [
+            {"c": "1111051500", "n": "서울특별시 종로구 청운효자동", "la": 37.58, "lo": 126.97},
+            {"c": "2611010100", "n": "부산광역시 중구 중앙동", "la": 35.10, "lo": 129.03},
+        ]
+        return api
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("move_km,expect_reset", [
+        (0.0,  False),  # 동일 위치 → 캐시 유지
+        (1.9,  False),  # 2km 미만 → 캐시 유지
+        (2.0,  False),  # 경계 2km → 캐시 유지 (≤2.0)
+        (2.1,  True),   # 2km 초과 → 캐시 무효화
+        (10.0, True),   # 10km 이동 → 캐시 무효화
+    ])
+    async def test_location_cache_invalidation(self, move_km, expect_reset):
+        """
+        [Given] 초기 위치로 한 번 조회 후 캐시 저장됨
+        [When] move_km만큼 이동한 위치로 재조회
+        [Then] 2km 초과 이동 시에만 캐시 무효화
+        """
+        api = self._make_api()
+        lat0, lon0 = 37.58, 126.97
+        # 위도 1도 ≈ 111km이므로 move_km에 해당하는 위도 오프셋 계산
+        lat1 = lat0 + move_km / 111.0
+        lon1 = lon0
+
+        # 초기 조회
+        area_no_0, _ = await api._find_pollen_area(lat0, lon0)
+        cached_no = api._pollen_cached_area_no
+
+        # 이동 후 재조회
+        area_no_1, _ = await api._find_pollen_area(lat1, lon1)
+
+        if expect_reset:
+            # 캐시 무효화 후 새로 조회됨
+            assert api._pollen_cached_lat == lat1 or api._pollen_cached_lat is None
+        else:
+            # 캐시 유지
+            assert api._pollen_cached_area_no == cached_no
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 요구사항 5: 18시 이후 today 없으면 06시 발표 호출
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPollenTodayPriority:
+    """18시 이후에도 today 캐시 없으면 06시 발표 우선 호출 (도메인 테스트)."""
+
+    def _make_api(self):
+        api = KMAWeatherAPI(MagicMock(), "test_key")
+        api.hass = None
+        api._pollen_area_data = [{"c": "1111051500", "n": "서울", "la": 37.58, "lo": 126.97}]
+        api._pollen_cached_lat = api._pollen_cached_lon = None
+        api._pollen_cached_area_no = api._pollen_cached_area_name = None
+        return api
+
+    def _ok_response(self, today="1"):
+        return {"response": {"header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                "body": {"dataType": "JSON", "items": {"item": [{
+                    "code": "D07", "areaNo": "1111051500",
+                    "today": today, "tomorrow": "2", "dayaftertomorrow": "2",
+                }]}, "pageNo": 1, "numOfRows": 10, "totalCount": 1}}}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hour,has_today_cache,expected_fetch_key", [
+        (19, False, "today"),   # 19시 today 없음 → 06시 발표 호출(today)
+        (19, True,  None),      # 19시 today 있음 → API 호출 없음
+        (10, False, "today"),   # 10시 today 없음 → 06시 발표 호출(today)
+        (2,  False, "tomorrow"),# 02시 today 없음 → 전날 18시(tomorrow)
+        (2,  True,  None),      # 02시 today 있음 → 캐시 반환
+    ])
+    async def test_today_priority(self, hour, has_today_cache, expected_fetch_key):
+        """
+        [Given] 시간대별 today 캐시 유무
+        [When] _get_pollen 호출
+        [Then] today 없으면 06시 발표 호출, today 있으면 캐시 반환
+        """
+        api = self._make_api()
+        api._approved_apis.add("pollen")
+
+        if has_today_cache:
+            api._pollen_today = {"oak": "좋음", "pine": "보통", "grass": "좋음",
+                                  "worst": "보통", "area_name": "서울", "area_no": "1111051500",
+                                  "announcement": "06시 발표"}
+            api._pollen_today_date = "20260426"
+
+        called_times = []
+        async def mock_fetch(url, params):
+            called_times.append(params.get("time", ""))
+            return self._ok_response()
+
+        api._fetch = mock_fetch
+        now = datetime(2026, 4, 26, hour, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        result = await api._get_pollen(now, 37.58, 126.97)
+
+        if expected_fetch_key is None:
+            assert len(called_times) == 0, f"캐시 있으면 API 호출 없어야 함, 호출됨: {called_times}"
+        elif expected_fetch_key == "today":
+            assert any("06" in t for t in called_times), f"06시 발표 호출 기대, 실제: {called_times}"
+        elif expected_fetch_key == "tomorrow":
+            assert any("18" in t for t in called_times), f"18시 발표 호출 기대, 실제: {called_times}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 요구사항 7: 날씨 센서 아이콘
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestWeatherConditionIcon:
+    """날씨 상태 센서 아이콘 테스트 (도메인 테스트: 8가지 날씨 상태)."""
+
+    def _make_sensor(self, sensor_type, weather_val):
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {
+            "weather": {sensor_type: weather_val},
+            "air": {}, "pollen": {},
+        }
+        entry = MagicMock()
+        entry.entry_id = "icon_test"
+        entry.options = {}
+        entry.data = {"prefix": "test"}
+        return KMACustomSensor(coordinator, sensor_type, "test", entry)
+
+    @pytest.mark.parametrize("sensor_type", [
+        "current_condition_kor", "wf_am_today", "wf_pm_today",
+        "wf_am_tomorrow", "wf_pm_tomorrow",
+    ])
+    @pytest.mark.parametrize("val,expected_icon", [
+        ("맑음",    "mdi:weather-sunny"),
+        ("구름많음", "mdi:weather-partly-cloudy"),
+        ("흐림",    "mdi:weather-cloudy"),
+        ("비",      "mdi:weather-rainy"),
+        ("눈",      "mdi:weather-snowy"),
+        ("소나기",  "mdi:weather-pouring"),
+        ("비/눈",   "mdi:weather-snowy-rainy"),
+    ])
+    def test_weather_icon_by_state(self, sensor_type, val, expected_icon):
+        """
+        [Given] 날씨 센서의 상태값
+        [When] icon 속성 조회
+        [Then] 상태값에 맞는 아이콘 반환
+        """
+        sensor = self._make_sensor(sensor_type, val)
+        assert sensor.icon == expected_icon,             f"{sensor_type}={val} → 기대={expected_icon}, 실제={sensor.icon}"
+
+    def test_unknown_weather_uses_default_icon(self):
+        """
+        [Given] 알 수 없는 날씨 상태값
+        [When] icon 속성 조회
+        [Then] 기본 아이콘 반환
+        """
+        sensor = self._make_sensor("current_condition_kor", "우박")
+        assert sensor.icon == "mdi:weather-cloudy"  # SENSOR_TYPES 기본값
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 요구사항 8: 판단사유 속성
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestObservationReason:
+    """천문 관측 조건 판단사유 테스트 (페어와이즈: 날씨 x 달 x 풍속)."""
+
+    _COND_KOR = {
+        "sunny": "맑음", "partlycloudy": "구름많음", "cloudy": "흐림",
+        "rainy": "비", "": "맑음",
+    }
+
+    def _eval(self, hour, condition, illum, wsd=None):
+        coord = MagicMock()
+        coord.api.tz = TZ
+        coord._sf_ts  = _TEST_SF_TS
+        coord._sf_eph = _TEST_SF_EPH
+        coord._obs_min = KMAWeatherUpdateCoordinator._obs_min
+        weather = {
+            "current_condition":     condition,
+            "current_condition_kor": self._COND_KOR.get(condition, condition),
+            "moon_illumination":     illum,
+            "moon_phase":            "보름달",
+            "WSD":                   wsd,
+        }
+        now = datetime(2026, 4, 21, hour, 0, tzinfo=TZ)
+        _, attrs = KMAWeatherUpdateCoordinator._eval_observation(
+            coord, weather, now, LAT, LON
+        )
+        return attrs.get("판단사유", "")
+
+    def test_reason_precipitation(self):
+        """[Given] 강수 날씨 [Then] 판단사유=날씨"""
+        assert self._eval(22, "rainy", 50) == "날씨"
+
+    def test_reason_cloudy(self):
+        """[Given] 흐림 날씨 [Then] 판단사유=날씨"""
+        assert self._eval(22, "cloudy", 50) == "날씨"
+
+    def test_reason_partlycloudy(self):
+        """[Given] 구름많음 [Then] 판단사유=날씨"""
+        assert self._eval(22, "partlycloudy", 50) == "날씨"
+
+    def test_reason_daytime(self):
+        """[Given] 주간 [Then] 판단사유=주야간"""
+        assert self._eval(13, "sunny", 50) == "주야간"
+
+    def test_reason_moon(self):
+        """[Given] 야간 + 달 조명율 높음 + 풍속 없음 [Then] 판단사유=달 조명율"""
+        reason = self._eval(22, "sunny", 80, wsd=None)
+        assert "달 조명율" in reason
+
+    def test_reason_wind_only(self):
+        """[Given] 야간 + 달 없음(illum=0) + 풍속 불량 [Then] 판단사유=풍속"""
+        reason = self._eval(22, "sunny", 0, wsd=6.0)
+        assert "풍속" in reason
+
+    def test_reason_wind_and_moon(self):
+        """[Given] 야간 + 달 있음 + 풍속 불량 [Then] 판단사유에 풍속, 달 조명율 모두 포함"""
+        reason = self._eval(22, "sunny", 80, wsd=6.0)
+        assert "풍속" in reason
+        assert "달 조명율" in reason
+
+    def test_reason_attrs_key_always_present(self):
+        """[Given] 모든 날씨 조건 [Then] 판단사유 키 항상 존재"""
+        for hour, cond, illum, wsd in [
+            (22, "rainy", 50, 2.0),
+            (22, "cloudy", 50, None),
+            (13, "sunny", 10, 1.0),
+            (22, "sunny", 0,  None),
+            (22, "sunny", 80, 6.0),
+        ]:
+            _, attrs = KMAWeatherUpdateCoordinator._eval_observation(
+                self._make_coord(), {"current_condition": cond,
+                "current_condition_kor": self._COND_KOR.get(cond, cond),
+                "moon_illumination": illum, "moon_phase": "", "WSD": wsd},
+                datetime(2026, 4, 21, hour, 0, tzinfo=TZ), LAT, LON
+            )
+            assert "판단사유" in attrs, f"hour={hour},cond={cond}: 판단사유 없음"
+
+    def _make_coord(self):
+        coord = MagicMock()
+        coord.api.tz = TZ
+        coord._sf_ts  = _TEST_SF_TS
+        coord._sf_eph = _TEST_SF_EPH
+        coord._obs_min = KMAWeatherUpdateCoordinator._obs_min
+        return coord
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 요구사항 10: API 중지 시 센서 unavailable
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPollenUnavailableOnApiStop:
+    """API 중지 시 pollen 센서 unavailable 전환 테스트."""
+
+    def _make_pollen_sensor(self, pollen_data):
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {"weather": {}, "air": {}, "pollen": pollen_data}
+        entry = MagicMock()
+        entry.entry_id = "avail_test"
+        entry.options = {}
+        entry.data = {"prefix": "test"}
+        return KMACustomSensor(coordinator, "pollen", "test", entry)
+
+    def test_pollen_none_returns_none_native_value(self):
+        """
+        [Given] API 중지 → coordinator.data["pollen"]=None
+        [When] native_value 조회
+        [Then] None 반환 → HA에서 unavailable 표시
+        """
+        sensor = self._make_pollen_sensor(None)
+        assert sensor.native_value is None
+
+    def test_pollen_none_returns_none_attrs(self):
+        """
+        [Given] API 중지 → pollen=None
+        [When] extra_state_attributes 조회
+        [Then] None 반환
+        """
+        sensor = self._make_pollen_sensor(None)
+        assert sensor.extra_state_attributes is None
+
+    def test_pollen_empty_dict_returns_good_fallback(self):
+        """
+        [Given] pollen={}  (비시즌/데이터 없음)
+        [When] native_value 조회
+        [Then] "좋음" fallback 반환
+        """
+        sensor = self._make_pollen_sensor({})
+        assert sensor.native_value == "좋음"
+
+    def test_pollen_with_worst_none_returns_unknown(self):
+        """
+        [Given] pollen={"worst": None} (시즌 중 데이터 없음)
+        [When] native_value 조회
+        [Then] None 반환 → unknown
+        """
+        sensor = self._make_pollen_sensor({"worst": None, "pine": None, "oak": None, "grass": "좋음"})
+        assert sensor.native_value is None
