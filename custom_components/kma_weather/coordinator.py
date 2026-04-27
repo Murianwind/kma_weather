@@ -857,12 +857,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         # 판단사유: 최종 등급에 영향을 준 항목
         _order = self._OBS_ORDER
         reasons = []
+        # 달 조명율이 최우수가 아닌 경우
+        if moon_cond != "최우수" and illum_int and illum_int > 0 and moon_up:
+            reasons.append("달 조명율")
+        # 풍속이 최우수가 아니고 최종 등급에 영향을 준 경우
         if wind_cond is not None and wind_cond != "최우수":
-            if _order.index(wind_cond) <= _order.index(moon_cond):
+            if not reasons or _order.index(wind_cond) <= _order.index(moon_cond):
                 reasons.append("풍속")
-        if moon_cond != "최우수":
-            if illum_int and illum_int > 0 and moon_up:
-                reasons.append("달 조명율")
         판단사유 = ", ".join(reasons) if reasons else "-"
 
         attrs = {
