@@ -210,6 +210,7 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
     garbage_data = {
         "weather": {key: "BAD_DATA" for key in SENSOR_TYPES},
         "air": {key: "BAD_DATA" for key in SENSOR_TYPES},
+        "pollen": {},  # worst 키 없음 → 좋음 fallback
     }
 
     with patch(
