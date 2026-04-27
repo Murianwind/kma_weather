@@ -1179,7 +1179,7 @@ class TestEvalObservationWindAndMoon:
 
     def test_attrs_always_have_all_keys(self):
         """모든 분기에서 6개 속성 항상 출력"""
-        required = {"풍속", "달_조명율", "달_고도", "날씨_상태", "주야간", "달_위상"}
+        required = {"풍속", "달_조명율", "달_고도", "날씨", "주야간", "달_위상"}
         for hour, cond, illum, wsd in [
             (22, "sunny",       0,  1.0),
             (22, "sunny",      50,  6.0),
@@ -1289,8 +1289,8 @@ class TestPollenCacheAndGrade:
         now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
         result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
         # pine 미신청(30) → None 반환 (미신청/만료)
-        assert result.get("worst") is None
-
+        # pine 미신청(30) → _check_unsubscribed → None 반환
+        assert result is None  # 미신청 → None
 
 class TestSensorCoverageBoost:
     """sensor.py 미커버 분기 (211, 334)."""
