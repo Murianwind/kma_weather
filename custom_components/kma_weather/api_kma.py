@@ -47,10 +47,6 @@ _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 # 꽃가루 제공 시즌 (시작월, 종료월 포함)
 _POLLEN_SEASONS = {"oak": (4, 6), "pine": (4, 6), "grass": (8, 10)}
 
-
-
-
-
 KOR_TO_CONDITION: dict[str, str] = {
     "맑음": "sunny",
     "구름많음": "partlycloudy",
@@ -111,7 +107,7 @@ class KMAWeatherAPI:
         # ── 꽃가루 지역코드 룩업 (JSON, 읍면동 단위) ─────────────────────────
         # pollen_area_map.json: [{"c":"1111051500","n":"서울특별시 종로구 청운효자동","la":37.58,"lo":126.97},...]
         self._pollen_area_data: list[dict] | None = None
-        self._pollen_cached_area_no: str = "1100000000"   # fallback: 서울
+        self._pollen_cached_area_no: str | None = None
         self._pollen_cached_area_name: str = ""
         self._pollen_cached_lat: float | None = None
         self._pollen_cached_lon: float | None = None
@@ -756,7 +752,6 @@ class KMAWeatherAPI:
             return {}
 
     # ── 유틸리티 ────────────────────────────────────────────────────────────
-
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
         t, rh, v = _safe_float(temp), _safe_float(reh), _safe_float(wsd)
