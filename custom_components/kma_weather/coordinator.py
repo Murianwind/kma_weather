@@ -682,9 +682,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 "풍속":    f"{wsd} m/s" if wsd is not None else "-",
                 "달_조명율": illum_str,
                 "달_고도":  "-",
-                "날씨_상태": condition_kor or "-",
+                "날씨": condition_kor or "-",
                 "주야간":   "-",
                 "달_위상":  moon_phase,
+                "판단사유": "-",
             }
 
         try:
@@ -717,9 +718,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 "풍속": f"{wsd} m/s" if wsd is not None else "-",
                 "달_조명율": illum_str,
                 "달_고도": moon_alt_str,
-                "날씨_상태": condition_kor or "-",
+                "날씨": condition_kor or "-",
                 "주야간": day_night,
                 "달_위상": moon_phase,
+                "판단사유": "날씨",
             }
             return "관측불가", attrs
 
@@ -728,9 +730,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 "풍속": f"{wsd} m/s" if wsd is not None else "-",
                 "달_조명율": illum_str,
                 "달_고도": moon_alt_str,
-                "날씨_상태": condition_kor or "-",
+                "날씨": condition_kor or "-",
                 "주야간": day_night,
                 "달_위상": moon_phase,
+                "판단사유": "날씨",
             }
             return "관측불가", attrs
 
@@ -740,9 +743,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 "풍속": f"{wsd} m/s" if wsd is not None else "-",
                 "달_조명율": illum_str,
                 "달_고도": moon_alt_str,
-                "날씨_상태": condition_kor or "-",
+                "날씨": condition_kor or "-",
                 "주야간": "주간",
                 "달_위상": moon_phase,
+                "판단사유": "주야간",
             }
             return "관측불가", attrs
 
@@ -752,9 +756,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 "풍속": f"{wsd} m/s" if wsd is not None else "-",
                 "달_조명율": illum_str,
                 "달_고도": moon_alt_str,
-                "날씨_상태": "구름많음",
+                "날씨": "구름많음",
                 "주야간": "야간",
                 "달_위상": moon_phase,
+                "판단사유": "날씨",
             }
             return "불량", attrs
 
@@ -795,13 +800,25 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         # ── 7. 최종 등급: 풍속 있으면 달+풍속 조합, 없으면 달만 ──────────────
         final_cond = self._obs_min(moon_cond, wind_cond) if wind_cond is not None else moon_cond
 
+        # 판단사유: 최종 등급에 영향을 준 항목
+        _order = self._OBS_ORDER
+        reasons = []
+        if wind_cond is not None and wind_cond != "최우수":
+            if _order.index(wind_cond) <= _order.index(moon_cond):
+                reasons.append("풍속")
+        if moon_cond != "최우수":
+            if illum_int and illum_int > 0 and moon_up:
+                reasons.append("달 조명율")
+        판단사유 = ", ".join(reasons) if reasons else "-"
+
         attrs = {
             "풍속": f"{wsd} m/s" if wsd is not None else "-",
             "달_조명율": illum_str,
             "달_고도": moon_alt_str,
-            "날씨_상태": (condition_kor or "-") if condition_kor else "-",
+            "날씨": (condition_kor or "-") if condition_kor else "-",
             "주야간": "야간",
             "달_위상": moon_phase,
+            "판단사유": 판단사유,
         }
 
         return final_cond, attrs
