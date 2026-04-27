@@ -32,11 +32,13 @@ _WARN_AREA: list[list] = json.loads(
     (pathlib.Path(__file__).parent / "warn_area.json").read_text(encoding="utf-8")
 )
 
+
 def _land_code(temp_id: str) -> str:
     for prefix, land in _LAND_CODE_MAP_SORTED:
         if temp_id.startswith(prefix):
             return land
     return "11B00000"
+
 
 def _calc_reg_ids(lat: float, lon: float) -> tuple[str | None, str | None]:
     """좌표 → (reg_id_temp, reg_id_land)"""
@@ -49,6 +51,7 @@ def _calc_reg_ids(lat: float, lon: float) -> tuple[str | None, str | None]:
             best_dist, best_id = d, tid
     return (best_id, _land_code(best_id)) if best_id else (None, None)
 
+
 def _calc_warn_area_code(lat: float, lon: float) -> str | None:
     """좌표 → 특보구역코드"""
     best_code, best_dist = None, float("inf")
@@ -57,6 +60,7 @@ def _calc_warn_area_code(lat: float, lon: float) -> str | None:
         if d < best_dist:
             best_dist, best_code = d, row[2]
     return best_code
+
 
 class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
@@ -106,6 +110,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             # 메인 이벤트 루프 블로킹을 방지하기 위해 파일 로드를 항상 백그라운드 태스크로 위임
             hass.async_create_task(self._async_init_skyfield(_sf_dir))
 
+
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
         safe_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
         self._store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_daily_temp")
@@ -121,6 +126,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         # API 호출 카운터는 모든 기기 합산 → 공통 Store 키 사용
         self._api_call_store = Store(hass, version=1, key=f"{DOMAIN}_global_api_calls")
         self._api_call_store_loaded = False
+
+        # ── 꽃가루 지역코드 룩업 (JSON, 읍면동 단위) ─────────────────────────
+        # pollen_area_map.json: [{"c":"1111051500","n":"서울 종로구 청운효자동","la":37.58,"lo":126.97},...]
+        self._pollen_area_data: list[dict] | None = None
+        self._pollen_cached_area_no: str | None = None
+        self._pollen_cached_area_name: str = ""
+        self._pollen_cached_lat: float | None = None
+        self._pollen_cached_lon: float | None = None
 
         # 승인된 API 목록 저장 (재시작/재로드 후 복구)
         self._approved_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_approved_apis")
@@ -177,6 +190,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         self._cached_area_lat = lat
         self._cached_area_lon = lon
+        # 위치 변경 시 꽃가루 좌표 캐시도 무효화
+        self._pollen_cached_lat = None
+        self._pollen_cached_lon = None
         self._cached_nx = nx
         self._cached_ny = ny
         self._cached_reg_id_temp = reg_id_temp
@@ -279,6 +295,52 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             pass
 
     # ── 저장소 복구/저장 ────────────────────────────────────────────────────
+    def _load_pollen_area_map(self) -> None:
+        """pollen_area_map.json을 로드한다."""
+        try:
+            json_path = pathlib.Path(__file__).parent / "pollen_area_map.json"
+            with open(json_path, encoding="utf-8") as f:
+                self._pollen_area_data = json.load(f)
+            _LOGGER.debug("꽃가루 지역코드 룩업 로드 완료: %d개 읍면동", len(self._pollen_area_data))
+        except Exception as e:
+            _LOGGER.warning("꽃가루 지역코드 룩업 로드 실패 (pollen_area_map.json 누락?): %s", e)
+            self._pollen_area_data = None
+
+    async def find_pollen_area(self, lat: float, lon: float) -> tuple[str, str]:
+        """
+        위경도로 가장 가까운 읍면동의 (areaNo, 지역명)을 반환한다.
+        좌표가 이전과 같으면 캐시를 반환한다.
+        위치 변경 감지는 _calc_area_codes에서 처리 후 캐시 무효화.
+        """
+        if (self._pollen_cached_lat == lat
+                and self._pollen_cached_lon == lon
+                and self._pollen_cached_area_no):
+            return self._pollen_cached_area_no, self._pollen_cached_area_name
+
+        if not self._pollen_area_data:
+            try:
+                await self.hass.async_add_executor_job(self._load_pollen_area_map)
+            except Exception as e:
+                _LOGGER.warning("pollen_area_map.json 로드 실패: %s", e)
+            if not self._pollen_area_data:
+                return "1100000000", ""
+
+        best, best_d = None, float("inf")
+        for r in self._pollen_area_data:
+            d = (r["la"] - lat) ** 2 + (r["lo"] - lon) ** 2
+            if d < best_d:
+                best_d, best = d, r
+
+        if best:
+            self._pollen_cached_lat = lat
+            self._pollen_cached_lon = lon
+            self._pollen_cached_area_no = best["c"]
+            self._pollen_cached_area_name = best["n"]
+            _LOGGER.debug("꽃가루 지역 매칭: (%.4f, %.4f) → %s (%s)", lat, lon, best["n"], best["c"])
+            return best["c"], best["n"]
+
+        return "1100000000", ""
+
     async def _restore_approved_apis(self) -> None:
         """재시작/재로드 후 승인된 API 목록을 복구한다."""
         if self._approved_store_loaded:
@@ -409,11 +471,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     curr_lat, curr_lon
                 )
 
+                pollen_area_no, pollen_area_name = await self.find_pollen_area(curr_lat, curr_lon)
                 new_data = await self.api.fetch_data(
                     lat=curr_lat, lon=curr_lon,
                     nx=nx, ny=ny,
                     reg_id_temp=reg_id_temp, reg_id_land=reg_id_land,
                     warn_area_code=warn_area_code,
+                    pollen_area_no=pollen_area_no,
+                    pollen_area_name=pollen_area_name,
                 )
                 if not new_data:
                     return self._cached_data
@@ -811,6 +876,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         }
 
         return final_cond, attrs
+
 
     # ── 날짜 지정 천문 계산 (HA 서비스용) ──────────────────────────────────
     async def calc_astronomical_for_date(
