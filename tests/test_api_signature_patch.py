@@ -127,7 +127,7 @@ async def test_coordinator_passes_area_codes_via_fetch_data(hass):
 
     captured = {}
 
-    async def mock_fetch(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code):
+    async def mock_fetch(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="1100000000", pollen_area_name=""):
         captured.update(locals())
         return None
 
