@@ -124,10 +124,13 @@ async def test_air_quality_cache_hit():
     api._cached_station_lon = 126.98
 
     air_json = {
-        "response": {"body": {"items": [{
-            "pm10Value": "40", "pm10Grade": "2",
-            "pm25Value": "18", "pm25Grade": "2",
-        }]}}
+        "response": {
+            "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+            "body": {"items": [{
+                "pm10Value": "40", "pm10Grade": "2",
+                "pm25Value": "18", "pm25Grade": "2",
+            }]}
+        }
     }
 
     async def mock_fetch(url, params=None, timeout=10):
