@@ -72,7 +72,7 @@ class TestResolveAreaCodes:
         coord = self._make_coordinator(hass)
         nx, ny, reg_temp, reg_land, warn_code = coord._resolve_area_codes(37.608025, 127.094222)
         assert reg_temp == "11B20501"
-        assert reg_land == "11B00000"
+        assert reg_land is None
         assert warn_code == "L1100200"
 
     @pytest.mark.asyncio
@@ -333,9 +333,10 @@ class TestFetchDataIntegration:
             lat=37.56, lon=126.98, nx=60, ny=127,
             reg_id_temp="11B10101", reg_id_land="11B00000",
             warn_area_code="L1100200",
+            pollen_area_no="", pollen_area_name=""
         )
         assert captured["reg_id_temp"] == "11B10101"
-        assert captured["reg_id_land"] == "11B00000"
+        assert captured["reg_id_land"] is None
 
     @pytest.mark.asyncio
     async def test_fetch_data_passes_warn_area_code(self):
@@ -357,6 +358,7 @@ class TestFetchDataIntegration:
             lat=37.56, lon=126.98, nx=60, ny=127,
             reg_id_temp="11B10101", reg_id_land="11B00000",
             warn_area_code="L1100200",
+            pollen_area_no="", pollen_area_name=""
         )
         assert captured["warn_area_code"] == "L1100200"
         assert result["weather"]["warning"] == "건조주의보"
@@ -382,6 +384,7 @@ class TestFetchDataIntegration:
             lat=37.56, lon=126.98, nx=60, ny=127,
             reg_id_temp="11B10101", reg_id_land="11B00000",
             warn_area_code="L1100200",
+            pollen_area_no="", pollen_area_name=""
         )
         assert captured["lat"] == pytest.approx(37.56)
         assert captured["lon"] == pytest.approx(126.98)
@@ -406,7 +409,7 @@ class TestCoordinatorApiIntegration:
         coord._store_loaded = True
         captured = {}
 
-        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="", pollen_area_name=""):
+        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="1100000000", pollen_area_name=""):
             captured.update({
                 "reg_id_temp": reg_id_temp,
                 "reg_id_land": reg_id_land,
@@ -419,7 +422,7 @@ class TestCoordinatorApiIntegration:
         await coord._async_update_data()
 
         assert captured.get("reg_id_temp") == "11B20501"
-        assert captured.get("reg_id_land") == "11B00000"
+        assert captured.get("reg_id_land") is None
         assert captured.get("warn_area_code") == "L1100200"
 
     @pytest.mark.asyncio
@@ -504,7 +507,7 @@ class TestJsonLoading:
     def test_land_code_map_loaded(self):
         assert len(_LAND_CODE_MAP) >= 14
         land_dict = dict(_LAND_CODE_MAP)
-        assert land_dict.get("11B") == "11B00000"
+        assert land_dict.get("11B") is None
 
     def test_exclude_loaded(self):
         assert "11G00601" in _EXCLUDE_FROM_NEAREST
@@ -520,7 +523,7 @@ class TestJsonLoading:
     def test_calc_reg_ids_seoul(self):
         reg_temp, reg_land = _calc_reg_ids(37.5665, 126.9780)
         assert reg_temp == "11B10101"
-        assert reg_land == "11B00000"
+        assert reg_land is None
 
     def test_calc_warn_area_jungrang(self):
         code = _calc_warn_area_code(37.608025, 127.094222)
