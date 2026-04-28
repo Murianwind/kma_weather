@@ -139,8 +139,9 @@ async def test_api_3_8_pollen_gather_error_fix(mock_api):
     # asyncio.gather에서 Exception을 발생시켜 catch 구문 실행
     with patch("custom_components.kma_weather.api_kma.asyncio.gather", side_effect=Exception):
         res = await mock_api._get_pollen(dt_on, "110", "서울")
-        # pending → 캐시 무효화 → gather exception → {} 반환
-        assert res is not None and ("worst" not in res or res == {})
+        # 캐시가 있으면 캐시 반환 (pending 로직 제거됨)
+        assert res is not None
+        assert res.get("worst") == "나쁨"
 
 @pytest.mark.asyncio
 async def test_api_3_9_pollen_grade_99_fix(mock_api):
@@ -192,9 +193,9 @@ async def test_api_pollen_gather_partial_exception_coverage(mock_api):
     # gather 예외 발생 시 today 캐시 반환 (pending+notified 아니면 캐시 유지)
     with patch("custom_components.kma_weather.api_kma.asyncio.gather", side_effect=Exception("Partial Network Failure")):
         res = await mock_api._get_pollen(dt_on, "110", "서울")
-        # pending 상태 → 캐시 무효화 → gather exception → {} 반환
+        # 캐시가 있으면 캐시 반환 (pending 로직 제거됨)
         assert res is not None
-        assert res == {} or "worst" not in res  # 예외 시 빈 dict
+        assert res.get("worst") == "나쁨"
 
 
 @pytest.mark.asyncio
