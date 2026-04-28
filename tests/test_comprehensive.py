@@ -185,12 +185,13 @@ async def test_api_pollen_gather_partial_exception_coverage(mock_api):
     시나리오: asyncio.gather 내부에서 하나 이상의 Task가 Exception을 던질 때의 방어 로직
     """
     dt_on = datetime(2025, 5, 1, 10, 0) # 시즌 중
-    mock_api._pollen_today = {"worst": "나쁨"} # 기존 캐시 존재
-    
-    # gather가 성공/실패가 섞인 결과를 반환하도록 모킹하여 775-777 라인 실행 유도
+    mock_api._pollen_today = {"worst": "나쁨"}  # 기존 캐시 존재
+    mock_api._pollen_today_date = "20250501"
+
+    # gather 예외 발생 시 today 캐시 반환 (pending+notified 아니면 캐시 유지)
     with patch("custom_components.kma_weather.api_kma.asyncio.gather", side_effect=Exception("Partial Network Failure")):
-        res = await mock_api._get_pollen(dt_on, 37.5, 126.9)
-        # 예외 발생 시 로그를 남기고 기존 캐시(display)를 반환해야 함
+        res = await mock_api._get_pollen(dt_on, "110", "서울")
+        # today 캐시 있으면 캐시 반환
         assert res["worst"] == "나쁨"
 
 
