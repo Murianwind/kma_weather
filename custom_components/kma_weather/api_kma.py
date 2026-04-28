@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import asyncio
 import math
@@ -45,7 +46,7 @@ KOR_TO_CONDITION: dict[str, str] = {
 
 
 class KMAWeatherAPI:
-    def __init__(self, session: "aiohttp.ClientSession", api_key: str, hass: "HomeAssistant | None" = None) -> None:
+    def __init__(self, session: aiohttp.ClientSession, api_key: str, hass: HomeAssistant | None = None) -> None:
         self.session = session
         self.api_key = unquote(api_key)
         self.hass = hass
