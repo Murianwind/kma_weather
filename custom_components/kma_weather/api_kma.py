@@ -20,6 +20,7 @@ from .const import (
     POLLEN_GRADE         as _POLLEN_GRADE,
     POLLEN_SEASONS       as _POLLEN_SEASONS,
 )
+_POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 
 
 KOR_TO_CONDITION: dict[str, str] = {
@@ -111,6 +112,12 @@ class KMAWeatherAPI:
         if service_key in self._approved_apis:
             _LOGGER.warning("API 만료/중지 감지 [%s]: resultCode=%s → _approved_apis에서 제거", service_key, result_code)
             self._approved_apis.discard(service_key)
+            # pollen 중지 시 캐시도 즉시 무효화 → 재활성화 후 첫 업데이트에서 새 데이터 호출
+            if service_key == "pollen":
+                self._pollen_today = None
+                self._pollen_today_date = None
+                self._pollen_tomorrow = None
+                self._pollen_tomorrow_date = None
 
         # _approved에서 제거된 경우 _pending에 다시 추가 → 다음 업데이트에서 재확인
         if service_key not in self._pending_apis:
@@ -542,16 +549,6 @@ class KMAWeatherAPI:
                 "oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음",
                 "area_name": area_name, "area_no": area_no, "announcement": "비시즌",
             }
-
-        # ── API 중지/만료 확인: pending이면 캐시 무시하고 API 호출 ─────────────
-        # _approved_apis에서 제거된 경우(_pending_apis에 있음) 캐시를 무시하고
-        # API를 호출하여 미신청 여부를 즉시 확인한다.
-        if "pollen" in self._pending_apis:
-            _LOGGER.debug("꽃가루 API 재확인 필요 → 캐시 무시하고 API 호출")
-            self._pollen_today = None
-            self._pollen_today_date = None
-            self._pollen_tomorrow = None
-            self._pollen_tomorrow_date = None
 
         # ── today 캐시 있으면 항상 반환 ──────────────────────────────────────
         if self._pollen_today is not None:
