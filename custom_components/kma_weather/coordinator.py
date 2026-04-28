@@ -508,17 +508,27 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if not new_data:
                     return self._cached_data
 
-                # ── 단기/중기 미신청 감지 → 업데이트 중단 ──────────────────
-                short_res = new_data.get("_short_unsubscribed")
-                mid_res   = new_data.get("_mid_unsubscribed")
-                if short_res or mid_res:
-                    which = "단기예보" if short_res else "중기예보"
-                    _LOGGER.warning("핵심 API 미신청/중지 감지 [%s] → 이번 업데이트 중단", which)
+                # ── 단기/중기 미신청 감지 → 캐시 초기화 + 업데이트 중단 ──────
+                short_unsub = new_data.get("_short_unsubscribed")
+                mid_unsub   = new_data.get("_mid_unsubscribed")
+                if short_unsub or mid_unsub:
+                    which = "단기예보" if short_unsub else "중기예보"
+                    _LOGGER.warning("핵심 API 미신청/중지 감지 [%s] → 캐시 초기화 및 업데이트 중단", which)
+                    # 캐시 초기화 → 관련 센서 unavailable 전환
+                    self.api._cache_forecast_map = {}
+                    self.api._cache_mid_ta = {}
+                    self.api._cache_mid_land = {}
+                    self.api._cache_mid_tm_fc_dt = None
+                    self._daily_date = self._daily_max_temp = self._daily_min_temp = None
+                    self._wf_am_today = self._wf_pm_today = None
                     # 공유 카운터에 상태 기록 → api_calls_today 센서 속성에 표시
                     shared = self._shared_counts
                     shared["api_중지"] = which
+                    # 빈 데이터로 갱신 → 관련 센서 unavailable
+                    empty = {"weather": {}, "air": self._cached_data.get("air", {}) if self._cached_data else {}, "pollen": self._cached_data.get("pollen") if self._cached_data else None}
+                    self._cached_data = empty
                     self.async_update_listeners()
-                    return self._cached_data
+                    return empty
 
                 weather = new_data.setdefault("weather", {})
 
