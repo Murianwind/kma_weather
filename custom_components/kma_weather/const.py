@@ -9,7 +9,7 @@ CONF_PREFIX = "prefix"
 CONF_APPLY_DATE = "apply_date"
 CONF_EXPIRE_DATE = "expire_date"
 
-def convert_grid(lat, lon):
+def convert_grid(lat: float, lon: float) -> tuple[int, int]:
     """WGS84 좌표를 기상청 격자 좌표로 변환 (원본 로직 완벽 복구)."""
     RE = 6371.00877  # 지구 반경(km)
     GRID = 5.0       # 격자 간격(km)
@@ -48,7 +48,7 @@ def convert_grid(lat, lon):
 
 # ── 공통 지오 유틸리티 ────────────────────────────────────────────────────────
 
-def safe_float(v) -> float | None:
+def safe_float(v: object) -> float | None:
     """
     값을 float으로 안전하게 변환한다.
     None, 빈 문자열, "-" 는 None을 반환한다.
@@ -95,3 +95,40 @@ def is_korean_coord_loose(lat: float, lon: float) -> bool:
         return False
     return (KOR_LAT_LOOSE[0] <= lat <= KOR_LAT_LOOSE[1]
             and KOR_LON_LOOSE[0] <= lon <= KOR_LON_LOOSE[1])
+
+# ── 기상특보 코드 → 한글 변환 ─────────────────────────────────────────────
+WARN_TYPE_MAP: dict[str, tuple[str, str]] = {
+    "1":  ("강풍주의보",     "강풍경보"),
+    "2":  ("호우주의보",     "호우경보"),
+    "3":  ("한파주의보",     "한파경보"),
+    "4":  ("건조주의보",     "건조경보"),
+    "5":  ("폭풍해일주의보", "폭풍해일경보"),
+    "6":  ("풍랑주의보",     "풍랑경보"),
+    "7":  ("태풍주의보",     "태풍경보"),
+    "8":  ("대설주의보",     "대설경보"),
+    "9":  ("황사주의보",     "황사경보"),
+    "10": ("안개주의보",     "안개경보"),
+    "11": ("지진해일주의보", "지진해일경보"),
+    "12": ("폭염주의보",     "폭염경보"),
+}
+
+# ── API 서비스 정보 ──────────────────────────────────────────────────────
+API_SERVICES: dict[str, tuple[str, str]] = {
+    "short":   ("기상청 단기예보",        "https://www.data.go.kr/data/15084084/openapi.do"),
+    "mid":     ("기상청 중기예보",        "https://www.data.go.kr/data/15059468/openapi.do"),
+    "air":     ("에어코리아 대기오염정보", "https://www.data.go.kr/data/15073861/openapi.do"),
+    "station": ("에어코리아 측정소정보",  "https://www.data.go.kr/data/15073877/openapi.do"),
+    "warning": ("기상특보 조회서비스",    "https://www.data.go.kr/data/15000415/openapi.do"),
+    "pollen":  ("기상청 생활기상지수",    "https://www.data.go.kr/data/15085289/openapi.do"),
+}
+
+# ── 미신청으로 판단하는 resultCode 목록 ─────────────────────────────────
+UNSUBSCRIBED_CODES: frozenset[str] = frozenset({"20","21","22","30","31","32","33"})
+
+# ── 꽃가루 등급 ──────────────────────────────────────────────────────────
+POLLEN_GRADE: dict[str, str] = {"0": "좋음", "1": "보통", "2": "나쁨", "3": "매우나쁨"}
+
+# ── 꽃가루 제공 시즌 (시작월, 종료월 포함) ─────────────────────────────
+POLLEN_SEASONS: dict[str, tuple[int, int]] = {
+    "oak": (4, 6), "pine": (4, 6), "grass": (8, 10)
+}
