@@ -303,9 +303,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         return sum(v for k, v in shared.items() if k not in ("date", "last_reason"))
 
     async def _notify_api_counter_listeners(self) -> None:
-        """api_calls_today 센서를 즉시 갱신하도록 HA에 알린다."""
+        """api_calls_today 센서를 즉시 갱신하도록 HA에 알린다. (모든 기기 동시 갱신)"""
         try:
+            # 자신의 리스너 갱신
             self.async_update_listeners()
+            # 다른 기기의 coordinator 리스너도 함께 갱신
+            for entry_id, coordinator in self.hass.data.get(DOMAIN, {}).items():
+                if coordinator is not self and hasattr(coordinator, "async_update_listeners"):
+                    coordinator.async_update_listeners()
         except Exception:
             pass
 
