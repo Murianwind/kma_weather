@@ -225,7 +225,7 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
             elif self._type == "observation_condition":
                 attrs = w.get("observation_attrs", {})
-                weather_state = attrs.get("날씨_상태", "")
+                weather_state = attrs.get("날씨", "")
                 day_night = attrs.get("주야간", "야간")
                 cond = w.get("observation_condition", "")
                 if day_night == "주간":
