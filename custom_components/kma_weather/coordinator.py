@@ -508,6 +508,18 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if not new_data:
                     return self._cached_data
 
+                # ── 단기/중기 미신청 감지 → 업데이트 중단 ──────────────────
+                short_res = new_data.get("_short_unsubscribed")
+                mid_res   = new_data.get("_mid_unsubscribed")
+                if short_res or mid_res:
+                    which = "단기예보" if short_res else "중기예보"
+                    _LOGGER.warning("핵심 API 미신청/중지 감지 [%s] → 이번 업데이트 중단", which)
+                    # 공유 카운터에 상태 기록 → api_calls_today 센서 속성에 표시
+                    shared = self._shared_counts
+                    shared["api_중지"] = which
+                    self.async_update_listeners()
+                    return self._cached_data
+
                 weather = new_data.setdefault("weather", {})
 
                 if "raw_forecast" in new_data:
