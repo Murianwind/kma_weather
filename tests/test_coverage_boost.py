@@ -276,6 +276,9 @@ async def test_options_flow(hass, mock_config_entry, kma_api_mock_factory):
 # 10. 유틸리티 헬퍼
 # ─────────────────────────────────────────────────────────────────────────────
 from custom_components.kma_weather.coordinator import _land_code
+from custom_components.kma_weather.coordinator import _load_area_data
+_load_area_data()  # 테스트 실행 전 정적 데이터 로드
+
 from custom_components.kma_weather.const import haversine as _haversine
 
 def test_haversine_known_distance():
