@@ -1,5 +1,6 @@
 import logging
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, EntityCategory
 from homeassistant.helpers.entity import DeviceInfo
@@ -127,7 +128,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     entry.async_on_unload(coordinator.async_add_listener(_check_new_sensors))
 
 
-class KMACustomSensor(CoordinatorEntity, SensorEntity):
+class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     """기상청 커스텀 센서 클래스"""
     _attr_has_entity_name = True
 
@@ -246,6 +247,15 @@ class KMACustomSensor(CoordinatorEntity, SensorEntity):
                 return self._POLLEN_ICONS.get(worst, self._attr_icon)
 
         return self._attr_icon
+
+    async def async_added_to_hass(self) -> None:
+        """HA 재시작 후 이전 상태 복원."""
+        await super().async_added_to_hass()
+        if self.coordinator.data:
+            return  # 이미 데이터 있으면 복원 불필요
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state not in ("unknown", "unavailable"):
+            self._attr_native_value = last_state.state
 
     @property
     def native_value(self):
