@@ -248,6 +248,39 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
         return self._attr_icon
 
+    @property
+    def available(self) -> bool:
+        """API 미신청/중지 시 unavailable 반환."""
+        if not super().available:
+            return False
+        if not self.coordinator.data:
+            return False
+        if self._type in ("api_expire", "api_calls_today"):
+            return True
+
+        _SHORT_TYPES = {
+            "TMP", "REH", "WSD", "VEC_KOR", "POP", "apparent_temp",
+            "rain_start_time", "current_condition_kor",
+            "TMX_today", "TMN_today", "wf_am_today", "wf_pm_today",
+            "TMX_tomorrow", "TMN_tomorrow", "wf_am_tomorrow", "wf_pm_tomorrow",
+        }
+        _AIR_TYPES = {"pm10Value", "pm10Grade", "pm25Value", "pm25Grade"}
+
+        if self._type == "pollen":
+            return self.coordinator.data.get("pollen") is not None
+
+        if self._type in _SHORT_TYPES:
+            return "short" in self.coordinator.api._approved_apis
+
+        if self._type in _AIR_TYPES:
+            return "air" in self.coordinator.api._approved_apis
+
+        if self._type == "warning":
+            w = self.coordinator.data.get("weather", {})
+            return w.get("warning") is not None
+
+        return True
+
     async def async_added_to_hass(self) -> None:
         """HA 재시작 후 이전 상태 복원."""
         await super().async_added_to_hass()
