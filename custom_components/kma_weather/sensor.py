@@ -311,7 +311,7 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
         if self._type == "api_calls_today":
             # 전체 기기 합산 공유 카운터 사용
             counts = self.coordinator._shared_counts
-            return {
+            attrs = {
                 "단기예보":        counts.get("단기예보", 0),
                 "중기예보":        counts.get("중기예보", 0),
                 "에어코리아_측정소": counts.get("에어코리아_측정소", 0),
@@ -321,6 +321,10 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
                 "집계일":          counts.get("date") or "-",
                 "마지막_호출_이유": counts.get("last_reason") or "-",
             }
+            api_중지 = counts.get("api_중지")
+            if api_중지:
+                attrs["API_중지_감지"] = f"{api_중지} 미신청 또는 중지됨"
+            return attrs
 
         if not self.coordinator.data:
             return None
