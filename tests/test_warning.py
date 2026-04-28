@@ -19,6 +19,7 @@ from custom_components.kma_weather.api_kma import (
     _API_SERVICES,
 )
 from custom_components.kma_weather.coordinator import (
+
     KMAWeatherUpdateCoordinator,
     _TEMP_ID_COORDS,
     _LAND_CODE_MAP,
@@ -27,6 +28,9 @@ from custom_components.kma_weather.coordinator import (
     _calc_reg_ids,
     _calc_warn_area_code,
 )
+from custom_components.kma_weather.coordinator import _load_area_data
+_load_area_data()  # 테스트 실행 전 정적 데이터 로드
+
 from custom_components.kma_weather.sensor import SENSOR_TYPES
 
 TZ = ZoneInfo("Asia/Seoul")
