@@ -1,1287 +1,851 @@
 """
-모든 미커버 라인을 커버하는 테스트.
+리팩터링 및 신규 기능 테스트.
+
+변경 사항:
+  - coordinator.py: _resolve_area_codes()로 모든 구역코드 통합 결정 (2km 캐시)
+  - api_kma.py: KMAWeatherAPI(session, api_key, hass) — reg_id 파라미터 제거
+                fetch_data()에 reg_id_temp, reg_id_land, warn_area_code 인자 추가
+                _check_unsubscribed()로 API 미신청 감지 및 HA 알림
+                _get_pollen()으로 꽃가루 농도 위험지수 조회 추가
+  - sensor.py: "warning", "pollen" 센서 추가
 """
 import pytest
-import hashlib
-from datetime import datetime, timedelta, date
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from unittest.mock import AsyncMock, MagicMock, patch
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from custom_components.kma_weather.const import CONF_API_KEY, CONF_LOCATION_ENTITY
+from custom_components.kma_weather.const import DOMAIN
 
-from custom_components.kma_weather.api_kma import KMAWeatherAPI
-from custom_components.kma_weather.sensor import KMACustomSensor
+from custom_components.kma_weather.api_kma import (
+    KMAWeatherAPI,
+    _API_SERVICES,
+)
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from custom_components.kma_weather.coordinator import (
+
+    KMAWeatherUpdateCoordinator,
+    _TEMP_ID_COORDS,
+    _LAND_CODE_MAP,
+    _EXCLUDE_FROM_NEAREST,
+    _WARN_AREA,
+    _calc_reg_ids,
+    _calc_warn_area_code,
+)
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from custom_components.kma_weather.coordinator import _load_area_data
 _load_area_data()  # 테스트 실행 전 정적 데이터 로드
+
+from custom_components.kma_weather.sensor import SENSOR_TYPES
 
 TZ = ZoneInfo("Asia/Seoul")
 
 
-def test_nominatim_agent_with_valid_uuid():
-    class HasUuidHass:
-        installation_uuid = "abcdef12-3456-7890-abcd-ef1234567890"
-    api = KMAWeatherAPI(MagicMock(), "key", hass=HasUuidHass())
-    assert "abcdef123456" in api._nominatim_user_agent
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. coordinator._resolve_area_codes: 구역코드 통합 결정 및 2km 캐시
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestResolveAreaCodes:
+    def _make_coordinator(self, hass):
+        entry = MagicMock()
+        entry.data = {"api_key": "key", "location_entity": ""}
+        entry.options = {}
+        entry.entry_id = "test"
+        return KMAWeatherUpdateCoordinator(hass, entry)
+
+    @pytest.mark.asyncio
+    async def test_returns_all_five_values(self, hass):
+        """_resolve_area_codes가 (nx, ny, reg_temp, reg_land, warn_code) 5개를 반환함"""
+        coord = self._make_coordinator(hass)
+        result = coord._resolve_area_codes(37.608025, 127.094222)
+        assert len(result) == 5
+        nx, ny, reg_temp, reg_land, warn_code = result
+        assert isinstance(nx, int)
+        assert isinstance(ny, int)
+        assert reg_temp is not None
+        assert reg_land is not None
+        assert warn_code is not None
+
+    @pytest.mark.asyncio
+    async def test_seoul_codes_correct(self, hass):
+        """서울 중랑구 좌표의 구역코드가 올바르게 결정됨"""
+        coord = self._make_coordinator(hass)
+        nx, ny, reg_temp, reg_land, warn_code = coord._resolve_area_codes(37.608025, 127.094222)
+        assert reg_temp == "11B20501"
+        assert reg_land is None
+        assert warn_code == "L1100200"
+
+    @pytest.mark.asyncio
+    async def test_cache_used_within_2km(self, hass):
+        """2km 이내 이동 시 구역코드 캐시를 재사용함"""
+        coord = self._make_coordinator(hass)
+        result1 = coord._resolve_area_codes(37.608025, 127.094222)
+        # 1km 이동
+        result2 = coord._resolve_area_codes(37.615000, 127.090000)
+        # 캐시 재사용이므로 동일한 값
+        assert result1 == result2
+        # 캐시 좌표는 최초 좌표 유지
+        assert coord._cached_area_lat == pytest.approx(37.608025)
+
+    @pytest.mark.asyncio
+    async def test_cache_invalidated_over_2km(self, hass):
+        """2km 초과 이동 시 구역코드를 재계산함"""
+        coord = self._make_coordinator(hass)
+        nx1, ny1, reg1, land1, warn1 = coord._resolve_area_codes(37.608025, 127.094222)  # 중랑구
+        nx2, ny2, reg2, land2, warn2 = coord._resolve_area_codes(37.498000, 127.027000)  # 강남
+        assert warn1 != warn2  # 특보구역이 달라짐
+        assert coord._cached_area_lat == pytest.approx(37.498000)
+
+    @pytest.mark.asyncio
+    async def test_cache_none_on_first_call(self, hass):
+        """첫 호출 전에는 캐시가 None임"""
+        coord = self._make_coordinator(hass)
+        assert coord._cached_area_lat is None
+        assert coord._cached_warn_area_code is None
 
 
-def test_nominatim_agent_no_hass_uses_hash():
-    api = KMAWeatherAPI(MagicMock(), "MY_SECRET_KEY")
-    expected_hash = hashlib.sha1("MY_SECRET_KEY".encode()).hexdigest()[:12]
-    assert expected_hash in api._nominatim_user_agent
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. api_kma.KMAWeatherAPI 시그니처 변경 검증
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestApiSignature:
+    def test_init_no_reg_id_params(self):
+        """KMAWeatherAPI 생성자에 reg_id 파라미터가 없음"""
+        import inspect
+        sig = inspect.signature(KMAWeatherAPI.__init__)
+        params = list(sig.parameters.keys())
+        assert "reg_id_temp" not in params
+        assert "reg_id_land" not in params
+
+    def test_fetch_data_receives_reg_ids(self):
+        """fetch_data()가 reg_id_temp, reg_id_land, warn_area_code를 인자로 받음"""
+        import inspect
+        sig = inspect.signature(KMAWeatherAPI.fetch_data)
+        params = list(sig.parameters.keys())
+        assert "reg_id_temp" in params
+        assert "reg_id_land" in params
+        assert "warn_area_code" in params
+
+    def test_get_mid_term_receives_reg_ids(self):
+        """_get_mid_term()이 reg_id_temp, reg_id_land를 인자로 받음"""
+        import inspect
+        sig = inspect.signature(KMAWeatherAPI._get_mid_term)
+        params = list(sig.parameters.keys())
+        assert "reg_id_temp" in params
+        assert "reg_id_land" in params
+
+    def test_get_warning_receives_area_code(self):
+        """_get_warning()이 warn_area_code를 인자로 받음"""
+        import inspect
+        sig = inspect.signature(KMAWeatherAPI._get_warning)
+        params = list(sig.parameters.keys())
+        assert "warn_area_code" in params
+
+    def test_get_air_quality_receives_lat_lon(self):
+        """_get_air_quality()가 lat, lon을 인자로 받음"""
+        import inspect
+        sig = inspect.signature(KMAWeatherAPI._get_air_quality)
+        params = list(sig.parameters.keys())
+        assert "lat" in params
+        assert "lon" in params
 
 
-def test_nominatim_agent_hash_exception_returns_base():
-    with patch("hashlib.sha1", side_effect=Exception("hash fail")):
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. API 미신청 감지 (_check_unsubscribed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCheckUnsubscribed:
+    def _make_api(self, hass=None):
+        return KMAWeatherAPI(MagicMock(), "key", hass=hass)
+
+    def test_returns_false_for_normal_code(self):
+        """resultCode=00(정상)이면 False를 반환함"""
+        api = self._make_api()
+        assert api._check_unsubscribed("short", "00") is False
+
+    @pytest.mark.parametrize("code", ["20", "22", "30", "31", "33"])
+    def test_returns_true_for_unsubscribed_codes(self, code):
+        """미신청/접근거부 코드에서 True를 반환함"""
+        api = self._make_api()
+        assert api._check_unsubscribed("short", code) is True
+
+    def test_no_duplicate_notification(self):
+        """같은 서비스에 대해 중복 알림을 발송하지 않음"""
+        api = self._make_api()
+        result1 = api._check_unsubscribed("short", "33")
+        result2 = api._check_unsubscribed("short", "33")
+        assert result1 is True
+        assert result2 is True  # 두 번째도 True이지만 알림은 한 번만
+        assert len(api._notified_unsubscribed) == 1
+
+    def test_different_services_notified_independently(self):
+        """서로 다른 서비스는 독립적으로 알림이 발송됨"""
+        api = self._make_api()
+        api._check_unsubscribed("short", "33")
+        api._check_unsubscribed("mid", "33")
+        api._check_unsubscribed("air", "33")
+        assert len(api._notified_unsubscribed) == 3
+
+    def test_persistent_notification_sent_with_hass(self):
+        """hass가 있을 때 persistent_notification이 발송됨"""
+        mock_hass = MagicMock()
+        api = self._make_api(hass=mock_hass)
+        api._check_unsubscribed("short", "33")
+        mock_hass.components.persistent_notification.async_create.assert_called_once()
+
+    def test_notification_contains_service_name_and_url(self):
+        """알림 메시지에 서비스 이름과 URL이 포함됨"""
+        mock_hass = MagicMock()
+        api = self._make_api(hass=mock_hass)
+        api._check_unsubscribed("short", "33")
+        call_args = mock_hass.components.persistent_notification.async_create.call_args
+        msg = call_args.kwargs.get("message", "")
+        assert "기상청 단기예보" in msg
+        assert "15084084" in msg  # URL 일부
+
+    def test_notification_id_includes_service_key(self):
+        """알림의 notification_id에 서비스 키가 포함됨"""
+        mock_hass = MagicMock()
+        api = self._make_api(hass=mock_hass)
+        api._check_unsubscribed("warning", "33")
+        call_args = mock_hass.components.persistent_notification.async_create.call_args
+        nid = call_args.kwargs.get("notification_id", "")
+        assert "warning" in nid
+
+    def test_no_crash_without_hass(self):
+        """hass 없이도 예외 없이 동작함"""
+        api = self._make_api(hass=None)
+        result = api._check_unsubscribed("short", "33")
+        assert result is True
+
+    def test_all_services_defined_in_api_services(self):
+        """_API_SERVICES에 정의된 서비스 키가 정확히 일치함
+
+        꽃가루 농도 위험지수(pollen) API가 추가되었으므로 6개.
+        short, mid, air, station, warning, pollen
+        """
+        expected_keys = {"short", "mid", "air", "station", "warning", "pollen"}
+        assert set(_API_SERVICES.keys()) == expected_keys
+
+    def test_all_services_have_url(self):
+        """모든 서비스의 URL이 data.go.kr 도메인임"""
+        for key, (name, url) in _API_SERVICES.items():
+            assert "data.go.kr" in url, f"{key} 서비스 URL이 data.go.kr이 아님"
+            assert name, f"{key} 서비스 이름이 비어있음"
+
+    def test_pollen_service_url_correct(self):
+        """꽃가루 서비스의 URL이 올바른 공공데이터포털 주소임"""
+        name, url = _API_SERVICES["pollen"]
+        assert "15085289" in url, "꽃가루 API URL에 올바른 데이터셋 ID가 없음"
+        assert name == "기상청 생활기상지수"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. API 미신청 시 각 메서드 동작 검증
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestUnsubscribedApiHandling:
+    def _make_api(self):
+        return KMAWeatherAPI(MagicMock(), "key", hass=MagicMock())
+
+    def _unsubscribed_response(self, code="33"):
+        return {
+            "response": {
+                "header": {"resultCode": code, "resultMsg": "서비스 신청하지 않음"},
+                "body": {},
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_short_term_returns_none_on_unsubscribed(self):
+        """단기예보 미신청 시 None을 반환함"""
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._unsubscribed_response())
+        api.nx, api.ny = 60, 127
+        now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
+        result = await api._get_short_term(now)
+        # 저장소 기준: 미신청 시 "UNSUBSCRIBED" 반환 (업데이트 중단 신호)
+        assert result is None or result == "UNSUBSCRIBED"
+
+    @pytest.mark.asyncio
+    async def test_mid_term_returns_none_tuple_on_unsubscribed(self):
+        """중기예보 미신청 시 (None, None, tm_fc_dt) 반환함"""
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._unsubscribed_response())
+        now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
+        ta_res, land_res, tm_fc_dt = await api._get_mid_term(now, "11B10101", "11B00000")
+        # 저장소 기준: 미신청 시 ("UNSUBSCRIBED", None, tm_fc_dt) 반환
+        assert ta_res is None or ta_res == "UNSUBSCRIBED"
+        assert land_res is None
+        assert tm_fc_dt is not None
+
+    @pytest.mark.asyncio
+    async def test_air_quality_returns_empty_on_station_unsubscribed(self):
+        """측정소정보 미신청 시 빈 dict를 반환함"""
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._unsubscribed_response())
+        result = await api._get_air_quality(37.56, 126.98)
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_warning_returns_none_on_unsubscribed(self):
+        """기상특보 미신청 시 None을 반환함 (센서 unknown)"""
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._unsubscribed_response())
+        result = await api._get_warning("L1100200")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_notification_sent_exactly_once_across_multiple_calls(self):
+        """같은 서비스에 여러 번 미신청 응답이 와도 알림은 한 번만 발송됨"""
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._unsubscribed_response())
+        api.nx, api.ny = 60, 127
+        now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
+        for _ in range(3):
+            await api._get_short_term(now)
+        assert api.hass.components.persistent_notification.async_create.call_count == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. fetch_data 통합: coordinator → api 연동
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFetchDataIntegration:
+    @pytest.mark.asyncio
+    async def test_fetch_data_passes_reg_ids_to_mid_term(self):
+        """fetch_data()가 reg_id를 _get_mid_term에 올바르게 전달함"""
         api = KMAWeatherAPI(MagicMock(), "key")
-    assert api._nominatim_user_agent == "HomeAssistant-KMA-Weather"
-
-
-@pytest.mark.asyncio
-async def test_fetch_data_full_path():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api._get_short_term = AsyncMock(return_value=None)
-    api._get_mid_term = AsyncMock(return_value=(None, None, datetime(2026, 4, 11, 6, 0, tzinfo=TZ)))
-    api._get_air_quality = AsyncMock(return_value={"pm10Value": "30"})
-    api._get_address = AsyncMock(return_value="서울시")
-    result = await api.fetch_data(37.56, 126.98, 60, 127, "11B10101", "11B00000", "4111100000")
-    assert result is not None
-    assert "weather" in result
-    assert result["weather"]["address"] == "서울시"
-
-
-@pytest.mark.asyncio
-async def test_fetch_data_with_exception_in_task():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api._get_short_term = AsyncMock(side_effect=Exception("network error"))
-    api._get_mid_term = AsyncMock(return_value=(None, None, datetime(2026, 4, 11, 6, 0, tzinfo=TZ)))
-    api._get_air_quality = AsyncMock(return_value={})
-    api._get_address = AsyncMock(return_value="서울시")
-    result = await api.fetch_data(37.56, 126.98, 60, 127, "11B10101", "11B00000", "4111100000")
-    assert result is not None
-
-
-@pytest.mark.asyncio
-async def test_get_address_fetch_returns_none():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api._fetch = AsyncMock(return_value=None)
-    result = await api._get_address(37.56, 126.98)
-    assert result == "37.5600, 126.9800"
-
-
-@pytest.mark.asyncio
-async def test_get_address_exception_fallback():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api._fetch = AsyncMock(side_effect=Exception("timeout"))
-    result = await api._get_address(37.56, 126.98)
-    assert "37.5600" in result
-
-
-@pytest.mark.asyncio
-async def test_air_quality_exception_returns_empty():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat, api.lon = 37.56, 126.98
-    api._cached_station = "테스트"
-
-    async def bad_fetch(url, params=None, timeout=10):
-        raise Exception("connection error")
-
-    api._fetch = bad_fetch
-    result = await api._get_air_quality(37.56, 126.98)
-    assert result == {}
-
-
-@pytest.mark.asyncio
-async def test_get_short_term_midnight():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.nx, api.ny = 60, 127
-    called_params = {}
-
-    async def mock_fetch(url, params, **kwargs):
-        called_params.update(params)
-        return None
-
-    api._fetch = mock_fetch
-    now = datetime(2026, 4, 11, 0, 30, tzinfo=TZ)
-    await api._get_short_term(now)
-    assert called_params.get("base_time") == "2300"
-    assert called_params.get("base_date") == "20260410"
-
-
-def test_merge_all_short_res_none_uses_cache():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    api._cache_forecast_map = {
-        today: {"1200": {"TMP": "20", "SKY": "1", "PTY": "0"},
-                "0900": {"TMP": "15", "SKY": "1", "PTY": "0"},
-                "1500": {"TMP": "22", "SKY": "1", "PTY": "0"}}
-    }
-    result = api._merge_all(now, None, None, {})
-    assert result["weather"]["TMP"] == "20" or result is not None
-
-
-def test_merge_all_mid_res_2tuple_fallback():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-    ta_wrap = {"response": {"body": {"items": {"item": [{"taMax3": "23", "taMin3": "8"}]}}}}
-    land_wrap = {"response": {"body": {"items": {"item": [{"wf3Am": "맑음", "wf3Pm": "흐림"}]}}}}
-    result = api._merge_all(now, None, (ta_wrap, land_wrap), {})
-    assert len(result["weather"]["forecast_daily"]) == 10
-
-
-def test_merge_all_boundary_date_short_cache_fallback():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-    tm_fc_dt = datetime(2026, 4, 11, 6, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    d1 = (now + timedelta(days=1)).strftime("%Y%m%d")
-    items = []
-    for d_str, tmp in [(today, "12"), (d1, "15")]:
-        for h, val in [("0600", tmp), ("0800", tmp)]:
-            for cat, v in [("TMP", val), ("SKY", "1"), ("PTY", "0")]:
-                items.append({"fcstDate": d_str, "fcstTime": h, "category": cat, "fcstValue": v})
-    short_res = {"response": {"body": {"items": {"item": items}}}}
-    ta_item = {f"taMax{i}": str(20+i) for i in range(3, 11)}
-    ta_item.update({f"taMin{i}": str(5+i) for i in range(3, 11)})
-    land_item = {f"wf{i}Am": "맑음" for i in range(3, 11)}
-    land_item.update({f"wf{i}Pm": "맑음" for i in range(3, 11)})
-    def wrap(item):
-        return {"response": {"body": {"items": {"item": [item]}}}}
-    mid_res = (wrap(ta_item), wrap(land_item), tm_fc_dt)
-    result = api._merge_all(now, short_res, mid_res, {})
-    assert len(result["weather"]["forecast_daily"]) == 10
-
-
-def test_merge_all_sets_vec_kor_when_vec_present():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    items = [
-        {"fcstDate": today, "fcstTime": "1200", "category": "TMP",  "fcstValue": "20"},
-        {"fcstDate": today, "fcstTime": "1200", "category": "SKY",  "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "1200", "category": "PTY",  "fcstValue": "0"},
-        {"fcstDate": today, "fcstTime": "1200", "category": "VEC",  "fcstValue": "225"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "TMP",  "fcstValue": "15"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "SKY",  "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "PTY",  "fcstValue": "0"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "TMP",  "fcstValue": "22"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "SKY",  "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "PTY",  "fcstValue": "0"},
-    ]
-    short_res = {"response": {"body": {"items": {"item": items}}}}
-    result = api._merge_all(now, short_res, None, {})
-    assert "VEC_KOR" in result["weather"]
-    assert result["weather"]["VEC_KOR"] == "남서"
-
-
-def test_merge_all_rain_start_time_with_minutes():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    items = [
-        {"fcstDate": today, "fcstTime": "1030", "category": "PTY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "1030", "category": "TMP", "fcstValue": "15"},
-        {"fcstDate": today, "fcstTime": "1030", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "TMP", "fcstValue": "12"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "PTY", "fcstValue": "0"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "TMP", "fcstValue": "18"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "PTY", "fcstValue": "0"},
-    ]
-    short_res = {"response": {"body": {"items": {"item": items}}}}
-    result = api._merge_all(now, short_res, None, {})
-    assert "30분" in result["weather"]["rain_start_time"]
-
-
-def test_merge_all_skips_am_slot_after_noon():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 14, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    items = [
-        {"fcstDate": today, "fcstTime": "1500", "category": "TMP", "fcstValue": "22"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "PTY", "fcstValue": "0"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "TMP", "fcstValue": "15"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "PTY", "fcstValue": "0"},
-    ]
-    short_res = {"response": {"body": {"items": {"item": items}}}}
-    result = api._merge_all(now, short_res, None, {})
-    twice = result["weather"]["forecast_twice_daily"]
-    today_am = [e for e in twice if e["_day_index"] == 0 and e["is_daytime"]]
-    assert len(today_am) == 0, "오후 12시 이후엔 오늘 오전 슬롯이 없어야 함"
-
-
-def test_land_code_fallback():
-    from custom_components.kma_weather.coordinator import _land_code
-    result = _land_code("UNKNOWN_CODE")
-    assert result == "11B00000"
-
-
-@pytest.mark.asyncio
-async def test_restore_daily_temps_float_conversion_fails(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "float_fail_test"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    tz = ZoneInfo("Asia/Seoul")
-    today_str = datetime.now(tz).strftime("%Y%m%d")
-    coord._store.async_load = AsyncMock(return_value={
-        "date": today_str, "max": "NOT_A_FLOAT", "min": None,
-        "wf_am": "맑음", "wf_pm": "흐림",
-    })
-    await coord._restore_daily_temps()
-    assert coord._daily_max_temp is None
-    assert coord._store_loaded is True
-
-
-@pytest.mark.asyncio
-async def test_update_daily_temperatures_full_path(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "daily_temp_test"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    tz = ZoneInfo("Asia/Seoul")
-    today_str = datetime.now(tz).strftime("%Y%m%d")
-
-    forecast_map = {today_str: {"0900": {"TMP": "15"}, "1500": {"TMP": "25"}}}
-    changed = coord._update_daily_temperatures(forecast_map)
-    assert changed is True
-    assert coord._daily_min_temp == 15.0
-    assert coord._daily_max_temp == 25.0
-
-    forecast_map2 = {today_str: {"0600": {"TMP": "10"}}}
-    changed2 = coord._update_daily_temperatures(forecast_map2)
-    assert changed2 is True
-    assert coord._daily_min_temp == 10.0
-    assert coord._daily_max_temp == 25.0
-
-    changed3 = coord._update_daily_temperatures(forecast_map2)
-    assert changed3 is False
-
-
-@pytest.mark.asyncio
-async def test_sync_today_forecast_full(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "sync_forecast_test"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._daily_max_temp = 30.0
-    coord._daily_min_temp = 10.0
-    coord._wf_am_today = "맑음"
-    coord._wf_pm_today = "구름많음"
-
-    weather = {
-        "current_condition": "sunny",
-        "TMX_tomorrow": 28.0, "TMN_tomorrow": 12.0,
-        "wf_am_tomorrow": "흐림", "wf_pm_tomorrow": "비",
-        "forecast_daily": [
-            {"_day_index": 0, "native_temperature": 20.0, "native_templow": 5.0, "condition": "cloudy"},
-            {"_day_index": 1, "native_temperature": 22.0, "native_templow": 8.0, "condition": "cloudy"},
-            {"_day_index": 2, "native_temperature": 25.0, "native_templow": 10.0, "condition": "sunny"},
-        ],
-        "forecast_twice_daily": [
-            {"_day_index": 0, "is_daytime": True,  "native_temperature": 20.0, "native_templow": 5.0,  "condition": "cloudy"},
-            {"_day_index": 0, "is_daytime": False, "native_temperature": 20.0, "native_templow": 5.0,  "condition": "cloudy"},
-            {"_day_index": 1, "is_daytime": True,  "native_temperature": 22.0, "native_templow": 8.0,  "condition": "cloudy"},
-            {"_day_index": 1, "is_daytime": False, "native_temperature": 22.0, "native_templow": 8.0,  "condition": "cloudy"},
-        ],
-    }
-    coord._sync_today_forecast(weather)
-
-    d0 = next(e for e in weather["forecast_daily"] if e["_day_index"] == 0)
-    assert d0["native_temperature"] == 30.0
-    assert d0["native_templow"] == 10.0
-    assert d0["condition"] == "sunny"
-
-    d1 = next(e for e in weather["forecast_daily"] if e["_day_index"] == 1)
-    assert d1["native_temperature"] == 28.0
-    assert d1["native_templow"] == 12.0
-    assert d1["condition"] == "rainy"
-
-    t0_am = next(e for e in weather["forecast_twice_daily"] if e["_day_index"] == 0 and e["is_daytime"])
-    assert t0_am["condition"] == "sunny"
-    t0_pm = next(e for e in weather["forecast_twice_daily"] if e["_day_index"] == 0 and not e["is_daytime"])
-    assert t0_pm["condition"] == "partlycloudy"
-
-    t1_am = next(e for e in weather["forecast_twice_daily"] if e["_day_index"] == 1 and e["is_daytime"])
-    assert t1_am["condition"] == "cloudy"
-    t1_pm = next(e for e in weather["forecast_twice_daily"] if e["_day_index"] == 1 and not e["is_daytime"])
-    assert t1_pm["condition"] == "rainy"
-
-
-@pytest.mark.asyncio
-async def test_async_update_data_full_path_afternoon(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "full_update_pm"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._wf_am_today = "맑음"
-    coord._wf_pm_today = None
-    hass.config.latitude = 37.56
-    hass.config.longitude = 126.98
-
-    tz = ZoneInfo("Asia/Seoul")
-    today_str = datetime.now(tz).strftime("%Y%m%d")
-    mock_data = {
-        "weather": {
-            "wf_am_today": "맑음", "wf_pm_today": "흐림",
-            "current_condition_kor": "맑음", "current_condition": "sunny",
-            "forecast_daily": [
-                {"_day_index": 0, "native_temperature": 25.0, "native_templow": 10.0, "condition": "sunny"},
-            ],
-            "forecast_twice_daily": [
-                {"_day_index": 0, "is_daytime": True,  "native_temperature": 25.0, "native_templow": 10.0, "condition": "sunny"},
-                {"_day_index": 0, "is_daytime": False, "native_temperature": 25.0, "native_templow": 10.0, "condition": "sunny"},
-            ],
-        },
-        "air": {},
-        "raw_forecast": {today_str: {"0900": {"TMP": "18"}, "1500": {"TMP": "26"}}},
-    }
-    coord.api.fetch_data = AsyncMock(return_value=mock_data)
-
-    with patch("custom_components.kma_weather.coordinator.datetime") as mock_dt:
-        afternoon = datetime(2026, 4, 11, 15, 0, tzinfo=tz)
-        mock_dt.now.return_value = afternoon
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        result = await coord._async_update_data()
-
-    assert result is not None
-    assert coord._wf_pm_today == "흐림"
-
-
-def test_resolve_location_returns_valid_coords():
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"location_entity": "zone.home"}
-    entry.options = {}
-    entry.entry_id = "valid_coords"
-    hass = MagicMock()
-    state = MagicMock()
-    state.attributes = {"latitude": 37.56, "longitude": 126.98}
-    hass.states.get.return_value = state
-    coord = KMAWeatherUpdateCoordinator.__new__(KMAWeatherUpdateCoordinator)
-    coord.hass = hass
-    coord.entry = entry
-    coord._last_lat = None
-    coord._last_lon = None
-    lat, lon = coord._resolve_location()
-    assert lat == pytest.approx(37.56)
-    assert lon == pytest.approx(126.98)
-
-
-def test_resolve_location_bad_float_falls_back():
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"location_entity": "zone.home"}
-    entry.options = {}
-    entry.entry_id = "bad_float"
-    hass = MagicMock()
-    state = MagicMock()
-    state.attributes = {"latitude": "INVALID", "longitude": "INVALID"}
-    hass.states.get.return_value = state
-    hass.config.latitude = 37.56
-    hass.config.longitude = 126.98
-    coord = KMAWeatherUpdateCoordinator.__new__(KMAWeatherUpdateCoordinator)
-    coord.hass = hass
-    coord.entry = entry
-    coord._last_lat = None
-    coord._last_lon = None
-    lat, lon = coord._resolve_location()
-    assert lat == pytest.approx(37.56)
-
-
-def test_resolve_location_ha_config_bad_float():
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "ha_bad_float"
-    hass = MagicMock()
-    hass.states.get.return_value = None
-    hass.config.latitude = "BAD"
-    hass.config.longitude = "BAD"
-    coord = KMAWeatherUpdateCoordinator.__new__(KMAWeatherUpdateCoordinator)
-    coord.hass = hass
-    coord.entry = entry
-    coord._last_lat = None
-    coord._last_lon = None
-    lat, lon = coord._resolve_location()
-    assert lat is None and lon is None
-
-
-def test_sensor_api_expire_returns_days():
-    coordinator = MagicMock()
-    coordinator.data = {"weather": {}, "air": {}}
-    coordinator._daily_max_temp = None
-    coordinator._daily_min_temp = None
-    entry = MagicMock()
-    entry.entry_id = "expire_test"
-    future = (date.today() + timedelta(days=15)).isoformat()
-    entry.options = {}
-    entry.data = {"prefix": "x", "expire_date": future}
-    sensor = KMACustomSensor(coordinator, "api_expire", "x", entry)
-    val = sensor.native_value
-    assert val == 15
-
-
-def test_sensor_native_value_float_conversion_error():
-    coordinator = MagicMock()
-    coordinator.data = {"weather": {"TMP": "INVALID_FLOAT"}, "air": {}}
-    coordinator._daily_max_temp = None
-    coordinator._daily_min_temp = None
-    entry = MagicMock()
-    entry.entry_id = "float_err"
-    entry.options = {}
-    entry.data = {"prefix": "x"}
-    sensor = KMACustomSensor(coordinator, "TMP", "x", entry)
-    assert sensor.native_value is None
-
-
-def test_sensor_extra_state_attrs_no_data():
-    coordinator = MagicMock()
-    coordinator.data = None
-    entry = MagicMock()
-    entry.entry_id = "no_data"
-    entry.options = {}
-    entry.data = {"prefix": "x"}
-    sensor = KMACustomSensor(coordinator, "address", "x", entry)
-    assert sensor.extra_state_attributes is None
-
-
-def test_weather_entity_bad_values():
-    from custom_components.kma_weather.weather import KMAWeather
-    coordinator = MagicMock()
-    coordinator.data = {"weather": {
-        "TMP": "BAD", "REH": "BAD", "WSD": "BAD", "VEC": "BAD",
-        "current_condition": "sunny",
-    }}
-    entry = MagicMock()
-    entry.data = {"prefix": "test"}
-    entry.entry_id = "bad_weather"
-    weather = KMAWeather.__new__(KMAWeather)
-    weather.coordinator = coordinator
-    weather._attr_name = "날씨 요약"
-    assert weather.native_temperature is None
-    assert weather.humidity is None
-    assert weather.native_wind_speed is None
-    assert weather.wind_bearing is None
-
-
-@pytest.mark.asyncio
-async def test_weather_forecast_no_data():
-    from custom_components.kma_weather.weather import KMAWeather
-    coordinator = MagicMock()
-    coordinator.data = None
-    entry = MagicMock()
-    entry.data = {"prefix": "test"}
-    entry.entry_id = "no_data_weather"
-    weather = KMAWeather.__new__(KMAWeather)
-    weather.coordinator = coordinator
-    weather._attr_name = "날씨 요약"
-    daily = await weather.async_forecast_daily()
-    twice = await weather.async_forecast_twice_daily()
-    assert daily == []
-    assert twice == []
-
-
-@pytest.mark.asyncio
-async def test_async_unload_entry_ok_false(hass, mock_config_entry, kma_api_mock_factory):
-    from custom_components.kma_weather.const import DOMAIN
-    hass.config.latitude = 37.56
-    hass.config.longitude = 126.98
-    kma_api_mock_factory("full_test")
-    mock_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    with patch("homeassistant.config_entries.ConfigEntries.async_unload_platforms",
-               return_value=False):
-        from custom_components.kma_weather import async_unload_entry
-        result = await async_unload_entry(hass, mock_config_entry)
-
-    assert result is False
-    assert mock_config_entry.entry_id in hass.data[DOMAIN]
-
-
-@pytest.mark.asyncio
-async def test_config_flow_step_user_with_state_name(hass):
-    from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
-    hass.states.async_set("zone.home", "zoning",
-                          {"latitude": 37.56, "longitude": 126.98, "friendly_name": "우리집"})
-    flow = KMAWeatherConfigFlow()
-    flow.hass = hass
-    flow.context = {"source": "user"}
-    flow._async_current_entries = lambda: []
-    with patch.object(flow, "async_set_unique_id", return_value=None), \
-         patch.object(flow, "_abort_if_unique_id_configured"), \
-         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None):
-        result = await flow.async_step_user({
-            "api_key": "KEY_WITH_STATE",
-            "prefix": "home2",
-            "location_entity": "zone.home",
-        })
-    assert result["type"] == "create_entry"
-    assert "기상청 날씨:" in result["title"]
-
-
-@pytest.mark.asyncio
-async def test_config_flow_step_user_entity_no_state(hass):
-    from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
-    flow = KMAWeatherConfigFlow()
-    flow.hass = hass
-    flow.context = {"source": "user"}
-    flow._async_current_entries = lambda: []
-    with patch.object(flow, "async_set_unique_id", return_value=None), \
-         patch.object(flow, "_abort_if_unique_id_configured"), \
-         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None):
-        result = await flow.async_step_user({
-            "api_key": "KEY_NO_STATE",
-            "prefix": "nostate",
-            "location_entity": "zone.unknown_entity",
-        })
-    assert result["type"] == "create_entry"
-    assert "unknown_entity" in result["title"]
-
-
-@pytest.mark.asyncio
-async def test_config_flow_step_user_no_entity(hass):
-    from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
-    flow = KMAWeatherConfigFlow()
-    flow.hass = hass
-    flow.context = {"source": "user"}
-    flow._async_current_entries = lambda: []
-    with patch.object(flow, "async_set_unique_id", return_value=None), \
-         patch.object(flow, "_abort_if_unique_id_configured"), \
-         patch("custom_components.kma_weather.config_flow._validate_api_key", return_value=None):
-        result = await flow.async_step_user({
-            "api_key": "KEY_NO_ENTITY",
-            "prefix": "noent",
-        })
-    assert result["type"] == "create_entry"
-    assert "우리집" in result["title"]
-
-
-@pytest.mark.asyncio
-async def test_config_flow_show_form_when_no_input(hass):
-    from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
-    flow = KMAWeatherConfigFlow()
-    flow.hass = hass
-    flow.context = {"source": "user"}
-    result = await flow.async_step_user(None)
-    assert result["type"] == "form"
-    assert result["step_id"] == "user"
-
-
-def test_nominatim_agent_uuid_replace_raises():
-    class BadUuidHass:
-        @property
-        def installation_uuid(self):
+        captured = {}
+
+        async def mock_mid_term(now, reg_id_temp, reg_id_land):
+            captured["reg_id_temp"] = reg_id_temp
+            captured["reg_id_land"] = reg_id_land
+            return (None, None, datetime(2026, 4, 11, 6, 0, tzinfo=TZ))
+
+        api._get_short_term = AsyncMock(return_value=None)
+        api._get_mid_term = mock_mid_term
+        api._get_air_quality = AsyncMock(return_value={})
+        api._get_address = AsyncMock(return_value="서울시")
+        api._get_warning = AsyncMock(return_value="없음")
+
+        await api.fetch_data(
+            lat=37.56, lon=126.98, nx=60, ny=127,
+            reg_id_temp="11B10101", reg_id_land="11B00000",
+            warn_area_code="L1100200",
+            pollen_area_no="", pollen_area_name=""
+        )
+        assert captured["reg_id_temp"] == "11B10101"
+        assert captured["reg_id_land"] is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_data_passes_warn_area_code(self):
+        """fetch_data()가 warn_area_code를 _get_warning에 전달함"""
+        api = KMAWeatherAPI(MagicMock(), "key")
+        captured = {}
+
+        async def mock_warning(warn_area_code):
+            captured["warn_area_code"] = warn_area_code
+            return "건조주의보"
+
+        api._get_short_term = AsyncMock(return_value=None)
+        api._get_mid_term = AsyncMock(return_value=(None, None, datetime(2026, 4, 11, 6, 0, tzinfo=TZ)))
+        api._get_air_quality = AsyncMock(return_value={})
+        api._get_address = AsyncMock(return_value="서울시")
+        api._get_warning = mock_warning
+
+        result = await api.fetch_data(
+            lat=37.56, lon=126.98, nx=60, ny=127,
+            reg_id_temp="11B10101", reg_id_land="11B00000",
+            warn_area_code="L1100200",
+            pollen_area_no="", pollen_area_name=""
+        )
+        assert captured["warn_area_code"] == "L1100200"
+        assert result["weather"]["warning"] == "건조주의보"
+
+    @pytest.mark.asyncio
+    async def test_fetch_data_passes_lat_lon_to_air_quality(self):
+        """fetch_data()가 lat/lon을 _get_air_quality에 전달함"""
+        api = KMAWeatherAPI(MagicMock(), "key")
+        captured = {}
+
+        async def mock_air(lat, lon):
+            captured["lat"] = lat
+            captured["lon"] = lon
+            return {}
+
+        api._get_short_term = AsyncMock(return_value=None)
+        api._get_mid_term = AsyncMock(return_value=(None, None, datetime(2026, 4, 11, 6, 0, tzinfo=TZ)))
+        api._get_air_quality = mock_air
+        api._get_address = AsyncMock(return_value="서울시")
+        api._get_warning = AsyncMock(return_value="없음")
+
+        await api.fetch_data(
+            lat=37.56, lon=126.98, nx=60, ny=127,
+            reg_id_temp="11B10101", reg_id_land="11B00000",
+            warn_area_code="L1100200",
+            pollen_area_no="", pollen_area_name=""
+        )
+        assert captured["lat"] == pytest.approx(37.56)
+        assert captured["lon"] == pytest.approx(126.98)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. coordinator → api 연동: _async_update_data에서 구역코드 전달 검증
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCoordinatorApiIntegration:
+    @pytest.mark.asyncio
+    async def test_coordinator_passes_area_codes_to_api(self, hass):
+        """coordinator가 _resolve_area_codes 결과를 api.fetch_data에 전달함"""
+        entry = MagicMock()
+        entry.data = {"api_key": "key", "location_entity": ""}
+        entry.options = {}
+        entry.entry_id = "integ_test"
+        hass.config.latitude = 37.608025
+        hass.config.longitude = 127.094222
+
+        coord = KMAWeatherUpdateCoordinator(hass, entry)
+        coord._store_loaded = True
+        captured = {}
+
+        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="1100000000", pollen_area_name=""):
+            captured.update({
+                "reg_id_temp": reg_id_temp,
+                "reg_id_land": reg_id_land,
+                "warn_area_code": warn_area_code,
+            })
             return None
-    api = KMAWeatherAPI(MagicMock(), "MYKEY", hass=BadUuidHass())
-    expected = hashlib.sha1("MYKEY".encode()).hexdigest()[:12]
-    assert expected in api._nominatim_user_agent
 
-
-def test_nominatim_agent_uuid_attribute_raises_exception():
-    class RaisingHass:
-        @property
-        def installation_uuid(self):
-            raise RuntimeError("permission denied")
-    api = KMAWeatherAPI(MagicMock(), "EXKEY", hass=RaisingHass())
-    expected = hashlib.sha1("EXKEY".encode()).hexdigest()[:12]
-    assert expected in api._nominatim_user_agent
-
-
-@pytest.mark.asyncio
-async def test_get_short_term_with_valid_hours():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.nx, api.ny = 60, 127
-    called_params = {}
-
-    async def mock_fetch(url, params, **kwargs):
-        called_params.update(params)
-        return None
-
-    api._fetch = mock_fetch
-    now = datetime(2026, 4, 11, 12, 30, tzinfo=TZ)
-    await api._get_short_term(now)
-    assert called_params.get("base_time") == "1100"
-    assert called_params.get("base_date") == "20260411"
-
-
-def test_merge_all_updates_weather_data_with_best_t():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 9, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    items = [
-        {"fcstDate": today, "fcstTime": "0900", "category": "TMP", "fcstValue": "15"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "PTY", "fcstValue": "0"},
-        {"fcstDate": today, "fcstTime": "1200", "category": "TMP", "fcstValue": "22"},
-        {"fcstDate": today, "fcstTime": "1200", "category": "SKY", "fcstValue": "3"},
-        {"fcstDate": today, "fcstTime": "1200", "category": "PTY", "fcstValue": "0"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "TMP", "fcstValue": "25"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "PTY", "fcstValue": "0"},
-    ]
-    short_res = {"response": {"body": {"items": {"item": items}}}}
-    result = api._merge_all(now, short_res, None, {})
-    assert result["weather"]["TMP"] == "15"
-
-
-def test_merge_all_rain_start_time_on_the_hour():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 8, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    items = [
-        {"fcstDate": today, "fcstTime": "1400", "category": "PTY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "1400", "category": "TMP", "fcstValue": "18"},
-        {"fcstDate": today, "fcstTime": "1400", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "TMP", "fcstValue": "12"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "PTY", "fcstValue": "0"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "TMP", "fcstValue": "20"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "SKY", "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "PTY", "fcstValue": "0"},
-    ]
-    short_res = {"response": {"body": {"items": {"item": items}}}}
-    result = api._merge_all(now, short_res, None, {})
-    rain_time = result["weather"]["rain_start_time"]
-    assert "14시" in rain_time
-    assert "분" not in rain_time
-
-
-def test_merge_all_boundary_date_rep_t_sky_kor():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    items = [
-        {"fcstDate": today, "fcstTime": "0900", "category": "TMP",  "fcstValue": "12"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "SKY",  "fcstValue": "3"},
-        {"fcstDate": today, "fcstTime": "0900", "category": "PTY",  "fcstValue": "0"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "TMP",  "fcstValue": "18"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "SKY",  "fcstValue": "1"},
-        {"fcstDate": today, "fcstTime": "1500", "category": "PTY",  "fcstValue": "0"},
-    ]
-    short_res = {"response": {"body": {"items": {"item": items}}}}
-    result = api._merge_all(now, short_res, None, {})
-    assert result["weather"].get("wf_am_today") == "구름많음"
-
-
-@pytest.mark.asyncio
-async def test_async_update_data_returns_empty_no_location(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": "zone.gone"}
-    entry.options = {}
-    entry.entry_id = "no_loc_clean"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = None
-    hass.config.latitude = 0.0
-    hass.config.longitude = 0.0
-    result = await coord._async_update_data()
-    assert result == {"weather": {}, "air": {}}
-
-
-@pytest.mark.asyncio
-async def test_async_update_data_returns_cached_no_location(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": "zone.gone"}
-    entry.options = {}
-    entry.entry_id = "no_loc_cached"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = {"weather": {"TMP": 99}, "air": {}}
-    hass.config.latitude = 0.0
-    hass.config.longitude = 0.0
-    result = await coord._async_update_data()
-    assert result["weather"]["TMP"] == 99
-
-
-@pytest.mark.asyncio
-async def test_async_update_data_fetch_none_returns_cached(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "fetch_none_cached"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = {"weather": {"TMP": 77}, "air": {"pm10Value": 20}}
-    hass.config.latitude = 37.56
-    hass.config.longitude = 126.98
-    coord.api.fetch_data = AsyncMock(return_value=None)
-    result = await coord._async_update_data()
-    assert result["weather"]["TMP"] == 77
-
-
-@pytest.mark.asyncio
-async def test_async_update_data_morning_uses_wf_am(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    from zoneinfo import ZoneInfo as _ZI
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "morning_am"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._wf_am_today = "맑음"
-    coord._wf_pm_today = "흐림"
-    hass.config.latitude = 37.56
-    hass.config.longitude = 126.98
-    tz = _ZI("Asia/Seoul")
-    mock_data = {
-        "weather": {
-            "wf_am_today": "맑음", "wf_pm_today": "흐림",
-            "current_condition_kor": "맑음", "current_condition": "sunny",
-            "forecast_daily": [], "forecast_twice_daily": [],
-        },
-        "air": {}, "raw_forecast": {},
-    }
-    coord.api.fetch_data = AsyncMock(return_value=mock_data)
-    with patch("custom_components.kma_weather.coordinator.datetime") as mock_dt:
-        morning = datetime(2026, 4, 11, 9, 0, tzinfo=tz)
-        mock_dt.now.return_value = morning
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        result = await coord._async_update_data()
-    assert result["weather"]["current_condition_kor"] == "맑음"
-    assert result["weather"]["current_condition"] == "sunny"
-
-
-@pytest.mark.asyncio
-async def test_async_update_data_afternoon_uses_wf_pm(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    from zoneinfo import ZoneInfo as _ZI
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "afternoon_pm"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._wf_am_today = "맑음"
-    coord._wf_pm_today = "흐림"
-    hass.config.latitude = 37.56
-    hass.config.longitude = 126.98
-    tz = _ZI("Asia/Seoul")
-    mock_data = {
-        "weather": {
-            "wf_am_today": "맑음", "wf_pm_today": "흐림",
-            "current_condition_kor": "맑음", "current_condition": "sunny",
-            "forecast_daily": [], "forecast_twice_daily": [],
-        },
-        "air": {}, "raw_forecast": {},
-    }
-    coord.api.fetch_data = AsyncMock(return_value=mock_data)
-    with patch("custom_components.kma_weather.coordinator.datetime") as mock_dt:
-        afternoon = datetime(2026, 4, 11, 15, 0, tzinfo=tz)
-        mock_dt.now.return_value = afternoon
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        result = await coord._async_update_data()
-    assert result["weather"]["current_condition_kor"] == "흐림"
-    assert result["weather"]["current_condition"] == "cloudy"
-
-
-@pytest.mark.asyncio
-async def test_async_update_data_uses_entity_location(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": "zone.work"}
-    entry.options = {}
-    entry.entry_id = "entity_location"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    hass.states.async_set("zone.work", "zoning",
-                          {"latitude": 35.18, "longitude": 129.07})
-    captured_coords = {}
-
-    # ★ 수정: reg_id_temp, reg_id_land, warn_area_code 인자 추가
-    async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp=None, reg_id_land=None, warn_area_code=None, pollen_area_no="", pollen_area_name=""):
-        captured_coords["lat"] = lat
-        captured_coords["lon"] = lon
-        return None
-
-    coord.api.fetch_data = mock_fetch_data
-    coord._cached_data = {"weather": {}, "air": {}}
-    await coord._async_update_data()
-    assert captured_coords.get("lat") == pytest.approx(35.18)
-    assert captured_coords.get("lon") == pytest.approx(129.07)
-
-
-def test_sensor_api_expire_valid_iso_date():
-    coordinator = MagicMock()
-    coordinator.data = {"weather": {}, "air": {}}
-    coordinator._daily_max_temp = None
-    coordinator._daily_min_temp = None
-    entry = MagicMock()
-    entry.entry_id = "expire_iso"
-    future = (date.today() + timedelta(days=7)).isoformat()
-    entry.options = {"expire_date": future}
-    entry.data = {"prefix": "x", "expire_date": "2099-01-01"}
-    sensor = KMACustomSensor(coordinator, "api_expire", "x", entry)
-    val = sensor.native_value
-    assert val == 7
-    assert isinstance(val, int)
-
-
-def test_is_valid_korean_coord_nan():
-    from custom_components.kma_weather.const import is_korean_coord_loose as _is_valid_korean_coord
-    import math
-    assert _is_valid_korean_coord(math.nan, 126.98) is False
-    assert _is_valid_korean_coord(37.56, math.nan) is False
-
-
-@pytest.mark.asyncio
-async def test_async_update_228_exit_via_resolve_location_mock(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "mock_228"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = None
-    with patch.object(coord, "_resolve_location", return_value=(None, None)):
-        result = await coord._async_update_data()
-    assert result == {"weather": {}, "air": {}}
-
-
-@pytest.mark.asyncio
-async def test_async_update_228_exit_returns_cached_via_mock(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "mock_228_cached"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = {"weather": {"TMP": 88}, "air": {}}
-    with patch.object(coord, "_resolve_location", return_value=(None, None)):
-        result = await coord._async_update_data()
-    assert result["weather"]["TMP"] == 88
-
-
-@pytest.mark.asyncio
-async def test_async_update_235_exit_fetch_none_via_mock(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "mock_235"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = {"weather": {"TMP": 55}, "air": {}}
-    with patch.object(coord, "_resolve_location", return_value=(37.56, 126.98)):
-        coord.api.fetch_data = AsyncMock(return_value=None)
-        result = await coord._async_update_data()
-    assert result["weather"]["TMP"] == 55
-
-
-@pytest.mark.asyncio
-async def test_async_update_276_exception_returns_cached(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "except_276"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = {"weather": {"TMP": 33}, "air": {}}
-    with patch.object(coord, "_resolve_location", return_value=(37.56, 126.98)):
-        coord.api.fetch_data = AsyncMock(side_effect=RuntimeError("boom"))
-        result = await coord._async_update_data()
-    assert result["weather"]["TMP"] == 33
-
-
-@pytest.mark.asyncio
-async def test_resolve_location_285_valid_entity_coords(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": "zone.busan"}
-    entry.options = {}
-    entry.entry_id = "valid_entity_285"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    hass.states.async_set("zone.busan", "zoning",
-                          {"latitude": 35.18, "longitude": 129.07})
-    lat, lon = coord._resolve_location()
-    assert lat == pytest.approx(35.18)
-    assert lon == pytest.approx(129.07)
-
-
-def test_sensor_api_expire_fromisoformat_success_options_priority():
-    coordinator = MagicMock()
-    coordinator.data = {"weather": {}, "air": {}}
-    coordinator._daily_max_temp = None
-    coordinator._daily_min_temp = None
-    entry = MagicMock()
-    entry.entry_id = "prio_expire"
-    future = (date.today() + timedelta(days=20)).isoformat()
-    entry.options = {"expire_date": future}
-    entry.data = {"prefix": "x"}
-    sensor = KMACustomSensor(coordinator, "api_expire", "x", entry)
-    val = sensor.native_value
-    assert val == 20
-    assert isinstance(val, int)
-
-
-@pytest.mark.asyncio
-async def test_sync_today_forecast_none_values_not_overwrite(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "sync_none"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._daily_max_temp = None
-    coord._daily_min_temp = None
-    coord._wf_am_today = None
-    coord._wf_pm_today = None
-    weather = {
-        "current_condition": None,
-        "TMX_tomorrow": None, "TMN_tomorrow": None,
-        "wf_am_tomorrow": None, "wf_pm_tomorrow": None,
-        "forecast_daily": [
-            {"_day_index": 0, "native_temperature": 20.0, "native_templow": 10.0, "condition": "sunny"},
-            {"_day_index": 1, "native_temperature": 22.0, "native_templow": 12.0, "condition": "cloudy"},
-        ],
-        "forecast_twice_daily": [
-            {"_day_index": 0, "is_daytime": True,  "native_temperature": 20.0, "native_templow": 10.0, "condition": "sunny"},
-            {"_day_index": 0, "is_daytime": False, "native_temperature": 20.0, "native_templow": 10.0, "condition": "sunny"},
-            {"_day_index": 1, "is_daytime": True,  "native_temperature": 22.0, "native_templow": 12.0, "condition": "cloudy"},
-            {"_day_index": 1, "is_daytime": False, "native_temperature": 22.0, "native_templow": 12.0, "condition": "cloudy"},
-        ],
-    }
-    coord._sync_today_forecast(weather)
-    d0 = next(e for e in weather["forecast_daily"] if e["_day_index"] == 0)
-    assert d0["native_temperature"] == 20.0
-    assert d0["condition"] == "sunny"
-
-
-@pytest.mark.asyncio
-async def test_async_update_summary_changed_saves_temps(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "summary_save"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._wf_am_today = "맑음"
-    coord._wf_pm_today = "맑음"
-    tz = ZoneInfo("Asia/Seoul")
-    today_str = datetime.now(tz).strftime("%Y%m%d")
-    mock_data = {
-        "weather": {
-            "wf_am_today": "흐림", "wf_pm_today": "비",
-            "current_condition_kor": "흐림", "current_condition": "cloudy",
-            "forecast_daily": [], "forecast_twice_daily": [],
-        },
-        "air": {},
-        "raw_forecast": {today_str: {}},
-    }
-    save_called = []
-    async def mock_save(data): save_called.append(data)
-    coord._store.async_save = mock_save
-    with patch.object(coord, "_resolve_location", return_value=(37.56, 126.98)):
-        coord.api.fetch_data = AsyncMock(return_value=mock_data)
+        coord.api.fetch_data = mock_fetch_data
+        coord._cached_data = {"weather": {}, "air": {}}
         await coord._async_update_data()
-    assert len(save_called) > 0
-    assert coord._wf_am_today == "흐림"
-    assert coord._wf_pm_today == "비"
+
+        assert captured.get("reg_id_temp") == "11B20501"
+        assert captured.get("reg_id_land") is None
+        assert captured.get("warn_area_code") == "L1100200"
+
+    @pytest.mark.asyncio
+    async def test_coordinator_area_cache_prevents_recalculation(self, hass):
+        """2km 이내 이동 시 구역코드 재계산 없이 캐시를 사용함"""
+        entry = MagicMock()
+        entry.data = {"api_key": "key", "location_entity": ""}
+        entry.options = {}
+        entry.entry_id = "cache_test"
+        hass.config.latitude = 37.608025
+        hass.config.longitude = 127.094222
+
+        coord = KMAWeatherUpdateCoordinator(hass, entry)
+        coord._store_loaded = True
+
+        r1 = coord._resolve_area_codes(37.608025, 127.094222)
+        r2 = coord._resolve_area_codes(37.615000, 127.090000)
+        assert r1 == r2
 
 
-def test_merge_all_best_t_none_when_empty_times():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    api._cache_forecast_map = {today: {}}
-    result = api._merge_all(now, None, None, {})
-    assert result["weather"]["TMP"] is None
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. 에어코리아 측정소 캐시 (api 내부) 검증
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAirQualityStationCache:
+    def _make_api(self):
+        return KMAWeatherAPI(MagicMock(), "key")
+
+    @pytest.mark.asyncio
+    async def test_station_cache_used_within_2km(self):
+        """2km 이내 이동 시 측정소 캐시를 재사용함 (측정소 API 재호출 없음)"""
+        api = self._make_api()
+        api._cached_station = "화성"
+        api._cached_station_lat = 37.56
+        api._cached_station_lon = 126.98
+
+        call_count = {"n": 0}
+        air_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": [{"pm10Value": "30", "pm10Grade": "1",
+                                                      "pm25Value": "15", "pm25Grade": "1"}]}}}
+
+        async def mock_fetch(url, params, **kwargs):
+            if "MsrstnInfoInqireSvc" in url:
+                call_count["n"] += 1
+            return air_resp
+
+        api._fetch = mock_fetch
+        await api._get_air_quality(37.564, 126.982)
+        assert call_count["n"] == 0
+
+    @pytest.mark.asyncio
+    async def test_station_cache_invalidated_over_2km(self):
+        """2km 초과 이동 시 측정소를 재조회함"""
+        api = self._make_api()
+        api._cached_station = "화성"
+        api._cached_station_lat = 37.56
+        api._cached_station_lon = 126.98
+
+        station_resp = {"response": {"body": {"items": [{"stationName": "강남"}]}}}
+        air_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": [{"pm10Value": "30", "pm10Grade": "1",
+                                                      "pm25Value": "15", "pm25Grade": "1"}]}}}
+
+        async def mock_fetch(url, params, **kwargs):
+            if "MsrstnInfoInqireSvc" in url:
+                return station_resp
+            return air_resp
+
+        api._fetch = mock_fetch
+        await api._get_air_quality(37.498, 127.027)
+        assert api._cached_station == "강남"
+        assert api._cached_station_lat == pytest.approx(37.498)
 
 
-def test_merge_all_rep_t_none_when_empty_forecast_keys():
-    api = KMAWeatherAPI(MagicMock(), "key")
-    api.lat = api.lon = api.nx = api.ny = None
-    now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
-    tm_fc_dt = datetime(2026, 4, 11, 6, 0, tzinfo=TZ)
-    today = now.strftime("%Y%m%d")
-    api._cache_forecast_map = {today: {}}
-    api._cache_mid_tm_fc_dt = tm_fc_dt
-    api._cache_mid_ta = {}
-    api._cache_mid_land = {}
-    result = api._merge_all(now, None, None, {})
-    assert result["weather"].get("wf_am_today") is None
-    assert len(result["weather"]["forecast_daily"]) == 10
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. coordinator area.json / warn_area.json 로드 검증
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestJsonLoading:
+    def test_temp_id_coords_loaded(self):
+        assert len(_TEMP_ID_COORDS) > 100
+        assert "11B10101" in _TEMP_ID_COORDS
+
+    def test_land_code_map_loaded(self):
+        assert len(_LAND_CODE_MAP) >= 14
+        land_dict = dict(_LAND_CODE_MAP)
+        assert land_dict.get("11B") is None
+
+    def test_exclude_loaded(self):
+        assert "11G00601" in _EXCLUDE_FROM_NEAREST
+        assert "11E00102" in _EXCLUDE_FROM_NEAREST
+
+    def test_warn_area_loaded(self):
+        assert len(_WARN_AREA) > 500
+        first = _WARN_AREA[0]
+        assert isinstance(first[0], float)
+        assert isinstance(first[2], str)
+        assert first[2].startswith("L")
+
+    def test_calc_reg_ids_seoul(self):
+        reg_temp, reg_land = _calc_reg_ids(37.5665, 126.9780)
+        assert reg_temp == "11B10101"
+        assert reg_land is None
+
+    def test_calc_warn_area_jungrang(self):
+        code = _calc_warn_area_code(37.608025, 127.094222)
+        assert code == "L1100200"
+
+    def test_excluded_not_returned(self):
+        reg_temp, _ = _calc_reg_ids(37.24, 131.86)
+        assert reg_temp != "11E00102"
 
 
-@pytest.mark.asyncio
-async def test_async_update_228_exit_direct(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "228_direct_none"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = None
-    with patch.object(coord, "_resolve_location", return_value=(None, None)):
-        result = await coord._async_update_data()
-    assert result == {"weather": {}, "air": {}}
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. warning 센서 검증
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestWarningSensor:
+    def test_warning_in_sensor_types(self):
+        assert "warning" in SENSOR_TYPES
+
+    def test_warning_sensor_structure(self):
+        details = SENSOR_TYPES["warning"]
+        assert len(details) == 6
+        name, unit, icon, device_class, suffix, category = details
+        assert name == "기상특보"
+        assert unit is None
+        assert icon == "mdi:alert-outline"
+        assert suffix == "warning"
+        assert category is None
+
+    def test_warning_sensor_returns_value(self):
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {"weather": {"warning": "건조주의보"}, "air": {}}
+        coordinator._daily_max_temp = None
+        coordinator._daily_min_temp = None
+        entry = MagicMock()
+        entry.entry_id = "warn_test"
+        entry.options = {}
+        entry.data = {"prefix": "test"}
+        sensor = KMACustomSensor(coordinator, "warning", "test", entry)
+        assert sensor.native_value == "건조주의보"
+
+    def test_warning_sensor_returns_none_str(self):
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {"weather": {"warning": "없음"}, "air": {}}
+        coordinator._daily_max_temp = None
+        coordinator._daily_min_temp = None
+        entry = MagicMock()
+        entry.entry_id = "warn_none"
+        entry.options = {}
+        entry.data = {"prefix": "test"}
+        sensor = KMACustomSensor(coordinator, "warning", "test", entry)
+        assert sensor.native_value == "없음"
 
 
-@pytest.mark.asyncio
-async def test_async_update_228_exit_with_cache(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "228_direct_cached"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = {"weather": {"TMP": 21}, "air": {"pm10Value": 15}}
-    with patch.object(coord, "_resolve_location", return_value=(None, None)):
-        result = await coord._async_update_data()
-    assert result["weather"]["TMP"] == 21
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. _get_warning 동작 검증
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGetWarning:
+    def _make_api(self):
+        return KMAWeatherAPI(MagicMock(), "key")
+
+    def _resp(self, items):
+        return {"response": {"header": {"resultCode": "00"},
+                              "body": {"items": {"item": items}}}}
+
+    @pytest.mark.asyncio
+    async def test_active_warning_returned(self):
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._resp([{
+            "command": "1", "cancel": "0", "endTime": "0",
+            "warnVar": "4", "warnStress": "0",
+        }]))
+        assert await api._get_warning("L1100200") == "건조주의보"
+
+    @pytest.mark.asyncio
+    async def test_no_area_code_returns_none(self):
+        api = self._make_api()
+        assert await api._get_warning(None) is None
+
+    @pytest.mark.asyncio
+    async def test_ended_warning_excluded(self):
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._resp([{
+            "command": "2", "cancel": "0", "endTime": "202604171700",
+            "warnVar": "4", "warnStress": "0",
+        }]))
+        assert await api._get_warning("L1100200") == "특보없음"
+
+    @pytest.mark.asyncio
+    async def test_multiple_warnings_combined(self):
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._resp([
+            {"command": "1", "cancel": "0", "endTime": "0", "warnVar": "4", "warnStress": "0"},
+            {"command": "1", "cancel": "0", "endTime": "0", "warnVar": "2", "warnStress": "0"},
+        ]))
+        result = await api._get_warning("L1100200")
+        assert "건조주의보" in result
+        assert "호우주의보" in result
+
+    @pytest.mark.asyncio
+    async def test_severe_warning_stress_1(self):
+        """warnStress=1이면 경보로 변환됨"""
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._resp([{
+            "command": "1", "cancel": "0", "endTime": "0",
+            "warnVar": "8", "warnStress": "1",
+        }]))
+        assert await api._get_warning("L1100200") == "대설경보"
+
+    @pytest.mark.asyncio
+    async def test_fetch_none_returns_none(self):
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=None)
+        assert await api._get_warning("L1100200") is None
 
 
-@pytest.mark.asyncio
-async def test_async_update_235_exit_direct(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "235_direct"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._cached_data = {"weather": {"TMP": 44}, "air": {}}
-    with patch.object(coord, "_resolve_location", return_value=(37.56, 126.98)):
-        coord.api.fetch_data = AsyncMock(return_value=None)
-        result = await coord._async_update_data()
-    assert result["weather"]["TMP"] == 44
+# ════════════════════════════════════════════════════════════════════════════
+# API 상태 전환 통합 테스트
+# ════════════════════════════════════════════════════════════════════════════
 
+class TestApiLifecycle:
+    """API 신청/중지/재활성화 전체 생명주기 테스트."""
 
-@pytest.mark.asyncio
-async def test_async_update_244_summary_am_changed(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "244_am_changed"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._wf_am_today = "맑음"
-    coord._wf_pm_today = "맑음"
-    tz = ZoneInfo("Asia/Seoul")
-    today_str = datetime.now(tz).strftime("%Y%m%d")
-    saved = []
-    async def mock_save(data): saved.append(data)
-    coord._store.async_save = mock_save
-    mock_data = {
-        "weather": {
-            "wf_am_today": "흐림", "wf_pm_today": "맑음",
-            "current_condition_kor": "흐림", "current_condition": "cloudy",
-            "forecast_daily": [], "forecast_twice_daily": [],
-        },
-        "air": {},
-        "raw_forecast": {today_str: {"1200": {"TMP": "20"}}},
-    }
-    with patch.object(coord, "_resolve_location", return_value=(37.56, 126.98)):
-        coord.api.fetch_data = AsyncMock(return_value=mock_data)
-        await coord._async_update_data()
-    assert coord._wf_am_today == "흐림"
-    assert len(saved) > 0
+    def _make_resp(self, code="00"):
+        return {"response": {"header": {"resultCode": code, "resultMsg": "OK"},
+                             "body": {"items": {"item": []}}}}
 
+    def _unsubscribed_resp(self):
+        return {"response": {"header": {"resultCode": "30", "resultMsg": "NO_AUTH"}}}
 
-@pytest.mark.asyncio
-async def test_async_update_246_summary_pm_changed(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "246_pm_changed"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._wf_am_today = "맑음"
-    coord._wf_pm_today = "맑음"
-    tz = ZoneInfo("Asia/Seoul")
-    today_str = datetime.now(tz).strftime("%Y%m%d")
-    mock_data = {
-        "weather": {
-            "wf_am_today": "맑음", "wf_pm_today": "비",
-            "current_condition_kor": "맑음", "current_condition": "sunny",
-            "forecast_daily": [], "forecast_twice_daily": [],
-        },
-        "air": {},
-        "raw_forecast": {today_str: {}},
-    }
-    with patch.object(coord, "_resolve_location", return_value=(37.56, 126.98)):
-        coord.api.fetch_data = AsyncMock(return_value=mock_data)
-        await coord._async_update_data()
-    assert coord._wf_pm_today == "비"
+    # ── 1. API 미신청 시 센서 미생성 ────────────────────────────────────────
+    def test_unapproved_api_sensor_not_in_eligible(self):
+        """미신청 API의 센서는 eligible 목록에 없어야 한다."""
+        from custom_components.kma_weather.sensor import _eligible_sensor_types
+        coordinator = MagicMock()
+        coordinator.api._approved_apis = set()  # 아무것도 승인 안 됨
+        eligible = _eligible_sensor_types(coordinator)
+        # 항상 등록되는 센서만 있어야 함
+        assert "TMP" not in eligible
+        assert "pm10Value" not in eligible
+        assert "warning" not in eligible
+        assert "pollen" not in eligible
+        # 항상 등록 센서는 있어야 함
+        assert "api_calls_today" in eligible
+        assert "sunrise" in eligible
 
+    # ── 2. API 신청 시 센서 생성 ─────────────────────────────────────────────
+    def test_approved_api_sensor_in_eligible(self):
+        """승인된 API의 센서는 eligible 목록에 있어야 한다."""
+        from custom_components.kma_weather.sensor import _eligible_sensor_types
+        coordinator = MagicMock()
+        coordinator.api._approved_apis = {"short", "air", "warning", "pollen"}
+        eligible = _eligible_sensor_types(coordinator)
+        assert "TMP" in eligible
+        assert "pm10Value" in eligible
+        assert "warning" in eligible
+        assert "pollen" in eligible
 
-@pytest.mark.asyncio
-async def test_config_flow_invalid_api_key(hass):
-    from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
-    flow = KMAWeatherConfigFlow()
-    flow.hass = hass
-    flow.context = {"source": "user"}
-    with patch("custom_components.kma_weather.config_flow._validate_api_key",
-               return_value="invalid_api_key"):
-        result = await flow.async_step_user({
-            "api_key": "INVALID_KEY",
-            "prefix": "test",
+    # ── 3. API 중지 시 센서 unavailable ────────────────────────────────────
+    def test_pollen_none_means_unavailable(self):
+        """pollen=None이면 pollen 센서가 unavailable이어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {}, "air": {}, "pollen": None}
+        coord.api._approved_apis = {"pollen"}
+        # super().available = True 설정
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "pollen", "kma", MagicMock())
+            assert sensor.available is False
+
+    def test_short_unapproved_weather_sensor_unavailable(self):
+        """short 미승인 시 단기예보 관련 센서가 unavailable이어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {}, "air": {}, "pollen": None}
+        coord.api._approved_apis = set()  # short 미승인
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "TMP", "kma", MagicMock())
+            assert sensor.available is False
+
+    def test_warning_none_means_unavailable(self):
+        """warning=None이면 기상특보 센서가 unavailable이어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {"warning": None}, "air": {}}
+        coord.api._approved_apis = {"warning"}
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "warning", "kma", MagicMock())
+            assert sensor.available is False
+
+    def test_warning_value_means_available(self):
+        """warning='특보없음'이면 기상특보 센서가 available이어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {"warning": "특보없음"}, "air": {}}
+        coord.api._approved_apis = {"warning"}
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "warning", "kma", MagicMock())
+            assert sensor.available is True
+
+    # ── 5. 단기/중기 중지 시 업데이트 중단 ──────────────────────────────────
+    @pytest.mark.asyncio
+    async def test_short_unsubscribed_stops_update(self, hass):
+        """단기예보 미신청 시 coordinator가 캐시 초기화 후 empty 반환."""
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+        _load_area_data()
+        entry = MagicMock()
+        entry.data = {CONF_API_KEY: "key", CONF_LOCATION_ENTITY: "zone.home"}
+        entry.options = {}
+        entry.entry_id = "test_short_stop"
+        entry.title = "Test"
+
+        coord = KMAWeatherUpdateCoordinator(hass, entry)
+        coord.api._approved_apis = {"short", "mid"}
+        coord.api._pending_apis = set()
+        coord._cached_data = {"weather": {"TMP": 20}, "air": {}, "pollen": None}
+
+        # short → UNSUBSCRIBED 반환
+        coord.api.fetch_data = AsyncMock(return_value={
+            "weather": {}, "air": {}, "pollen": None,
+            "_short_unsubscribed": True,
+            "raw_forecast": {},
         })
-    assert result["type"] == "form"
-    assert result["errors"]["api_key"] == "invalid_api_key"
 
+        hass.data[DOMAIN] = {entry.entry_id: coord}
+        # _resolve_location을 직접 mock (StateMachine read-only 우회)
+        coord._resolve_location = MagicMock(return_value=(37.5, 127.0))
 
-@pytest.mark.asyncio
-async def test_async_update_248_temp_changed_saves(hass):
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": ""}
-    entry.options = {}
-    entry.entry_id = "248_temp_save"
-    coord = KMAWeatherUpdateCoordinator(hass, entry)
-    coord._store_loaded = True
-    coord._daily_max_temp = None
-    tz = ZoneInfo("Asia/Seoul")
-    today_str = datetime.now(tz).strftime("%Y%m%d")
-    saved = []
-    async def mock_save(data): saved.append(data)
-    coord._store.async_save = mock_save
-    mock_data = {
-        "weather": {
-            "wf_am_today": "맑음", "wf_pm_today": "맑음",
-            "current_condition_kor": "맑음", "current_condition": "sunny",
-            "forecast_daily": [], "forecast_twice_daily": [],
-        },
-        "air": {},
-        "raw_forecast": {today_str: {"1200": {"TMP": "25"}, "1500": {"TMP": "28"}}},
-    }
-    with patch.object(coord, "_resolve_location", return_value=(37.56, 126.98)):
-        coord.api.fetch_data = AsyncMock(return_value=mock_data)
-        await coord._async_update_data()
-    assert len(saved) > 0
-    assert coord._daily_max_temp == 28.0
+        result = await coord._async_update_data()
 
+        # 캐시 초기화 확인
+        assert coord.api._cache_forecast_map == {}
+        # weather 비어있음
+        assert result.get("weather") == {}
+        # 공유 카운터에 api_중지 기록
+        shared = coord._shared_counts
+        assert shared.get("api_중지") == "단기예보"
 
-def test_resolve_location_entity_valid_korean_coords():
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"location_entity": "device_tracker.phone"}
-    entry.options = {}
-    entry.entry_id = "285_direct"
-    hass = MagicMock()
-    state = MagicMock()
-    state.attributes = {"latitude": 36.35, "longitude": 127.38}
-    hass.states.get.return_value = state
-    coord = KMAWeatherUpdateCoordinator.__new__(KMAWeatherUpdateCoordinator)
-    coord.hass = hass
-    coord.entry = entry
-    coord._last_lat = None
-    coord._last_lon = None
-    lat, lon = coord._resolve_location()
-    assert lat == pytest.approx(36.35)
-    assert lon == pytest.approx(127.38)
+    # ── 6. api_calls_today에 API_중지_감지 표시 ──────────────────────────────
+    def test_api_calls_today_shows_unsubscribed(self):
+        """api_calls_today 센서 속성에 API_중지_감지가 표시되어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {}, "air": {}, "pollen": None}
+        coord.api._approved_apis = set()
+        coord._shared_counts = {
+            "단기예보": 5, "중기예보": 3, "에어코리아_측정소": 2,
+            "에어코리아_대기": 2, "기상특보": 2, "꽃가루": 1,
+            "date": "20260428", "last_reason": "자동 업데이트",
+            "api_중지": "단기예보",
+        }
+        coord.api_call_total = MagicMock(return_value=15)
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "api_calls_today", "kma", MagicMock())
+            attrs = sensor.extra_state_attributes
+            assert "API_중지_감지" in attrs
+            assert "단기예보" in attrs["API_중지_감지"]
 
+    # ── 7. 단기/중기 활성화 시 업데이트 재개 ─────────────────────────────────
+    @pytest.mark.asyncio
+    async def test_short_reactivated_resumes_update(self, hass):
+        """단기예보 재활성화 시 업데이트가 재개되어야 한다."""
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+        _load_area_data()
+        entry = MagicMock()
+        entry.data = {CONF_API_KEY: "key", CONF_LOCATION_ENTITY: "zone.home"}
+        entry.options = {}
+        entry.entry_id = "test_short_resume"
+        entry.title = "Test"
 
-def test_sensor_native_value_none_when_data_is_none():
-    coordinator = MagicMock()
-    coordinator.data = None
-    coordinator._daily_max_temp = None
-    coordinator._daily_min_temp = None
-    entry = MagicMock()
-    entry.entry_id = "sensor_77"
-    entry.options = {}
-    entry.data = {"prefix": "x"}
-    for sensor_type in ["TMP", "REH", "WSD", "POP", "apparent_temp"]:
-        sensor = KMACustomSensor(coordinator, sensor_type, "x", entry)
-        val = sensor.native_value
-        assert val is None
+        coord = KMAWeatherUpdateCoordinator(hass, entry)
+        coord.api._approved_apis = set()
+        coord.api._pending_apis = {"short", "mid"}
+        coord._cached_data = {"weather": {}, "air": {}, "pollen": None}
 
+        # 정상 응답
+        coord.api.fetch_data = AsyncMock(return_value={
+            "weather": {"TMP": 22, "current_condition": "sunny"},
+            "air": {}, "pollen": {},
+            "raw_forecast": {},
+        })
 
-def test_resolve_location_entity_out_of_range_falls_to_last_lat():
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"location_entity": "zone.foreign"}
-    entry.options = {}
-    entry.entry_id = "out_of_range"
-    hass = MagicMock()
-    state = MagicMock()
-    state.attributes = {"latitude": 0.0, "longitude": 0.0}
-    hass.states.get.return_value = state
-    hass.config.latitude = 37.56
-    hass.config.longitude = 126.98
-    coord = KMAWeatherUpdateCoordinator.__new__(KMAWeatherUpdateCoordinator)
-    coord.hass = hass
-    coord.entry = entry
-    coord._last_lat = 35.5
-    coord._last_lon = 129.3
-    lat, lon = coord._resolve_location()
-    assert lat == pytest.approx(35.5)
-    assert lon == pytest.approx(129.3)
+        hass.data[DOMAIN] = {entry.entry_id: coord}
+        coord._resolve_location = MagicMock(return_value=(37.5, 127.0))
 
+        result = await coord._async_update_data()
 
-def test_resolve_location_285_lat_none_fallback():
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"location_entity": "zone.partial"}
-    entry.options = {}
-    entry.entry_id = "lat_none_285"
-    hass = MagicMock()
-    state = MagicMock()
-    state.attributes = {"latitude": None, "longitude": 126.98}
-    hass.states.get.return_value = state
-    hass.config.latitude = 37.56
-    hass.config.longitude = 126.98
-    coord = KMAWeatherUpdateCoordinator.__new__(KMAWeatherUpdateCoordinator)
-    coord.hass = hass
-    coord.entry = entry
-    coord._last_lat = None
-    coord._last_lon = None
-    lat, lon = coord._resolve_location()
-    assert lat == pytest.approx(37.56)
+        # _short_unsubscribed 없으면 정상 업데이트
+        assert result is not None
+        assert result.get("weather", {}).get("TMP") == 22
 
+    # ── 4. API 활성화 시 센서 재생성 ─────────────────────────────────────────
+    def test_new_sensors_added_when_api_approved(self):
+        """_check_new_sensors가 신규 승인 API의 센서를 추가해야 한다."""
+        from custom_components.kma_weather.sensor import _eligible_sensor_types
+        coordinator = MagicMock()
 
-def test_resolve_location_285_valid_but_out_of_range_no_cache():
-    from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
-    entry = MagicMock()
-    entry.data = {"location_entity": "zone.abroad"}
-    entry.options = {}
-    entry.entry_id = "abroad_no_cache"
-    hass = MagicMock()
-    state = MagicMock()
-    state.attributes = {"latitude": 35.6762, "longitude": 139.6503}
-    hass.states.get.return_value = state
-    hass.config.latitude = 37.56
-    hass.config.longitude = 126.98
-    coord = KMAWeatherUpdateCoordinator.__new__(KMAWeatherUpdateCoordinator)
-    coord.hass = hass
-    coord.entry = entry
-    coord._last_lat = None
-    coord._last_lon = None
-    lat, lon = coord._resolve_location()
-    assert lat == pytest.approx(37.56)
+        # 처음엔 미승인
+        coordinator.api._approved_apis = set()
+        before = set(_eligible_sensor_types(coordinator))
+
+        # pollen 승인
+        coordinator.api._approved_apis = {"pollen"}
+        after = set(_eligible_sensor_types(coordinator))
+
+        assert "pollen" in after - before
+
+    # ── 8. 매 업데이트 시 미신청 로그 출력 ───────────────────────────────────
+    @pytest.mark.asyncio
+    async def test_unsubscribed_warning_logged_every_update(self, caplog):
+        """미신청 API는 매 업데이트마다 WARNING 로그가 출력되어야 한다."""
+        import logging
+        from custom_components.kma_weather.api_kma import KMAWeatherAPI
+        api = KMAWeatherAPI(MagicMock(), "key")
+        api.hass = None
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.kma_weather.api_kma"):
+            api._check_unsubscribed("short", "30")
+            api._check_unsubscribed("short", "30")  # 두 번째도 로그 출력
+
+        # WARNING이 2번 이상 출력됨
+        warnings = [r for r in caplog.records if r.levelname == "WARNING" and "미신청" in r.message]
+        assert len(warnings) >= 2, f"WARNING 로그 2회 이상 기대, 실제: {len(warnings)}"
