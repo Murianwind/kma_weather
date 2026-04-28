@@ -46,7 +46,7 @@ def _land_code(temp_id: str) -> str | None:
     for prefix, land in _LAND_CODE_MAP_SORTED:
         if temp_id.startswith(prefix):
             return land
-    _LOGGER.warning("_land_code: '%s'에 매칭되는 구역코드 없음", temp_id)
+    _LOGGER.warning("_land_code: '%s'에 매칭되는 중기예보 구역코드 없음 (area.json 손상 가능성)", temp_id)
     return None
 
 
