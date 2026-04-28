@@ -193,9 +193,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         self._cached_area_lat = lat
         self._cached_area_lon = lon
-        # 위치 변경 시 꽃가루 좌표 캐시도 무효화
+        # 위치 변경 시 꽃가루 관련 캐시 전체 무효화
         self._pollen_cached_lat = None
         self._pollen_cached_lon = None
+        # pollen today/tomorrow 캐시도 무효화 → 새 위치 데이터 호출
+        self.api._pollen_today = None
+        self.api._pollen_today_date = None
+        self.api._pollen_tomorrow = None
+        self.api._pollen_tomorrow_date = None
         self._cached_nx = nx
         self._cached_ny = ny
         self._cached_reg_id_temp = reg_id_temp
@@ -326,7 +331,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             except Exception as e:
                 _LOGGER.warning("pollen_area_map.json 로드 실패: %s", e)
             if not self._pollen_area_data:
-                return "1100000000", ""
+                _LOGGER.warning("pollen_area_map.json 로드 실패 → 꽃가루 조회 불가")
+                return "", ""
 
         best, best_d = None, float("inf")
         for r in self._pollen_area_data:
@@ -342,7 +348,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("꽃가루 지역 매칭: (%.4f, %.4f) → %s (%s)", lat, lon, best["n"], best["c"])
             return best["c"], best["n"]
 
-        return "1100000000", ""
+        _LOGGER.warning("꽃가루 지역 매칭 실패: (%.4f, %.4f)", lat, lon)
+        return "", ""
 
     async def _restore_approved_apis(self) -> None:
         """재시작/재로드 후 승인된 API 목록을 복구한다."""
@@ -695,53 +702,49 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self, weather: dict, now: "datetime", lat: float, lon: float
     ) -> "tuple[str, dict]":
         """
-        현재 날씨·태양 고도·달 고도·달 조명율·풍속을 종합하여 관측 조건과 속성을 반환한다.
+        관측 조건을 평가한다.
 
-        달 조명율 등급:
-          달 없음: 최우수 / 달 있음: ≤25%→우수, ≤50%→보통, ≤75%→불량, >75%→관측불가
+        평가 항목별 등급:
+          주야간 - 주간: 관측불가
+          날씨   - rainy/pouring/snowy/snowy-rainy/cloudy: 관측불가
+                   partlycloudy: 불량
+                   맑음: 최우수
+          달 조명율 - 삭(0%) 또는 달 없음: 최우수
+                      ≤25%: 우수, ≤50%: 보통, ≤75%: 불량, >75%: 관측불가
+          달 고도  - 7° 미만(달 없음): 최우수
+                     (조명율 등급에 반영됨)
+          풍속     - <1.5: 우수, 1.5~3.0: 최우수, 3.0~5.0: 보통,
+                     5.0~8.0: 불량, ≥8.0: 관측불가, 없음: 영향 없음
 
-        풍속 등급 (m/s):
-          1.5 미만 → 우수
-          1.5~3.0 미만 → 최우수
-          3.0~5.0 미만 → 보통
-          5.0~8.0 미만 → 불량
-          8.0 이상 → 관측불가
-
-        최종 등급: 달 조명율 등급과 풍속 등급 중 더 나쁜 것
-
-        Returns:
-            (condition, attrs_dict)
+        최종 등급: 모든 항목 중 가장 나쁜 것
+        판단사유: 최종 등급과 동일한 항목 전부
         """
         condition_eng = weather.get("current_condition", "")
-        wsd = weather.get("WSD")
-        moon_phase = weather.get("moon_phase", "")
-        illum_raw = weather.get("moon_illumination", None)
-
-        # current_condition_kor: api_kma.py에서 이미 한글로 변환된 값
-        # 없으면 None → 날씨 데이터 없음 (천문만 모드)
+        wsd           = weather.get("WSD")
+        moon_phase    = weather.get("moon_phase", "")
+        illum_raw     = weather.get("moon_illumination", None)
         condition_kor = weather.get("current_condition_kor") or None
 
-        # 조명율 문자열
         try:
             illum_int = int(illum_raw) if illum_raw is not None else None
         except (TypeError, ValueError):
             illum_int = None
         illum_str = f"{illum_int}%" if illum_int is not None else "-"
 
-        # ── 1. skyfield 계산 (모든 케이스에서 달 고도 계산) ─────────────────
+        # ── skyfield: 태양/달 고도 계산 ─────────────────────────────────────
         moon_alt_str = "-"
-        sun_is_up = True  # skyfield 없으면 안전하게 주간으로
-        moon_up = False
+        sun_is_up    = True
+        moon_up      = False
         moon_alt_deg = None
 
-        def _fallback_attrs() -> dict:
+        def _fallback_attrs(day_night: str = "-") -> dict:
             return {
                 "풍속":    f"{wsd} m/s" if wsd is not None else "-",
                 "달_조명율": illum_str,
                 "달_고도":  "-",
-                "날씨": condition_kor or "-",
-                "주야간":   "-",
-                "달_위상":  moon_phase,
+                "날씨":    condition_kor or "-",
+                "주야간":  day_night,
+                "달_위상": moon_phase,
                 "판단사유": "-",
             }
 
@@ -750,14 +753,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 return "분석불가", _fallback_attrs()
 
             sf_loc = _wgs84.latlon(lat, lon)
-            t_now = self._sf_ts.from_datetime(now)
+            t_now  = self._sf_ts.from_datetime(now)
 
-            # 태양 고도
             sun_astr = (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(self._sf_eph["Sun"])
             sun_alt, _, _ = sun_astr.apparent().altaz()
             sun_is_up = sun_alt.degrees > -18
 
-            # 달 고도 (주간/야간 무관하게 항상 계산)
             moon_astr = (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(self._sf_eph["Moon"])
             moon_alt, _, _ = moon_astr.apparent().altaz()
             moon_alt_deg = moon_alt.degrees
@@ -769,108 +770,83 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         day_night = "주간" if sun_is_up else "야간"
 
-        # ── 2. 기상 상태 체크 ────────────────────────────────────────────────
-        if condition_eng in {"rainy", "pouring", "snowy", "snowy-rainy"}:
-            attrs = {
-                "풍속": f"{wsd} m/s" if wsd is not None else "-",
-                "달_조명율": illum_str,
-                "달_고도": moon_alt_str,
-                "날씨": condition_kor or "-",
-                "주야간": day_night,
-                "달_위상": moon_phase,
-                "판단사유": "날씨",
-            }
-            return "관측불가", attrs
+        # ── 각 항목별 등급 계산 ──────────────────────────────────────────────
+        _order = self._OBS_ORDER  # ["관측불가","불량","보통","우수","최우수"]
 
-        if condition_eng == "cloudy":
-            attrs = {
-                "풍속": f"{wsd} m/s" if wsd is not None else "-",
-                "달_조명율": illum_str,
-                "달_고도": moon_alt_str,
-                "날씨": condition_kor or "-",
-                "주야간": day_night,
-                "달_위상": moon_phase,
-                "판단사유": "날씨",
-            }
-            return "관측불가", attrs
-
-        # ── 3. 주간 체크 ─────────────────────────────────────────────────────
+        # 주야간
         if sun_is_up:
-            attrs = {
-                "풍속": f"{wsd} m/s" if wsd is not None else "-",
-                "달_조명율": illum_str,
-                "달_고도": moon_alt_str,
-                "날씨": condition_kor or "-",
-                "주야간": "주간",
-                "달_위상": moon_phase,
-                "판단사유": "주야간",
-            }
-            return "관측불가", attrs
-
-        # ── 4. 구름 많음 ─────────────────────────────────────────────────────
-        if condition_eng == "partlycloudy":
-            attrs = {
-                "풍속": f"{wsd} m/s" if wsd is not None else "-",
-                "달_조명율": illum_str,
-                "달_고도": moon_alt_str,
-                "날씨": "구름많음",
-                "주야간": "야간",
-                "달_위상": moon_phase,
-                "판단사유": "날씨",
-            }
-            return "불량", attrs
-
-        # ── 5. 달 조명율 기반 등급 ───────────────────────────────────────────
-        is_clear = condition_eng in ("", "sunny")
-        illum = illum_int if illum_int is not None else 100
-
-        if not moon_up or illum == 0:
-            # 달 없음 또는 삭(조명율=0%) → 최우수
-            moon_cond = "최우수"
+            cond_daytime = "관측불가"
         else:
-            # 달 있음 → 조명율로 판단
-            if illum <= 25:
-                moon_cond = "우수"
-            elif illum <= 50:
-                moon_cond = "보통"
-            elif illum <= 75:
-                moon_cond = "불량"
-            else:
-                moon_cond = "관측불가"
+            cond_daytime = "최우수"
 
-        # ── 6. 풍속 등급 ─────────────────────────────────────────────────────
+        # 날씨
+        if condition_eng in {"rainy", "pouring", "snowy", "snowy-rainy", "cloudy"}:
+            cond_weather = "관측불가"
+        elif condition_eng == "partlycloudy":
+            cond_weather = "불량"
+        else:
+            cond_weather = "최우수"
+
+        # 달 조명율 (달 고도 포함)
+        if not moon_up or illum_int == 0:
+            cond_moon = "최우수"
+        elif illum_int is None:
+            cond_moon = "최우수"
+        elif illum_int <= 25:
+            cond_moon = "우수"
+        elif illum_int <= 50:
+            cond_moon = "보통"
+        elif illum_int <= 75:
+            cond_moon = "불량"
+        else:
+            cond_moon = "관측불가"
+
+        # 풍속
         wsd_val = _safe_float(wsd)
         if wsd_val is None:
-            # 풍속 데이터 없음 → 달 조명율로만 판단
-            wind_cond = None
+            cond_wind = None  # 영향 없음
         elif wsd_val < 1.5:
-            wind_cond = "우수"
+            cond_wind = "우수"
         elif wsd_val < 3.0:
-            wind_cond = "최우수"
+            cond_wind = "최우수"
         elif wsd_val < 5.0:
-            wind_cond = "보통"
+            cond_wind = "보통"
         elif wsd_val < 8.0:
-            wind_cond = "불량"
+            cond_wind = "불량"
         else:
-            wind_cond = "관측불가"
+            cond_wind = "관측불가"
 
-        # ── 7. 최종 등급: 풍속 있으면 달+풍속 조합, 없으면 달만 ──────────────
-        final_cond = self._obs_min(moon_cond, wind_cond) if wind_cond is not None else moon_cond
+        # ── 최종 등급: 모든 항목 중 가장 나쁜 것 ────────────────────────────
+        all_conds = {
+            "주야간":    cond_daytime,
+            "날씨":      cond_weather,
+            "달 조명율": cond_moon,
+        }
+        if cond_wind is not None:
+            all_conds["풍속"] = cond_wind
 
-        # 판단사유: 최종 등급에 영향을 준 항목
-        reasons = []
-        if moon_cond != "최우수" and illum_int and illum_int > 0 and moon_up:
-            reasons.append("달 조명율")
-        if wind_cond is not None and wind_cond != "최우수":
-            reasons.append("풍속")
+        final_cond = min(all_conds.values(), key=lambda c: _order.index(c))
+        final_idx  = _order.index(final_cond)
+
+        # ── 판단사유: 최종 등급과 동일한 항목 전부 ───────────────────────────
+        reasons = [name for name, cond in all_conds.items()
+                   if _order.index(cond) == final_idx]
+
+        # 주간이면 다른 사유 불필요 (주야간만)
+        if cond_daytime == "관측불가" and sun_is_up:
+            reasons = ["주야간"]
+        # 최우수이면 모든 조건이 좋음 → 사유 없음
+        elif final_cond == "최우수":
+            reasons = []
+
         판단사유 = ", ".join(reasons) if reasons else "-"
 
         attrs = {
-            "풍속": f"{wsd} m/s" if wsd is not None else "-",
+            "풍속":    f"{wsd} m/s" if wsd is not None else "-",
             "달_조명율": illum_str,
-            "달_고도": moon_alt_str,
-            "날씨": (condition_kor or "-") if condition_kor else "-",
-            "주야간": "야간",
+            "달_고도":  moon_alt_str,
+            "날씨":    condition_kor or "-",
+            "주야간":  day_night,
             "달_위상": moon_phase,
             "판단사유": 판단사유,
         }
