@@ -124,7 +124,9 @@ async def _handle_get_astronomical_info(call: ServiceCall) -> dict:
     """
     hass: HomeAssistant = call.hass
     raw_address: str = call.data.get("address", "").strip()
-    target_date: date = call.data["date"]
+    target_date: date | None = call.data.get("date")
+    if target_date is None:
+        raise HomeAssistantError("날짜를 입력해주세요.")
     time_str: str | None = call.data.get("time")
 
     now_kst = datetime.now(_KST)
