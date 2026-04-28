@@ -232,7 +232,11 @@ class TestEvalObservation:
         coord.api.tz = TZ
         coord._sf_ts  = _TEST_SF_TS
         coord._sf_eph = _TEST_SF_EPH
-        weather = {"current_condition": condition, "moon_illumination": illum}
+        coord._OBS_ORDER = KMAWeatherUpdateCoordinator._OBS_ORDER
+        weather = {"current_condition": condition, "moon_illumination": illum,
+                   "current_condition_kor": {"rainy":"비","pouring":"소나기","snowy":"눈",
+                   "snowy-rainy":"비/눈","cloudy":"흐림","partlycloudy":"구름많음",
+                   "sunny":"맑음","":"-"}.get(condition, condition)}
         now = datetime(2026, 4, 21, hour, 0, tzinfo=TZ)
         result = KMAWeatherUpdateCoordinator._eval_observation(coord, weather, now, LAT, LON)
         # 튜플 (condition, reason) → condition만 반환
@@ -1562,10 +1566,19 @@ class TestObservationReason:
         assert "풍속" in reason
 
     def test_reason_wind_and_moon(self):
-        """[Given] 야간 + 달 있음 + 풍속 불량 [Then] 판단사유에 풍속, 달 조명율 모두 포함"""
+        """[Given] 야간 + 달 조명율=관측불가(80%) + 풍속=불량(6.0)
+        [Then] 최종등급=관측불가, 판단사유=달 조명율 (관측불가와 동일한 항목만)"""
         reason = self._eval(22, "sunny", 80, wsd=6.0)
-        assert "풍속" in reason
         assert "달 조명율" in reason
+        # 풍속은 불량(관측불가보다 낮음)이므로 사유에 없음
+        assert "풍속" not in reason
+
+    def test_reason_wind_and_moon_both_worst(self):
+        """[Given] 야간 + 달 조명율=관측불가(80%) + 풍속=관측불가(≥8.0)
+        [Then] 판단사유에 달 조명율, 풍속 모두 포함"""
+        reason = self._eval(22, "sunny", 80, wsd=9.0)
+        assert "달 조명율" in reason
+        assert "풍속" in reason
 
     def test_reason_attrs_key_always_present(self):
         """[Given] 모든 날씨 조건 [Then] 판단사유 키 항상 존재"""
