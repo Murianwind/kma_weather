@@ -816,7 +816,7 @@ async def test_async_update_data_uses_entity_location(hass):
     captured_coords = {}
 
     # ★ 수정: reg_id_temp, reg_id_land, warn_area_code 인자 추가
-    async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp=None, reg_id_land=None, warn_area_code=None, pollen_area_no="1100000000", pollen_area_name=""):
+    async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp=None, reg_id_land=None, warn_area_code=None, pollen_area_no="", pollen_area_name=""):
         captured_coords["lat"] = lat
         captured_coords["lon"] = lon
         return None
