@@ -535,6 +535,16 @@ class KMAWeatherAPI:
                 "area_name": area_name, "area_no": area_no, "announcement": "비시즌",
             }
 
+        # ── API 중지/만료 확인: pending이면 캐시 무시하고 API 호출 ─────────────
+        # _approved_apis에서 제거된 경우(_pending_apis에 있음) 캐시를 무시하고
+        # API를 호출하여 미신청 여부를 즉시 확인한다.
+        if "pollen" in self._pending_apis:
+            _LOGGER.debug("꽃가루 API 재확인 필요 → 캐시 무시하고 API 호출")
+            self._pollen_today = None
+            self._pollen_today_date = None
+            self._pollen_tomorrow = None
+            self._pollen_tomorrow_date = None
+
         # ── today 캐시 있으면 항상 반환 ──────────────────────────────────────
         if self._pollen_today is not None:
             _LOGGER.debug("꽃가루 today 캐시 사용")
