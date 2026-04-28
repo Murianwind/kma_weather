@@ -42,12 +42,12 @@ _LAND_CODE_MAP_SORTED: list[tuple[str, str]] = []
 _WARN_AREA: list[list] = []  # _load_area_data()에서 로드됨
 
 
-
-def _land_code(temp_id: str) -> str:
+def _land_code(temp_id: str) -> str | None:
     for prefix, land in _LAND_CODE_MAP_SORTED:
         if temp_id.startswith(prefix):
             return land
-    return "11B00000"
+    _LOGGER.warning("_land_code: '%s'에 매칭되는 구역코드 없음", temp_id)
+    return None
 
 
 def _calc_reg_ids(lat: float, lon: float) -> tuple[str | None, str | None]:
@@ -876,7 +876,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         elif final_cond == "최우수":
             reasons = []
 
-        판단사유 = ", ".join(reasons) if reasons else "-"
+        obs_reason = ", ".join(reasons) if reasons else "-"
 
         attrs = {
             "풍속":    f"{wsd} m/s" if wsd is not None else "-",
@@ -885,7 +885,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             "날씨":    condition_kor or "-",
             "주야간":  day_night,
             "달_위상": moon_phase,
-            "판단사유": 판단사유,
+            "판단사유": obs_reason,
         }
 
         return final_cond, attrs
