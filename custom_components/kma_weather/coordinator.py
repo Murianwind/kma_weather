@@ -18,6 +18,9 @@ from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid, hav
 _LOGGER = logging.getLogger(__name__)
 
 # ── 중기예보 구역코드 테이블 (area.json) ────────────────────────────────────
+# executor_job이 아닌 import 시점 읽기이지만, area.json은 소규모 정적 파일이며
+# HA 시작 시 1회만 실행되므로 실질적 블로킹 영향이 미미함.
+# 향후 HA 가이드라인 강화 시 async_setup_entry에서 lazy load로 전환 가능.
 _AREA = json.loads((pathlib.Path(__file__).parent / "area.json").read_text(encoding="utf-8"))
 _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {k: tuple(v) for k, v in _AREA["temp"].items()}
 _EXCLUDE_FROM_NEAREST: frozenset[str] = frozenset(_AREA["exclude"])
