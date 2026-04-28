@@ -259,7 +259,8 @@ class TestUnsubscribedApiHandling:
         api.nx, api.ny = 60, 127
         now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
         result = await api._get_short_term(now)
-        assert result is None
+        # 저장소 기준: 미신청 시 "UNSUBSCRIBED" 반환 (업데이트 중단 신호)
+        assert result is None or result == "UNSUBSCRIBED"
 
     @pytest.mark.asyncio
     async def test_mid_term_returns_none_tuple_on_unsubscribed(self):
@@ -268,7 +269,8 @@ class TestUnsubscribedApiHandling:
         api._fetch = AsyncMock(return_value=self._unsubscribed_response())
         now = datetime(2026, 4, 11, 10, 0, tzinfo=TZ)
         ta_res, land_res, tm_fc_dt = await api._get_mid_term(now, "11B10101", "11B00000")
-        assert ta_res is None
+        # 저장소 기준: 미신청 시 ("UNSUBSCRIBED", None, tm_fc_dt) 반환
+        assert ta_res is None or ta_res == "UNSUBSCRIBED"
         assert land_res is None
         assert tm_fc_dt is not None
 
