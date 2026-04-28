@@ -18,22 +18,30 @@ from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid, hav
 _LOGGER = logging.getLogger(__name__)
 
 # ── 중기예보 구역코드 테이블 (area.json) ────────────────────────────────────
-# executor_job이 아닌 import 시점 읽기이지만, area.json은 소규모 정적 파일이며
-# HA 시작 시 1회만 실행되므로 실질적 블로킹 영향이 미미함.
-# 향후 HA 가이드라인 강화 시 async_setup_entry에서 lazy load로 전환 가능.
-_AREA = json.loads((pathlib.Path(__file__).parent / "area.json").read_text(encoding="utf-8"))
-_TEMP_ID_COORDS: dict[str, tuple[float, float]] = {k: tuple(v) for k, v in _AREA["temp"].items()}
-_EXCLUDE_FROM_NEAREST: frozenset[str] = frozenset(_AREA["exclude"])
-_LAND_CODE_MAP: list[tuple[str, str]] = [tuple(x) for x in _AREA["land"]]
+# 모듈 레벨에서 동기 로드 → HA 시작 시 1회만 실행되며 파일 크기가 작아 실질 영향 미미.
+# 엄격한 비동기 환경 대비: _load_area_data()로 분리하여 첫 coordinator 업데이트 시 실행.
+_AREA: dict = {}
+_TEMP_ID_COORDS: dict[str, tuple[float, float]] = {}
+_EXCLUDE_FROM_NEAREST: frozenset[str] = frozenset()
+_LAND_CODE_MAP: list[tuple[str, str]] = []
+
+
+def _load_area_data() -> None:
+    """area.json과 warn_area.json을 동기 로드한다. executor_job에서 실행."""
+    global _AREA, _TEMP_ID_COORDS, _EXCLUDE_FROM_NEAREST, _LAND_CODE_MAP, _WARN_AREA
+    _AREA = json.loads((pathlib.Path(__file__).parent / "area.json").read_text(encoding="utf-8"))
+    _TEMP_ID_COORDS = {k: tuple(v) for k, v in _AREA["temp"].items()}
+    _EXCLUDE_FROM_NEAREST = frozenset(_AREA["exclude"])
+    _LAND_CODE_MAP = [tuple(x) for x in _AREA["land"]]
+    _WARN_AREA = json.loads((pathlib.Path(__file__).parent / "warn_area.json").read_text(encoding="utf-8"))
 # prefix 길이 내림차순으로 미리 정렬 → _land_code 호출 시 매번 정렬 불필요
 _LAND_CODE_MAP_SORTED: list[tuple[str, str]] = sorted(
     _LAND_CODE_MAP, key=lambda x: len(x[0]), reverse=True
 )
 
 # ── 특보구역코드 테이블 (warn_area.json) ─────────────────────────────────────
-_WARN_AREA: list[list] = json.loads(
-    (pathlib.Path(__file__).parent / "warn_area.json").read_text(encoding="utf-8")
-)
+_WARN_AREA: list[list] = []  # _load_area_data()에서 로드됨
+
 
 
 def _land_code(temp_id: str) -> str:
@@ -466,6 +474,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
             try:
+                # area.json/warn_area.json이 아직 로드 안 됐으면 executor에서 로드
+                if not _TEMP_ID_COORDS:
+                    await self.hass.async_add_executor_job(_load_area_data)
                 await self._restore_approved_apis()
                 await self._restore_daily_temps()
                 await self._restore_api_calls()
