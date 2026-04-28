@@ -124,6 +124,9 @@ async def test_summary_persistence_at_midnight(hass, mock_config_entry):
 # 6. 유틸리티 헬퍼 함수 검증
 # ─────────────────────────────────────────────────────────────────────────────
 from custom_components.kma_weather.coordinator import _land_code
+from custom_components.kma_weather.coordinator import _load_area_data
+_load_area_data()  # 테스트 실행 전 정적 데이터 로드
+
 from custom_components.kma_weather.const import haversine as _haversine
 
 def test_haversine_known_distance():
