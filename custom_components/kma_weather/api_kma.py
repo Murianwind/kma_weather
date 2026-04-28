@@ -20,8 +20,6 @@ from .const import (
     POLLEN_SEASONS     as _POLLEN_SEASONS,
 )
 _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
-# 꽃가루 제공 시즌 (시작월, 종료월 포함)
-_POLLEN_SEASONS = {"oak": (4, 6), "pine": (4, 6), "grass": (8, 10)}
 
 
 KOR_TO_CONDITION: dict[str, str] = {
@@ -47,7 +45,7 @@ KOR_TO_CONDITION: dict[str, str] = {
 
 
 class KMAWeatherAPI:
-    def __init__(self, session, api_key, hass=None):
+    def __init__(self, session: "aiohttp.ClientSession", api_key: str, hass: "HomeAssistant | None" = None) -> None:
         self.session = session
         self.api_key = unquote(api_key)
         self.hass = hass
