@@ -258,7 +258,13 @@ class KMAWeatherAPI:
         short_res, mid_res, air_data, address, warning, pollen_data = [
             r if not isinstance(r, Exception) else None for r in results
         ]
-        return self._merge_all(now, short_res, mid_res, air_data, address, warning, pollen_data)
+        merged = self._merge_all(now, short_res, mid_res, air_data, address, warning, pollen_data)
+        # 단기/중기 미신청 신호를 merged에 포함
+        if short_res == "UNSUBSCRIBED":
+            merged["_short_unsubscribed"] = True
+        if isinstance(mid_res, tuple) and mid_res[0] == "UNSUBSCRIBED":
+            merged["_mid_unsubscribed"] = True
+        return merged
 
     # ── 주소 (Nominatim) ────────────────────────────────────────────────────
     async def _get_address(self, lat: float, lon: float) -> str:
@@ -368,7 +374,7 @@ class KMAWeatherAPI:
         )
         code = self._extract_result_code(data)
         if code and self._check_unsubscribed("short", code):
-            return None
+            return "UNSUBSCRIBED"  # 미신청/만료 → 업데이트 중단 신호
         items = (data or {}).get("response", {}).get("body", {}).get("items", {}).get("item", [])
         if items:
             self._mark_approved("short")
@@ -411,10 +417,12 @@ class KMAWeatherAPI:
             if not isinstance(res, Exception):
                 code = self._extract_result_code(res)
                 if code and self._check_unsubscribed("mid", code):
-                    return (None, None, tm_fc_dt)
+                    return ("UNSUBSCRIBED", None, tm_fc_dt)  # 미신청/만료 → 업데이트 중단 신호
 
         def _is_valid(res):
             if isinstance(res, Exception) or not res:
+                return False
+            if res == "UNSUBSCRIBED":
                 return False
             items = res.get("response", {}).get("body", {}).get("items", {}).get("item", [])
             return len(items) > 0
@@ -722,7 +730,7 @@ class KMAWeatherAPI:
         }
 
         new_forecast_map = {}
-        if short_res and "response" in short_res:
+        if short_res and short_res != "UNSUBSCRIBED" and "response" in short_res:
             for it in (short_res.get("response", {}).get("body", {})
                        .get("items", {}).get("item", [])):
                 new_forecast_map.setdefault(
