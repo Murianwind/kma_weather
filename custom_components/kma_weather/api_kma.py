@@ -11,38 +11,14 @@ from .const import haversine as _haversine_fn, safe_float as _safe_float
 
 _LOGGER = logging.getLogger(__name__)
 
-# ── 특보 코드 → 한글 변환 ────────────────────────────────────────────────────
-_WARN_TYPE_MAP: dict[str, tuple[str, str]] = {
-    "1":  ("강풍주의보",     "강풍경보"),
-    "2":  ("호우주의보",     "호우경보"),
-    "3":  ("한파주의보",     "한파경보"),
-    "4":  ("건조주의보",     "건조경보"),
-    "5":  ("폭풍해일주의보", "폭풍해일경보"),
-    "6":  ("풍랑주의보",     "풍랑경보"),
-    "7":  ("태풍주의보",     "태풍경보"),
-    "8":  ("대설주의보",     "대설경보"),
-    "9":  ("황사주의보",     "황사경보"),
-    "10": ("안개주의보",     "안개경보"),
-    "11": ("지진해일주의보", "지진해일경보"),
-    "12": ("폭염주의보",     "폭염경보"),
-}
-
-# ── API 서비스 정보 (미신청 감지용) ──────────────────────────────────────────
-_API_SERVICES = {
-    "short":   ("기상청 단기예보",        "https://www.data.go.kr/data/15084084/openapi.do"),
-    "mid":     ("기상청 중기예보",        "https://www.data.go.kr/data/15059468/openapi.do"),
-    "air":     ("에어코리아 대기오염정보", "https://www.data.go.kr/data/15073861/openapi.do"),
-    "station": ("에어코리아 측정소정보",  "https://www.data.go.kr/data/15073877/openapi.do"),
-    "warning": ("기상특보 조회서비스",    "https://www.data.go.kr/data/15000415/openapi.do"),
-    "pollen":  ("기상청 생활기상지수",    "https://www.data.go.kr/data/15085289/openapi.do"),
-}
-
-# 미신청으로 판단하는 resultCode 목록
-_UNSUBSCRIBED_CODES = {"20", "21", "22", "30", "31", "32", "33"}
-
-# ── 꽃가루 관련 상수 ──────────────────────────────────────────────────────────
-# 단계: 낮음=0, 보통=1, 높음=2, 매우높음=3 (문서 기준)
-_POLLEN_GRADE = {"0": "좋음", "1": "보통", "2": "나쁨", "3": "매우나쁨"}
+# ── 상수는 const.py에서 import ────────────────────────────────────────────────
+from .const import (
+    WARN_TYPE_MAP      as _WARN_TYPE_MAP,
+    API_SERVICES       as _API_SERVICES,
+    UNSUBSCRIBED_CODES as _UNSUBSCRIBED_CODES,
+    POLLEN_GRADE       as _POLLEN_GRADE,
+    POLLEN_SEASONS     as _POLLEN_SEASONS,
+)
 _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 # 꽃가루 제공 시즌 (시작월, 종료월 포함)
 _POLLEN_SEASONS = {"oak": (4, 6), "pine": (4, 6), "grass": (8, 10)}
@@ -671,17 +647,15 @@ class KMAWeatherAPI:
                     self._pollen_tomorrow_date = None
                     return result
 
-                # 06시 발표 데이터 없음 (18시 이전이라 아직 미발표)
-                # → 전날 18시 발표 tomorrow로 fallback
+                # 06시 발표 데이터 없음 → 전날 18시 발표로 표시
+                # 단, 캐시 저장하지 않고 반환만 → 다음 업데이트 시 06시 재시도
                 base_dt  = now - timedelta(days=1)
                 base_str = base_dt.strftime("%Y%m%d")
                 ann_18 = f"{base_str[:4]}년 {base_str[4:6]}월 {base_str[6:]}일 18시 발표"
                 result = await _call(base_str + "18", "tomorrow", ann_18)
                 if result is None: return None
                 if result is not False:
-                    _LOGGER.debug("꽃가루 tomorrow 캐시 저장 (06시 발표 fallback)")
-                    self._pollen_tomorrow = result
-                    self._pollen_tomorrow_date = today_str
+                    _LOGGER.debug("꽃가루 전날 18시 발표 임시 표시 (캐시 저장 안 함 → 다음 업데이트 시 06시 재시도)")
                     return result
                 return {}
 
