@@ -20,7 +20,6 @@ from .const import (
     POLLEN_GRADE         as _POLLEN_GRADE,
     POLLEN_SEASONS       as _POLLEN_SEASONS,
 )
-_POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 
 
 KOR_TO_CONDITION: dict[str, str] = {
