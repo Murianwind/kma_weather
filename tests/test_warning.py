@@ -406,7 +406,7 @@ class TestCoordinatorApiIntegration:
         coord._store_loaded = True
         captured = {}
 
-        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="1100000000", pollen_area_name=""):
+        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="", pollen_area_name=""):
             captured.update({
                 "reg_id_temp": reg_id_temp,
                 "reg_id_land": reg_id_land,
