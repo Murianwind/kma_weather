@@ -18,6 +18,7 @@ from custom_components.kma_weather.api_kma import (
     KMAWeatherAPI,
     _API_SERVICES,
 )
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from custom_components.kma_weather.coordinator import (
 
     KMAWeatherUpdateCoordinator,
@@ -28,6 +29,7 @@ from custom_components.kma_weather.coordinator import (
     _calc_reg_ids,
     _calc_warn_area_code,
 )
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from custom_components.kma_weather.coordinator import _load_area_data
 _load_area_data()  # 테스트 실행 전 정적 데이터 로드
 
@@ -632,3 +634,215 @@ class TestGetWarning:
         api = self._make_api()
         api._fetch = AsyncMock(return_value=None)
         assert await api._get_warning("L1100200") is None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# API 상태 전환 통합 테스트
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestApiLifecycle:
+    """API 신청/중지/재활성화 전체 생명주기 테스트."""
+
+    def _make_resp(self, code="00"):
+        return {"response": {"header": {"resultCode": code, "resultMsg": "OK"},
+                             "body": {"items": {"item": []}}}}
+
+    def _unsubscribed_resp(self):
+        return {"response": {"header": {"resultCode": "30", "resultMsg": "NO_AUTH"}}}
+
+    # ── 1. API 미신청 시 센서 미생성 ────────────────────────────────────────
+    def test_unapproved_api_sensor_not_in_eligible(self):
+        """미신청 API의 센서는 eligible 목록에 없어야 한다."""
+        from custom_components.kma_weather.sensor import _eligible_sensor_types
+        coordinator = MagicMock()
+        coordinator.api._approved_apis = set()  # 아무것도 승인 안 됨
+        eligible = _eligible_sensor_types(coordinator)
+        # 항상 등록되는 센서만 있어야 함
+        assert "TMP" not in eligible
+        assert "pm10Value" not in eligible
+        assert "warning" not in eligible
+        assert "pollen" not in eligible
+        # 항상 등록 센서는 있어야 함
+        assert "api_calls_today" in eligible
+        assert "sunrise" in eligible
+
+    # ── 2. API 신청 시 센서 생성 ─────────────────────────────────────────────
+    def test_approved_api_sensor_in_eligible(self):
+        """승인된 API의 센서는 eligible 목록에 있어야 한다."""
+        from custom_components.kma_weather.sensor import _eligible_sensor_types
+        coordinator = MagicMock()
+        coordinator.api._approved_apis = {"short", "air", "warning", "pollen"}
+        eligible = _eligible_sensor_types(coordinator)
+        assert "TMP" in eligible
+        assert "pm10Value" in eligible
+        assert "warning" in eligible
+        assert "pollen" in eligible
+
+    # ── 3. API 중지 시 센서 unavailable ────────────────────────────────────
+    def test_pollen_none_means_unavailable(self):
+        """pollen=None이면 pollen 센서가 unavailable이어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {}, "air": {}, "pollen": None}
+        coord.api._approved_apis = {"pollen"}
+        # super().available = True 설정
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "pollen", "kma", MagicMock())
+            assert sensor.available is False
+
+    def test_short_unapproved_weather_sensor_unavailable(self):
+        """short 미승인 시 단기예보 관련 센서가 unavailable이어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {}, "air": {}, "pollen": None}
+        coord.api._approved_apis = set()  # short 미승인
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "TMP", "kma", MagicMock())
+            assert sensor.available is False
+
+    def test_warning_none_means_unavailable(self):
+        """warning=None이면 기상특보 센서가 unavailable이어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {"warning": None}, "air": {}}
+        coord.api._approved_apis = {"warning"}
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "warning", "kma", MagicMock())
+            assert sensor.available is False
+
+    def test_warning_value_means_available(self):
+        """warning='특보없음'이면 기상특보 센서가 available이어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {"warning": "특보없음"}, "air": {}}
+        coord.api._approved_apis = {"warning"}
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "warning", "kma", MagicMock())
+            assert sensor.available is True
+
+    # ── 5. 단기/중기 중지 시 업데이트 중단 ──────────────────────────────────
+    @pytest.mark.asyncio
+    async def test_short_unsubscribed_stops_update(self, hass):
+        """단기예보 미신청 시 coordinator가 캐시 초기화 후 empty 반환."""
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+        _load_area_data()
+        entry = MagicMock()
+        entry.data = {CONF_API_KEY: "key", CONF_LOCATION_ENTITY: "zone.home"}
+        entry.options = {}
+        entry.entry_id = "test_short_stop"
+        entry.title = "Test"
+
+        coord = KMAWeatherUpdateCoordinator(hass, entry)
+        coord.api._approved_apis = {"short", "mid"}
+        coord.api._pending_apis = set()
+        coord._cached_data = {"weather": {"TMP": 20}, "air": {}, "pollen": None}
+
+        # short → UNSUBSCRIBED 반환
+        coord.api.fetch_data = AsyncMock(return_value={
+            "weather": {}, "air": {}, "pollen": None,
+            "_short_unsubscribed": True,
+            "raw_forecast": {},
+        })
+
+        state_mock = MagicMock()
+        state_mock.attributes = {"latitude": 37.5, "longitude": 127.0}
+        hass.states.get = MagicMock(return_value=state_mock)
+        hass.data[DOMAIN] = {entry.entry_id: coord}
+
+        result = await coord._async_update_data()
+
+        # 캐시 초기화 확인
+        assert coord.api._cache_forecast_map == {}
+        # weather 비어있음
+        assert result.get("weather") == {}
+        # 공유 카운터에 api_중지 기록
+        shared = coord._shared_counts
+        assert shared.get("api_중지") == "단기예보"
+
+    # ── 6. api_calls_today에 API_중지_감지 표시 ──────────────────────────────
+    def test_api_calls_today_shows_unsubscribed(self):
+        """api_calls_today 센서 속성에 API_중지_감지가 표시되어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coord = MagicMock()
+        coord.data = {"weather": {}, "air": {}, "pollen": None}
+        coord.api._approved_apis = set()
+        coord._shared_counts = {
+            "단기예보": 5, "중기예보": 3, "에어코리아_측정소": 2,
+            "에어코리아_대기": 2, "기상특보": 2, "꽃가루": 1,
+            "date": "20260428", "last_reason": "자동 업데이트",
+            "api_중지": "단기예보",
+        }
+        coord.api_call_total = MagicMock(return_value=15)
+        with patch.object(CoordinatorEntity, 'available', new_callable=lambda: property(lambda self: True)):
+            sensor = KMACustomSensor(coord, "api_calls_today", "kma", MagicMock())
+            attrs = sensor.extra_state_attributes
+            assert "API_중지_감지" in attrs
+            assert "단기예보" in attrs["API_중지_감지"]
+
+    # ── 7. 단기/중기 활성화 시 업데이트 재개 ─────────────────────────────────
+    @pytest.mark.asyncio
+    async def test_short_reactivated_resumes_update(self, hass):
+        """단기예보 재활성화 시 업데이트가 재개되어야 한다."""
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+        _load_area_data()
+        entry = MagicMock()
+        entry.data = {CONF_API_KEY: "key", CONF_LOCATION_ENTITY: "zone.home"}
+        entry.options = {}
+        entry.entry_id = "test_short_resume"
+        entry.title = "Test"
+
+        coord = KMAWeatherUpdateCoordinator(hass, entry)
+        coord.api._approved_apis = set()
+        coord.api._pending_apis = {"short", "mid"}
+        coord._cached_data = {"weather": {}, "air": {}, "pollen": None}
+
+        # 정상 응답
+        coord.api.fetch_data = AsyncMock(return_value={
+            "weather": {"TMP": 22, "current_condition": "sunny"},
+            "air": {}, "pollen": {},
+            "raw_forecast": {},
+        })
+
+        state_mock = MagicMock()
+        state_mock.attributes = {"latitude": 37.5, "longitude": 127.0}
+        hass.states.get = MagicMock(return_value=state_mock)
+        hass.data[DOMAIN] = {entry.entry_id: coord}
+
+        result = await coord._async_update_data()
+
+        # _short_unsubscribed 없으면 정상 업데이트
+        assert result is not None
+        assert result.get("weather", {}).get("TMP") == 22
+
+    # ── 4. API 활성화 시 센서 재생성 ─────────────────────────────────────────
+    def test_new_sensors_added_when_api_approved(self):
+        """_check_new_sensors가 신규 승인 API의 센서를 추가해야 한다."""
+        from custom_components.kma_weather.sensor import _eligible_sensor_types
+        coordinator = MagicMock()
+
+        # 처음엔 미승인
+        coordinator.api._approved_apis = set()
+        before = set(_eligible_sensor_types(coordinator))
+
+        # pollen 승인
+        coordinator.api._approved_apis = {"pollen"}
+        after = set(_eligible_sensor_types(coordinator))
+
+        assert "pollen" in after - before
+
+    # ── 8. 매 업데이트 시 미신청 로그 출력 ───────────────────────────────────
+    @pytest.mark.asyncio
+    async def test_unsubscribed_warning_logged_every_update(self, caplog):
+        """미신청 API는 매 업데이트마다 WARNING 로그가 출력되어야 한다."""
+        import logging
+        from custom_components.kma_weather.api_kma import KMAWeatherAPI
+        api = KMAWeatherAPI(MagicMock(), "key")
+        api.hass = None
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.kma_weather.api_kma"):
+            api._check_unsubscribed("short", "30")
+            api._check_unsubscribed("short", "30")  # 두 번째도 로그 출력
+
+        # WARNING이 2번 이상 출력됨
+        warnings = [r for r in caplog.records if r.levelname == "WARNING" and "미신청" in r.message]
+        assert len(warnings) >= 2, f"WARNING 로그 2회 이상 기대, 실제: {len(warnings)}"
