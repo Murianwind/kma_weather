@@ -14,11 +14,11 @@ _LOGGER = logging.getLogger(__name__)
 
 # ── 상수는 const.py에서 import ────────────────────────────────────────────────
 from .const import (
-    WARN_TYPE_MAP      as _WARN_TYPE_MAP,
-    API_SERVICES       as _API_SERVICES,
-    UNSUBSCRIBED_CODES as _UNSUBSCRIBED_CODES,
-    POLLEN_GRADE       as _POLLEN_GRADE,
-    POLLEN_SEASONS     as _POLLEN_SEASONS,
+    WARN_TYPE_MAP        as _WARN_TYPE_MAP,
+    API_SERVICES         as _API_SERVICES,
+    UNSUBSCRIBED_CODES   as _UNSUBSCRIBED_CODES,
+    POLLEN_GRADE         as _POLLEN_GRADE,
+    POLLEN_SEASONS       as _POLLEN_SEASONS,
 )
 _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 
@@ -222,8 +222,8 @@ class KMAWeatherAPI:
         nx: int, ny: int,
         reg_id_temp: str, reg_id_land: str,
         warn_area_code: str | None,
-        pollen_area_no: str = "1100000000",
-        pollen_area_name: str = "",
+        pollen_area_no: str,
+        pollen_area_name: str,
     ) -> dict | None:
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
@@ -259,7 +259,8 @@ class KMAWeatherAPI:
             r if not isinstance(r, Exception) else None for r in results
         ]
         merged = self._merge_all(now, short_res, mid_res, air_data, address, warning, pollen_data)
-        # 단기/중기 미신청 신호를 merged에 포함
+        # 단기/중기 미신청 신호: coordinator가 감지하도록 data에 포함
+        # TODO: 향후 (data, flags) 튜플로 분리하여 SRP 개선 가능
         if short_res == "UNSUBSCRIBED":
             merged["_short_unsubscribed"] = True
         if isinstance(mid_res, tuple) and mid_res[0] == "UNSUBSCRIBED":
