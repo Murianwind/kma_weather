@@ -771,7 +771,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         day_night = "주간" if sun_is_up else "야간"
 
         # ── 각 항목별 등급 계산 ──────────────────────────────────────────────
-        _order = self._OBS_ORDER  # ["관측불가","불량","보통","우수","최우수"]
+        _order = KMAWeatherUpdateCoordinator._OBS_ORDER  # MagicMock 오염 방지
 
         # 주야간
         if sun_is_up:
