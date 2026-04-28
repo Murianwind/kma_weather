@@ -749,10 +749,9 @@ class TestApiLifecycle:
 
         state_mock = MagicMock()
         state_mock.attributes = {"latitude": 37.5, "longitude": 127.0}
-        hass.states.get = MagicMock(return_value=state_mock)
-        hass.data[DOMAIN] = {entry.entry_id: coord}
-
-        result = await coord._async_update_data()
+        with patch.object(hass.states, "get", return_value=state_mock):
+            hass.data[DOMAIN] = {entry.entry_id: coord}
+            result = await coord._async_update_data()
 
         # 캐시 초기화 확인
         assert coord.api._cache_forecast_map == {}
@@ -808,10 +807,9 @@ class TestApiLifecycle:
 
         state_mock = MagicMock()
         state_mock.attributes = {"latitude": 37.5, "longitude": 127.0}
-        hass.states.get = MagicMock(return_value=state_mock)
-        hass.data[DOMAIN] = {entry.entry_id: coord}
-
-        result = await coord._async_update_data()
+        with patch.object(hass.states, "get", return_value=state_mock):
+            hass.data[DOMAIN] = {entry.entry_id: coord}
+            result = await coord._async_update_data()
 
         # _short_unsubscribed 없으면 정상 업데이트
         assert result is not None
