@@ -328,6 +328,7 @@ class TestFetchDataIntegration:
         api._get_air_quality = AsyncMock(return_value={})
         api._get_address = AsyncMock(return_value="서울시")
         api._get_warning = AsyncMock(return_value="없음")
+        api._get_pollen = AsyncMock(return_value={})
 
         await api.fetch_data(
             lat=37.56, lon=126.98, nx=60, ny=127,
@@ -336,7 +337,7 @@ class TestFetchDataIntegration:
             pollen_area_no="", pollen_area_name=""
         )
         assert captured["reg_id_temp"] == "11B10101"
-        assert captured["reg_id_land"] is None
+        assert captured["reg_id_land"] == "11B00000"
 
     @pytest.mark.asyncio
     async def test_fetch_data_passes_warn_area_code(self):
@@ -379,6 +380,7 @@ class TestFetchDataIntegration:
         api._get_air_quality = mock_air
         api._get_address = AsyncMock(return_value="서울시")
         api._get_warning = AsyncMock(return_value="없음")
+        api._get_pollen = AsyncMock(return_value={})
 
         await api.fetch_data(
             lat=37.56, lon=126.98, nx=60, ny=127,
@@ -409,7 +411,7 @@ class TestCoordinatorApiIntegration:
         coord._store_loaded = True
         captured = {}
 
-        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="1100000000", pollen_area_name=""):
+        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="", pollen_area_name=""):
             captured.update({
                 "reg_id_temp": reg_id_temp,
                 "reg_id_land": reg_id_land,
@@ -422,7 +424,7 @@ class TestCoordinatorApiIntegration:
         await coord._async_update_data()
 
         assert captured.get("reg_id_temp") == "11B20501"
-        assert captured.get("reg_id_land") is None
+        assert captured.get("reg_id_land") == "11B00000"
         assert captured.get("warn_area_code") == "L1100200"
 
     @pytest.mark.asyncio
