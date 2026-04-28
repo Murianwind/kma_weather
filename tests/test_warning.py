@@ -12,7 +12,10 @@
 import pytest
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from custom_components.kma_weather.const import CONF_API_KEY, CONF_LOCATION_ENTITY
+from custom_components.kma_weather.const import DOMAIN
 
 from custom_components.kma_weather.api_kma import (
     KMAWeatherAPI,
