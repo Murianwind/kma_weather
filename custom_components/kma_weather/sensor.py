@@ -258,26 +258,15 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
         if self._type in ("api_expire", "api_calls_today"):
             return True
 
-        _SHORT_TYPES = {
-            "TMP", "REH", "WSD", "VEC_KOR", "POP", "apparent_temp",
-            "rain_start_time", "current_condition_kor",
-            "TMX_today", "TMN_today", "wf_am_today", "wf_pm_today",
-            "TMX_tomorrow", "TMN_tomorrow", "wf_am_tomorrow", "wf_pm_tomorrow",
-        }
-        _AIR_TYPES = {"pm10Value", "pm10Grade", "pm25Value", "pm25Grade"}
-
-        if self._type == "pollen":
-            return self.coordinator.data.get("pollen") is not None
-
-        if self._type in _SHORT_TYPES:
-            return "short" in self.coordinator.api._approved_apis
-
-        if self._type in _AIR_TYPES:
-            return "air" in self.coordinator.api._approved_apis
-
-        if self._type == "warning":
-            w = self.coordinator.data.get("weather", {})
-            return w.get("warning") is not None
+        # SENSOR_API_GROUPS에서 API별 센서 목록을 파생 → 중복 정의 없음
+        for api_key, sensor_types in SENSOR_API_GROUPS.items():
+            if api_key is not None and self._type in sensor_types:
+                if api_key == "pollen":
+                    return self.coordinator.data.get("pollen") is not None
+                if api_key == "warning":
+                    w = self.coordinator.data.get("weather", {})
+                    return w.get("warning") is not None
+                return api_key in self.coordinator.api._approved_apis
 
         return True
 
