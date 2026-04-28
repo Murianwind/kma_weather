@@ -28,16 +28,15 @@ _LAND_CODE_MAP: list[tuple[str, str]] = []
 
 def _load_area_data() -> None:
     """area.json과 warn_area.json을 동기 로드한다. executor_job에서 실행."""
-    global _AREA, _TEMP_ID_COORDS, _EXCLUDE_FROM_NEAREST, _LAND_CODE_MAP, _WARN_AREA
+    global _AREA, _TEMP_ID_COORDS, _EXCLUDE_FROM_NEAREST, _LAND_CODE_MAP, _LAND_CODE_MAP_SORTED, _WARN_AREA
     _AREA = json.loads((pathlib.Path(__file__).parent / "area.json").read_text(encoding="utf-8"))
     _TEMP_ID_COORDS = {k: tuple(v) for k, v in _AREA["temp"].items()}
     _EXCLUDE_FROM_NEAREST = frozenset(_AREA["exclude"])
     _LAND_CODE_MAP = [tuple(x) for x in _AREA["land"]]
+    _LAND_CODE_MAP_SORTED = sorted(_LAND_CODE_MAP, key=lambda x: len(x[0]), reverse=True)
     _WARN_AREA = json.loads((pathlib.Path(__file__).parent / "warn_area.json").read_text(encoding="utf-8"))
-# prefix 길이 내림차순으로 미리 정렬 → _land_code 호출 시 매번 정렬 불필요
-_LAND_CODE_MAP_SORTED: list[tuple[str, str]] = sorted(
-    _LAND_CODE_MAP, key=lambda x: len(x[0]), reverse=True
-)
+# prefix 길이 내림차순으로 미리 정렬 → _load_area_data()에서 갱신됨
+_LAND_CODE_MAP_SORTED: list[tuple[str, str]] = []
 
 # ── 특보구역코드 테이블 (warn_area.json) ─────────────────────────────────────
 _WARN_AREA: list[list] = []  # _load_area_data()에서 로드됨
