@@ -795,6 +795,7 @@ class KMAWeatherAPI:
                         today_str, last_date, times[-1],
                     )
 
+        _PTY_LABEL = {"1": "비", "2": "비/눈", "3": "눈", "4": "소나기"}
         for d_str in sorted(forecast_map.keys()):
             rain_times = [
                 t_str for t_str in sorted(forecast_map[d_str].keys())
@@ -804,10 +805,12 @@ class KMAWeatherAPI:
                 t = rain_times[0]
                 month, day = int(d_str[4:6]), int(d_str[6:8])
                 hour, minute = int(t[:2]), int(t[2:])
+                pty_val = str(forecast_map[d_str][t].get("PTY", "0"))
+                label = _PTY_LABEL.get(pty_val, "강수")
                 if minute > 0:
-                    weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시 {minute}분"
+                    weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시 {minute}분 {label}"
                 else:
-                    weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시"
+                    weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시 {label}"
                 break
 
         twice_daily, daily_forecast = [], []
@@ -930,13 +933,20 @@ class KMAWeatherAPI:
                 vec = _safe_float(slot.get("VEC"))
                 reh = _safe_float(slot.get("REH"))
                 pcp = slot.get("PCP", "강수없음")
+                sno = slot.get("SNO", "적설없음")
+                pty_str = str(slot.get("PTY", "0"))
 
-                # 강수량: "강수없음" → 0, "1mm 미만" → 0.5, 숫자mm → 숫자
-                precip = 0.0
-                if pcp and pcp not in ("강수없음", "-"):
-                    import re as _re
-                    m = _re.search(r"[\d.]+", str(pcp))
-                    precip = float(m.group()) if m else 0.0
+                # PTY=3(눈)이면 적설량, 나머지는 강수량 사용
+                raw_val = sno if pty_str == "3" else pcp
+                no_precip = ("적설없음" if pty_str == "3" else "강수없음")
+
+                def _parse_precip(val, no_val):
+                    if not val or val in (no_val, "-"): return 0.0
+                    if "이상" in str(val) or "미만" in str(val): return 0.5
+                    digits = "".join(c for c in str(val) if c.isdigit() or c == ".")
+                    return float(digits) if digits else 0.0
+
+                precip = _parse_precip(raw_val, no_precip)
 
                 apparent = self._calculate_apparent_temp(tmp, reh, wsd) if tmp is not None else None
 
