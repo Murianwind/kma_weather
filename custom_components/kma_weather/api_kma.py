@@ -113,8 +113,6 @@ class KMAWeatherAPI:
             _LOGGER.warning("API 만료/중지 감지 [%s]: resultCode=%s → _approved_apis에서 제거", service_key, result_code)
             self._approved_apis.discard(service_key)
 
-
-
         # _approved에서 제거된 경우 _pending에 다시 추가 → 다음 업데이트에서 재확인
         if service_key not in self._pending_apis:
             self._pending_apis.add(service_key)
@@ -546,34 +544,17 @@ class KMAWeatherAPI:
                 "area_name": area_name, "area_no": area_no, "announcement": "비시즌",
             }
 
-        # ── 캐시가 있어도 항상 API 활성 여부 확인 ──────────────────────────────
-        # 버튼/자동 업데이트 모두 매번 API를 호출하여 미신청/중지 여부를 즉시 감지
-        # approved 상태라도 실제 API가 중지됐을 수 있으므로 항상 확인
-        if "pollen" in self._approved_apis or "pollen" in self._pending_apis:
-            check_time = today_str + "06" if h >= 6 else (
-                (now - timedelta(days=1)).strftime("%Y%m%d") + "18"
-            )
-            check_params = {
-                "serviceKey": self.api_key, "dataType": "JSON",
-                "areaNo": area_no, "time": check_time,
-                "numOfRows": "1", "pageNo": "1",
-            }
-            check_r = await self._fetch(
-                "https://apis.data.go.kr/1360000/HealthWthrIdxServiceV3/getPinePollenRiskIdxV3",
-                check_params
-            )
-            check_code = self._extract_result_code(check_r)
-            if check_code and self._check_unsubscribed("pollen", check_code):
-                # 미신청/중지 확인 → 캐시 삭제 후 None 반환
-                self._pollen_today = None
-                self._pollen_today_date = None
-                self._pollen_tomorrow = None
-                self._pollen_tomorrow_date = None
-                return None
-            if check_code == "00":
-                self._mark_approved("pollen")
+        # ── API 중지/만료 확인: pending이면 캐시 무시하고 API 호출 ─────────────
+        # _approved_apis에서 제거된 경우(_pending_apis에 있음) 캐시를 무시하고
+        # API를 호출하여 미신청 여부를 즉시 확인한다.
+        if "pollen" in self._pending_apis:
+            _LOGGER.debug("꽃가루 API 재확인 필요 → 캐시 무시하고 API 호출")
+            self._pollen_today = None
+            self._pollen_today_date = None
+            self._pollen_tomorrow = None
+            self._pollen_tomorrow_date = None
 
-        # ── today 캐시 있으면 반환 ────────────────────────────────────────────
+        # ── today 캐시 있으면 항상 반환 ──────────────────────────────────────
         if self._pollen_today is not None:
             _LOGGER.debug("꽃가루 today 캐시 사용")
             return self._pollen_today
@@ -607,14 +588,11 @@ class KMAWeatherAPI:
             oak_r   = None if isinstance(oak_r,   Exception) else oak_r
             grass_r = None if isinstance(grass_r, Exception) else grass_r
 
-            # 세 API 중 하나라도 미신청/오류이면 처리
-            for r in (pine_r, oak_r, grass_r):
-                code = self._extract_result_code(r)
-                if code and self._check_unsubscribed("pollen", code):
-                    return None  # 미신청/만료
-
             code = self._extract_result_code(pine_r)
             _LOGGER.debug("pollen resultCode: %s, time: %s", code, time_str)
+
+            if code and self._check_unsubscribed("pollen", code):
+                return None  # 미신청/만료
 
             if code != "00":
                 return False  # 데이터 없음 또는 오류
@@ -927,7 +905,54 @@ class KMAWeatherAPI:
                 "_day_index": i,
             })
 
-        weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast})
+        # ── 시간별 예보 (forecast_hourly) ─────────────────────────────────────
+        hourly_forecast = []
+        for d_str in sorted(forecast_map.keys()):
+            for t_str in sorted(forecast_map[d_str].keys()):
+                slot = forecast_map[d_str][t_str]
+                hour = int(t_str[:2])
+                minute = int(t_str[2:])
+                try:
+                    from datetime import timezone as _tz
+                    dt = datetime(
+                        int(d_str[:4]), int(d_str[4:6]), int(d_str[6:]),
+                        hour, minute, 0,
+                        tzinfo=ZoneInfo("Asia/Seoul")
+                    )
+                except Exception:
+                    continue
+
+                sky = slot.get("SKY")
+                pty = slot.get("PTY")
+                tmp = _safe_float(slot.get("TMP"))
+                pop = _safe_float(slot.get("POP"))
+                wsd = _safe_float(slot.get("WSD"))
+                vec = _safe_float(slot.get("VEC"))
+                reh = _safe_float(slot.get("REH"))
+                pcp = slot.get("PCP", "강수없음")
+
+                # 강수량: "강수없음" → 0, "1mm 미만" → 0.5, 숫자mm → 숫자
+                precip = 0.0
+                if pcp and pcp not in ("강수없음", "-"):
+                    import re as _re
+                    m = _re.search(r"[\d.]+", str(pcp))
+                    precip = float(m.group()) if m else 0.0
+
+                apparent = self._calculate_apparent_temp(tmp, reh, wsd) if tmp is not None else None
+
+                hourly_forecast.append({
+                    "datetime": dt.isoformat(),
+                    "condition": self.kor_to_condition(self._get_sky_kor(sky, pty)),
+                    "native_temperature": tmp,
+                    "native_apparent_temperature": apparent,
+                    "precipitation_probability": int(pop) if pop is not None else None,
+                    "native_precipitation": precip,
+                    "native_wind_speed": wsd,
+                    "wind_bearing": int(vec) if vec is not None else None,
+                    "humidity": int(reh) if reh is not None else None,
+                })
+
+        weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast, "forecast_hourly": hourly_forecast})
         kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
         weather_data.update({
             "current_condition_kor": kor_now,
