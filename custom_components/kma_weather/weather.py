@@ -25,7 +25,8 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
     _attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
     _attr_supported_features = (
         WeatherEntityFeature.FORECAST_DAILY |
-        WeatherEntityFeature.FORECAST_TWICE_DAILY
+        WeatherEntityFeature.FORECAST_TWICE_DAILY |
+        WeatherEntityFeature.FORECAST_HOURLY
     )
 
     def __init__(self, coordinator, entry):
@@ -93,3 +94,6 @@ class KMAWeather(CoordinatorEntity, WeatherEntity):
 
     async def async_forecast_twice_daily(self) -> list[Forecast]:
         return (self.coordinator.data or {}).get("weather", {}).get("forecast_twice_daily", [])
+
+    async def async_forecast_hourly(self) -> list[Forecast]:
+        return (self.coordinator.data or {}).get("weather", {}).get("forecast_hourly", [])
