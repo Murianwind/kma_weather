@@ -667,6 +667,9 @@ class KMAWeatherAPI:
                 result = await _call(base_str + "18", "tomorrow", ann)
                 if result is None: return None
                 if result is not False:
+                    if result.get("worst") is None:
+                        _LOGGER.debug("꽃가루 tomorrow 일부 미수신(worst=None) → 캐시 저장 안 함")
+                        return result
                     _LOGGER.debug("꽃가루 tomorrow 캐시 저장")
                     self._pollen_tomorrow = result
                     self._pollen_tomorrow_date = today_str
@@ -680,6 +683,11 @@ class KMAWeatherAPI:
                 result = await _call(today_str + "06", "today", ann_06)
                 if result is None: return None   # 미신청/만료
                 if result is not False:
+                    # worst=None이면 일부 데이터 미수신 → 캐시 저장 안 함
+                    # 다음 업데이트에서 API 재호출하여 완전한 데이터 획득
+                    if result.get("worst") is None:
+                        _LOGGER.debug("꽃가루 today 일부 미수신(worst=None) → 캐시 저장 안 함")
+                        return result
                     _LOGGER.debug("꽃가루 today 캐시 저장")
                     self._pollen_today = result
                     self._pollen_today_date = today_str
