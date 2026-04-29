@@ -136,10 +136,12 @@ async def test_api_3_8_pollen_gather_error_fix(mock_api):
     """[TC 3-8] 꽃가루 gather 중 예외 발생 시 캐시 반환 (Line 775)"""
     dt_on = datetime(2025, 5, 1, 10, 0) # 시즌
     mock_api._pollen_today = {"worst": "나쁨"}
+    mock_api._approved_apis.add("pollen")
+    mock_api._pending_apis.discard("pollen")
     # asyncio.gather에서 Exception을 발생시켜 catch 구문 실행
     with patch("custom_components.kma_weather.api_kma.asyncio.gather", side_effect=Exception):
         res = await mock_api._get_pollen(dt_on, "110", "서울")
-        # 캐시가 있으면 캐시 반환 (pending 로직 제거됨)
+        # 캐시가 있으면 캐시 반환
         assert res is not None
         assert res.get("worst") == "나쁨"
 
@@ -189,11 +191,12 @@ async def test_api_pollen_gather_partial_exception_coverage(mock_api):
     dt_on = datetime(2025, 5, 1, 10, 0) # 시즌 중
     mock_api._pollen_today = {"worst": "나쁨"}  # 기존 캐시 존재
     mock_api._pollen_today_date = "20250501"
+    mock_api._approved_apis.add("pollen")
+    mock_api._pending_apis.discard("pollen")
 
-    # gather 예외 발생 시 today 캐시 반환 (pending+notified 아니면 캐시 유지)
+    # gather 예외 발생 시 today 캐시 반환
     with patch("custom_components.kma_weather.api_kma.asyncio.gather", side_effect=Exception("Partial Network Failure")):
         res = await mock_api._get_pollen(dt_on, "110", "서울")
-        # 캐시가 있으면 캐시 반환 (pending 로직 제거됨)
         assert res is not None
         assert res.get("worst") == "나쁨"
 
