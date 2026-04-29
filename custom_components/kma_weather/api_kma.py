@@ -963,8 +963,9 @@ class KMAWeatherAPI:
                 except Exception:
                     continue
 
-                # 현재 시각 이후 데이터만 포함
-                if dt <= now:
+                # 현재 시각 이후 데이터만 포함 (now가 naive면 aware로 변환)
+                now_aware = now if now.tzinfo is not None else now.replace(tzinfo=_KST)
+                if dt <= now_aware:
                     continue
 
                 sky = slot.get("SKY")
