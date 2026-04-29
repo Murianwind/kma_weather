@@ -955,6 +955,10 @@ class KMAWeatherAPI:
                 except Exception:
                     continue
 
+                # 현재 시각 이후 데이터만 포함
+                if dt <= now:
+                    continue
+
                 sky = slot.get("SKY")
                 pty = slot.get("PTY")
                 tmp = _safe_float(slot.get("TMP"))
