@@ -931,6 +931,15 @@ class KMAWeatherAPI:
             })
 
         # ── 시간별 예보 (forecast_hourly) ─────────────────────────────────────
+        _KST = ZoneInfo("Asia/Seoul")
+
+        def _parse_precip(val, no_val):
+            """강수/적설량 문자열을 float으로 변환. 없음→0, 미만→0.5, 숫자→숫자."""
+            if not val or val in (no_val, "-"): return 0.0
+            if "미만" in str(val): return 0.5
+            digits = "".join(c for c in str(val) if c.isdigit() or c == ".")
+            return float(digits) if digits else 0.0
+
         hourly_forecast = []
         for d_str in sorted(forecast_map.keys()):
             for t_str in sorted(forecast_map[d_str].keys()):
@@ -938,11 +947,10 @@ class KMAWeatherAPI:
                 hour = int(t_str[:2])
                 minute = int(t_str[2:])
                 try:
-                    from datetime import timezone as _tz
                     dt = datetime(
                         int(d_str[:4]), int(d_str[4:6]), int(d_str[6:]),
                         hour, minute, 0,
-                        tzinfo=ZoneInfo("Asia/Seoul")
+                        tzinfo=_KST
                     )
                 except Exception:
                     continue
@@ -961,12 +969,6 @@ class KMAWeatherAPI:
                 # PTY=3(눈)이면 적설량, 나머지는 강수량 사용
                 raw_val = sno if pty_str == "3" else pcp
                 no_precip = ("적설없음" if pty_str == "3" else "강수없음")
-
-                def _parse_precip(val, no_val):
-                    if not val or val in (no_val, "-"): return 0.0
-                    if "이상" in str(val) or "미만" in str(val): return 0.5
-                    digits = "".join(c for c in str(val) if c.isdigit() or c == ".")
-                    return float(digits) if digits else 0.0
 
                 precip = _parse_precip(raw_val, no_precip)
 
