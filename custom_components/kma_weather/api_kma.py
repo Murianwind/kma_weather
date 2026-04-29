@@ -547,12 +547,34 @@ class KMAWeatherAPI:
         # ── API 중지/만료 확인: pending이면 캐시 무시하고 API 호출 ─────────────
         # _approved_apis에서 제거된 경우(_pending_apis에 있음) 캐시를 무시하고
         # API를 호출하여 미신청 여부를 즉시 확인한다.
-        if "pollen" in self._pending_apis:
-            _LOGGER.debug("꽃가루 API 재확인 필요 → 캐시 무시하고 API 호출")
-            self._pollen_today = None
-            self._pollen_today_date = None
-            self._pollen_tomorrow = None
-            self._pollen_tomorrow_date = None
+        # ── 매 업데이트마다 API 활성 여부 확인 ──────────────────────────────────
+        # approved 상태라도 API가 갑자기 중지될 수 있으므로 매번 경량 호출로 확인
+        # pending 상태면 캐시도 무시하고 API 재확인
+        if "pollen" in self._approved_apis or "pollen" in self._pending_apis:
+            if "pollen" in self._pending_apis:
+                self._pollen_today = None
+                self._pollen_today_date = None
+                self._pollen_tomorrow = None
+                self._pollen_tomorrow_date = None
+
+            check_time = today_str + "06" if h >= 6 else (
+                (now - timedelta(days=1)).strftime("%Y%m%d") + "18"
+            )
+            check_r = await self._fetch(
+                "https://apis.data.go.kr/1360000/HealthWthrIdxServiceV3/getPinePollenRiskIdxV3",
+                {"serviceKey": self.api_key, "dataType": "JSON",
+                 "areaNo": area_no, "time": check_time,
+                 "numOfRows": "1", "pageNo": "1"},
+            )
+            check_code = self._extract_result_code(check_r)
+            if check_code and self._check_unsubscribed("pollen", check_code):
+                self._pollen_today = None
+                self._pollen_today_date = None
+                self._pollen_tomorrow = None
+                self._pollen_tomorrow_date = None
+                return None
+            if check_code == "00":
+                self._mark_approved("pollen")
 
         # ── today 캐시 있으면 항상 반환 ──────────────────────────────────────
         if self._pollen_today is not None:
