@@ -1216,12 +1216,14 @@ class TestPollenCacheAndGrade:
 
     @pytest.mark.asyncio
     async def test_today_cache_stored_at_06(self):
-        """06시 이후 today 획득 시 today 캐시 저장"""
+        """07시에 today 획득 시 today 캐시 저장"""
         api = self._make_api()
+        api._approved_apis.add("pollen")
+        api._pending_apis.discard("pollen")
         async def mock_fetch(url, params):
             return self._make_response(today="2")
         api._fetch = mock_fetch
-        now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        now = datetime(2026, 4, 25, 7, 0, tzinfo=ZoneInfo("Asia/Seoul"))
         result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
         assert api._pollen_today is not None
         assert api._pollen_today_date == "20260425"
@@ -1229,14 +1231,21 @@ class TestPollenCacheAndGrade:
 
     @pytest.mark.asyncio
     async def test_19h_gets_today_from_morning_broadcast(self):
-        """19시 → h>=6이므로 06시 발표 today 호출 → today 캐시 저장 및 반환"""
+        """19시 → tomorrow 호출. today 캐시 있으면 today 반환"""
         api = self._make_api()
+        api._approved_apis.add("pollen")
+        api._pending_apis.discard("pollen")
+        # today 캐시 있음
+        api._pollen_today = {"oak": "보통", "pine": "보통", "grass": "좋음",
+                              "worst": "보통", "area_name": "테스트", "area_no": "1111051500",
+                              "announcement": "2026년 04월 25일 06시 발표"}
+        api._pollen_today_date = "20260425"
         async def mock_fetch(url, params):
             return self._make_response(today="1")
         api._fetch = mock_fetch
         now = datetime(2026, 4, 25, 19, 0, tzinfo=ZoneInfo("Asia/Seoul"))
         result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
-        # h>=6 → 06시 발표 today 호출 → today 캐시 저장
+        # today 캐시 있으면 today 반환 + tomorrow 갱신
         assert api._pollen_today is not None
         assert result.get("worst") is not None
 
