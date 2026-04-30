@@ -609,7 +609,11 @@ class KMAWeatherAPI:
                              .get("items", {}).get("item", []))
                 if isinstance(items, dict): items = [items]
                 if not items: return None
-                val = items[0].get(key, "0")
+                val = items[0].get(key, "")
+                # 요청한 키가 비어있으면 다른 키로 폴백
+                if not val:
+                    fallback = "tomorrow" if key == "today" else "today"
+                    val = items[0].get(fallback, "0")
                 return _POLLEN_GRADE.get(str(val)) if val else None
 
             pine_g  = _grade(pine_r,  in_season["pine"],  fetch_key)
