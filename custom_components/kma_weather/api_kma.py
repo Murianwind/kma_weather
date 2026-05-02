@@ -590,6 +590,8 @@ class KMAWeatherAPI:
             code = self._extract_result_code(r)
             if code and self._check_unsubscribed("pollen", code):
                 return "UNSUB"
+            if code == "99":
+                return "좋음"  # 비시즌 또는 데이터 없음
             if code != "00":
                 return None
             self._mark_approved("pollen")
