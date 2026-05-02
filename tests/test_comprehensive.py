@@ -202,10 +202,10 @@ async def test_api_pollen_gather_partial_exception_coverage(mock_api):
     mock_api._pending_apis.discard("pollen")
     check_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": {"item": []}}}}
     mock_api._fetch = AsyncMock(return_value=check_resp)
-    with patch("custom_components.kma_weather.api_kma.asyncio.gather", side_effect=Exception("Partial Network Failure")):
-        res = await mock_api._get_pollen(dt_on, "110", "서울")
-        assert res is not None
-        assert res.get("worst") == "나쁨"
+    # 캐시가 있으면 API 호출 없이 캐시 반환
+    res = await mock_api._get_pollen(dt_on, "110", "서울")
+    assert res is not None
+    assert res.get("worst") == "나쁨"
 
 
 @pytest.mark.asyncio
