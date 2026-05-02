@@ -248,7 +248,9 @@ class KMAWeatherAPI:
         def _should_call(key: str) -> bool:
             # _pending_apis:  미확인/미신청/만료 → 매 업데이트마다 호출해서 확인
             # _approved_apis: 승인됨 → 데이터 호출
-            return key in self._approved_apis or key in self._pending_apis
+            result = key in self._approved_apis or key in self._pending_apis
+            if key == "pollen":
+                return result
 
         tasks = [
             self._get_short_term(now),
@@ -489,8 +491,17 @@ class KMAWeatherAPI:
             if not items:
                 return "특보없음"
 
+            # warnVar별로 tmFc(발표시각) 기준 최신 item 선택
+            # command=2(해제)가 최신이면 해당 특보는 해제된 것
+            latest: dict[str, dict] = {}
+            for item in items:
+                key = str(item.get("warnVar", ""))
+                tfc = item.get("tmFc", 0)
+                if key not in latest or tfc > latest[key].get("tmFc", 0):
+                    latest[key] = item
+
             active = [
-                item for item in items
+                item for item in latest.values()
                 if str(item.get("command", "")) in ("1", "3")
                 and str(item.get("cancel", "1")) == "0"
                 and str(item.get("endTime", "1")) == "0"
@@ -552,6 +563,8 @@ class KMAWeatherAPI:
             }
 
         # ── API 활성 여부 확인 (매 업데이트마다) ─────────────────────────────
+        _LOGGER.warning("꽃가루 경량check 진입 전: approved=%s pending=%s offseason=%s",
+            "pollen" in self._approved_apis, "pollen" in self._pending_apis, offseason)
         if "pollen" in self._approved_apis or "pollen" in self._pending_apis:
             if "pollen" in self._pending_apis:
                 for k in _POLLEN_KINDS:
