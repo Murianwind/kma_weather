@@ -645,8 +645,8 @@ class KMAWeatherAPI:
             prev_str = (now - timedelta(days=1)).strftime("%Y%m%d")
             ann_prev18 = f"{prev_str[:4]}년 {prev_str[4:6]}월 {prev_str[6:]}일 18시 발표"
 
-            if 7 <= h < 19 and self._pollen_today_date != today_str:
-                # ── 07시~19시: today 캐시 없으면 1회 호출 ────────────────────
+            if self._pollen_today_date != today_str and h >= 7:
+                # ── 07시 이후: today 캐시 없으면 항상 06시 발표 호출 ──────────
                 result = await _call(today_str + "06", "today", ann_06)
                 if result is None: return None
                 if result is not False:
@@ -655,10 +655,10 @@ class KMAWeatherAPI:
                     self._pollen_tomorrow = None
                     self._pollen_tomorrow_date = None
                     _LOGGER.debug("꽃가루 today 캐시 저장")
-                # today 없어도 tomorrow 유지 (재시도 없음)
+                # today 없어도 tomorrow 유지
 
-            elif h >= 19 and self._pollen_tomorrow_date != today_str:
-                # ── 19시: tomorrow 호출 1회 ───────────────────────────────────
+            if h >= 19 and self._pollen_tomorrow_date != today_str:
+                # ── 19시 이후: tomorrow 캐시 없으면 18시 발표 호출 ────────────
                 result = await _call(today_str + "18", "tomorrow", ann_18)
                 if result is None: return None
                 if result is not False:
@@ -666,7 +666,6 @@ class KMAWeatherAPI:
                     self._pollen_tomorrow_date = today_str
                     _LOGGER.debug("꽃가루 tomorrow 캐시 저장")
                 else:
-                    # tomorrow 없으면 캐시 초기화
                     self._pollen_tomorrow = None
                     self._pollen_tomorrow_date = None
                     _LOGGER.debug("꽃가루 tomorrow 없음 → 캐시 초기화")
