@@ -204,10 +204,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._pollen_cached_lat = None
         self._pollen_cached_lon = None
         # pollen today/tomorrow 캐시도 무효화 → 새 위치 데이터 호출
-        self.api._pollen_today = None
-        self.api._pollen_today_date = None
-        self.api._pollen_tomorrow = None
-        self.api._pollen_tomorrow_date = None
+        for kind in ("pine", "oak", "grass"):
+            self.api._pollen_cache[kind] = {
+                "today": None, "tomorrow": None,
+                "today_date": None, "tomorrow_date": None,
+            }
         self._cached_nx = nx
         self._cached_ny = ny
         self._cached_reg_id_temp = reg_id_temp
