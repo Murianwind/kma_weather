@@ -354,6 +354,7 @@ class TestFetchDataIntegration:
         api._get_air_quality = AsyncMock(return_value={})
         api._get_address = AsyncMock(return_value="서울시")
         api._get_warning = mock_warning
+        api._get_pollen = AsyncMock(return_value={})
 
         result = await api.fetch_data(
             lat=37.56, lon=126.98, nx=60, ny=127,
@@ -380,6 +381,7 @@ class TestFetchDataIntegration:
         api._get_air_quality = mock_air
         api._get_address = AsyncMock(return_value="서울시")
         api._get_warning = AsyncMock(return_value="없음")
+        api._get_pollen = AsyncMock(return_value={})
 
         await api.fetch_data(
             lat=37.56, lon=126.98, nx=60, ny=127,
