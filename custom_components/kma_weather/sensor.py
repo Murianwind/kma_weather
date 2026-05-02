@@ -188,8 +188,8 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     _POLLEN_ICONS = {
         "좋음":     "mdi:flower-pollen-outline",
         "보통":     "mdi:flower-pollen",
-        "나쁨":     "mdi:close-octagon",
-        "매우나쁨": "mdi:gas-mask",
+        "나쁨":     "mdi:face-mask",
+        "매우나쁨": "mdi:biohazard",
     }
 
     _WEATHER_COND_ICONS: dict[str, str] = {
