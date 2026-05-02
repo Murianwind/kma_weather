@@ -563,8 +563,6 @@ class KMAWeatherAPI:
             }
 
         # ── API 활성 여부 확인 (매 업데이트마다) ─────────────────────────────
-        _LOGGER.warning("꽃가루 경량check 진입 전: approved=%s pending=%s offseason=%s",
-            "pollen" in self._approved_apis, "pollen" in self._pending_apis, offseason)
         if "pollen" in self._approved_apis or "pollen" in self._pending_apis:
             if "pollen" in self._pending_apis:
                 for k in _POLLEN_KINDS:
