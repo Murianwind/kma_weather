@@ -391,7 +391,7 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
             # 꽃가루 API 승인 시에만 꽃가루 조회 지역 표시
             if "pollen" in approved:
-                pollen = self.coordinator.data.get("pollen", {})
+                pollen = self.coordinator.data.get("pollen") or {}
                 area_name = pollen.get("area_name")
                 if area_name:
                     attrs["pollen_location"] = area_name
