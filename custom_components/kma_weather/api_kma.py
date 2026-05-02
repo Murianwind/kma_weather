@@ -20,6 +20,8 @@ from .const import (
     POLLEN_GRADE         as _POLLEN_GRADE,
     POLLEN_SEASONS       as _POLLEN_SEASONS,
 )
+# 꽃가루 종류 목록 - POLLEN_SEASONS 키에서 파생하여 중복 제거
+_POLLEN_KINDS: tuple[str, ...] = tuple(_POLLEN_SEASONS.keys())
 _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 
 
@@ -530,7 +532,7 @@ class KMAWeatherAPI:
         prev_str = (now - timedelta(days=1)).strftime("%Y%m%d")
 
         # ── 자정: today 캐시 만료 삭제 ───────────────────────────────────────
-        for k in ("pine", "oak", "grass"):
+        for k in _POLLEN_KINDS:
             c = self._pollen_cache[k]
             if c["date_today"] and c["date_today"] != today_str:
                 c["today"] = None
@@ -546,7 +548,7 @@ class KMAWeatherAPI:
         # ── API 활성 여부 확인 (매 업데이트마다) ─────────────────────────────
         if "pollen" in self._approved_apis or "pollen" in self._pending_apis:
             if "pollen" in self._pending_apis:
-                for k in ("pine", "oak", "grass"):
+                for k in _POLLEN_KINDS:
                     self._pollen_cache[k] = {"today": None, "tomorrow": None,
                                              "date_today": None, "date_tomorrow": None}
 
@@ -559,7 +561,7 @@ class KMAWeatherAPI:
             )
             check_code = self._extract_result_code(check_r)
             if check_code and self._check_unsubscribed("pollen", check_code):
-                for k in ("pine", "oak", "grass"):
+                for k in _POLLEN_KINDS:
                     self._pollen_cache[k] = {"today": None, "tomorrow": None,
                                              "date_today": None, "date_tomorrow": None}
                 return None
@@ -567,6 +569,10 @@ class KMAWeatherAPI:
                 self._mark_approved("pollen")
 
         # ── 단일 엔드포인트 호출 헬퍼 ────────────────────────────────────────
+        def _ann(date_str: str, hour: int) -> str:
+            """발표 시각 문자열 생성."""
+            return f"{date_str[:4]}년 {date_str[4:6]}월 {date_str[6:]}일 {hour:02d}시 발표"
+
         base_url = "https://apis.data.go.kr/1360000/HealthWthrIdxServiceV3"
         endpoints = {
             "pine":  f"{base_url}/getPinePollenRiskIdxV3",
@@ -614,9 +620,9 @@ class KMAWeatherAPI:
                 return "좋음"
 
             c = self._pollen_cache[kind]
-            ann_today = f"{today_str[:4]}년 {today_str[4:6]}월 {today_str[6:]}일 06시 발표"
-            ann_18    = f"{today_str[:4]}년 {today_str[4:6]}월 {today_str[6:]}일 18시 발표"
-            ann_prev  = f"{prev_str[:4]}년 {prev_str[4:6]}월 {prev_str[6:]}일 18시 발표"
+            ann_today = _ann(today_str, 6)
+            ann_18    = _ann(today_str, 18)
+            ann_prev  = _ann(prev_str, 18)
 
             if h < 7:
                 # 자정~07시: tomorrow 표시
@@ -688,8 +694,7 @@ class KMAWeatherAPI:
             worst = max(season_known, key=lambda g: order.index(g)) if season_known else None
 
             # announcement: 가장 최근 발표 시각
-            ann = (f"{today_str[:4]}년 {today_str[4:6]}월 {today_str[6:]}일 "
-                   f"{'18' if h >= 19 else '06'}시 발표")
+            ann = _ann(today_str, 18 if h >= 19 else 6)
 
             return {
                 "pine":  pine_g  if pine_g  is not None else ("좋음" if not in_season["pine"]  else None),
