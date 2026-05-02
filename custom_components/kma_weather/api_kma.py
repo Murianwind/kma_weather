@@ -80,11 +80,13 @@ class KMAWeatherAPI:
         # coordinator가 없는 단독 테스트 환경에서는 None
         self._call_counter_ref = None
 
-        # 꽃가루 캐시: today/tomorrow 각각 별도 관리
-        self._pollen_today: dict | None = None        # 06시 발표 today 값
-        self._pollen_tomorrow: dict | None = None     # 18시 발표 tomorrow 값
-        self._pollen_today_date: str | None = None    # today 캐시 날짜 (YYYYMMDD)
-        self._pollen_tomorrow_date: str | None = None # tomorrow 캐시 날짜
+        # 꽃가루 캐시: 종류별(pine/oak/grass) 독립 관리
+        # 각 종류: {"today": 등급, "tomorrow": 등급, "date_today": YYYYMMDD, "date_tomorrow": YYYYMMDD}
+        self._pollen_cache: dict[str, dict] = {
+            "pine":  {"today": None, "tomorrow": None, "date_today": None, "date_tomorrow": None},
+            "oak":   {"today": None, "tomorrow": None, "date_today": None, "date_tomorrow": None},
+            "grass": {"today": None, "tomorrow": None, "date_today": None, "date_tomorrow": None},
+        }
 
     def _build_nominatim_user_agent(self):
         base = "HomeAssistant-KMA-Weather"
@@ -508,15 +510,14 @@ class KMAWeatherAPI:
     async def _get_pollen(self, now: datetime, area_no: str, area_name: str) -> dict | None:
         """
         꽃가루 농도 위험지수.
+        pine/oak/grass 각각 독립적으로 캐시 관리.
 
-        업데이트: 07시(today), 19시(tomorrow) 각 1회
-        - 07시: today 호출. 없으면 기존 tomorrow 유지
-        - 19시: tomorrow 호출. 없으면 tomorrow=None
-        - 자정~07시: tomorrow 표시
-        - 07시~자정: today 표시
-        - 데이터 없음: {} (unknown)
+        각 종류별 동작:
+        - 자정~07시: tomorrow 표시. 없으면 전날 18시 호출
+        - 07시~자정: today 표시. 없으면 06시 호출. 그래도 없으면 전날 18시 tomorrow
+        - 19시 이후: tomorrow 갱신 (백그라운드)
+        - 비시즌: 좋음 (API 호출 없음)
         - 미신청/중지: None (unavailable)
-        - 비시즌: 좋음
         """
         month = now.month
         in_season = {
@@ -524,14 +525,16 @@ class KMAWeatherAPI:
             for k in ("oak", "pine", "grass")
         }
         offseason = not any(in_season.values())
-
         today_str = now.strftime("%Y%m%d")
         h = now.hour
+        prev_str = (now - timedelta(days=1)).strftime("%Y%m%d")
 
         # ── 자정: today 캐시 만료 삭제 ───────────────────────────────────────
-        if self._pollen_today_date and self._pollen_today_date != today_str:
-            self._pollen_today = None
-            self._pollen_today_date = None
+        for k in ("pine", "oak", "grass"):
+            c = self._pollen_cache[k]
+            if c["date_today"] and c["date_today"] != today_str:
+                c["today"] = None
+                c["date_today"] = None
 
         # ── 비시즌 + 승인됨: API 호출 없이 좋음 ──────────────────────────────
         if offseason and "pollen" in self._approved_apis:
@@ -540,17 +543,14 @@ class KMAWeatherAPI:
                 "area_name": area_name, "area_no": area_no, "announcement": "비시즌",
             }
 
-        # ── API 활성 여부 확인 (자동/버튼 업데이트마다) ───────────────────────
+        # ── API 활성 여부 확인 (매 업데이트마다) ─────────────────────────────
         if "pollen" in self._approved_apis or "pollen" in self._pending_apis:
             if "pollen" in self._pending_apis:
-                self._pollen_today = None
-                self._pollen_today_date = None
-                self._pollen_tomorrow = None
-                self._pollen_tomorrow_date = None
+                for k in ("pine", "oak", "grass"):
+                    self._pollen_cache[k] = {"today": None, "tomorrow": None,
+                                             "date_today": None, "date_tomorrow": None}
 
-            check_time = today_str + "06" if h >= 6 else (
-                (now - timedelta(days=1)).strftime("%Y%m%d") + "18"
-            )
+            check_time = today_str + "06" if h >= 6 else prev_str + "18"
             check_r = await self._fetch(
                 "https://apis.data.go.kr/1360000/HealthWthrIdxServiceV3/getPinePollenRiskIdxV3",
                 {"serviceKey": self.api_key, "dataType": "JSON",
@@ -559,145 +559,143 @@ class KMAWeatherAPI:
             )
             check_code = self._extract_result_code(check_r)
             if check_code and self._check_unsubscribed("pollen", check_code):
-                self._pollen_today = None
-                self._pollen_today_date = None
-                self._pollen_tomorrow = None
-                self._pollen_tomorrow_date = None
+                for k in ("pine", "oak", "grass"):
+                    self._pollen_cache[k] = {"today": None, "tomorrow": None,
+                                             "date_today": None, "date_tomorrow": None}
                 return None
             if check_code == "00":
                 self._mark_approved("pollen")
 
-        # ── API 호출 헬퍼 ─────────────────────────────────────────────────────
+        # ── 단일 엔드포인트 호출 헬퍼 ────────────────────────────────────────
         base_url = "https://apis.data.go.kr/1360000/HealthWthrIdxServiceV3"
+        endpoints = {
+            "pine":  f"{base_url}/getPinePollenRiskIdxV3",
+            "oak":   f"{base_url}/getOakPollenRiskIdxV3",
+            "grass": f"{base_url}/getWeedsPollenRiskndxV3",
+        }
 
-        async def _call(time_str: str, fetch_key: str, announcement: str):
+        async def _fetch_one(kind: str, time_str: str, fetch_key: str) -> str | None:
+            """단일 종류 API 호출. 등급 문자열 반환. 없음→None, 미신청→'UNSUB'"""
+            if not in_season[kind]:
+                return "좋음"  # 비시즌
             params = {
                 "serviceKey": self.api_key, "dataType": "JSON",
                 "areaNo": area_no, "time": time_str,
                 "numOfRows": "10", "pageNo": "1",
             }
-            pine_r, oak_r, grass_r = await asyncio.gather(
-                self._fetch(f"{base_url}/getPinePollenRiskIdxV3",  params),
-                self._fetch(f"{base_url}/getOakPollenRiskIdxV3",   params),
-                self._fetch(f"{base_url}/getWeedsPollenRiskndxV3", params),
-                return_exceptions=True,
-            )
-            pine_r  = None if isinstance(pine_r,  Exception) else pine_r
-            oak_r   = None if isinstance(oak_r,   Exception) else oak_r
-            grass_r = None if isinstance(grass_r, Exception) else grass_r
-
-            code = self._extract_result_code(pine_r)
-            if code and self._check_unsubscribed("pollen", code):
+            try:
+                r = await self._fetch(endpoints[kind], params)
+            except Exception:
                 return None
+            code = self._extract_result_code(r)
+            if code and self._check_unsubscribed("pollen", code):
+                return "UNSUB"
             if code != "00":
-                return False
+                return None
             self._mark_approved("pollen")
-
             if offseason:
-                return {
-                    "oak": "좋음", "pine": "좋음", "grass": "좋음", "worst": "좋음",
-                    "area_name": area_name, "area_no": area_no, "announcement": "비시즌",
-                }
+                return "좋음"
+            items = (r.get("response", {}).get("body", {})
+                      .get("items", {}).get("item", []))
+            if isinstance(items, dict): items = [items]
+            if not items: return None
+            val = items[0].get(fetch_key, "")
+            if not val:
+                fallback = "tomorrow" if fetch_key == "today" else "today"
+                val = items[0].get(fallback, "")
+            if code == "99": return "좋음"
+            return _POLLEN_GRADE.get(str(val)) if val else None
 
-            def _grade(data, in_s: bool, key: str):
-                if not in_s: return None  # 비시즌 → worst 계산 제외
-                if not data: return None
-                rc = self._extract_result_code(data)
-                if rc == "99": return "좋음"
-                if rc != "00": return None
-                items = (data.get("response", {}).get("body", {})
-                             .get("items", {}).get("item", []))
-                if isinstance(items, dict): items = [items]
-                if not items: return None
-                val = items[0].get(key, "")
-                # 요청한 키가 비어있으면 다른 키로 폴백
-                if not val:
-                    fallback = "tomorrow" if key == "today" else "today"
-                    val = items[0].get(fallback, "0")
-                return _POLLEN_GRADE.get(str(val)) if val else None
+        async def _get_grade(kind: str) -> str | None:
+            """종류별 현재 표시할 등급 결정. 캐시 우선, 없으면 API 호출."""
+            if not in_season[kind]:
+                return "좋음"
 
-            pine_g  = _grade(pine_r,  in_season["pine"],  fetch_key)
-            oak_g   = _grade(oak_r,   in_season["oak"],   fetch_key)
-            grass_g = _grade(grass_r, in_season["grass"], fetch_key)
+            c = self._pollen_cache[kind]
+            ann_today = f"{today_str[:4]}년 {today_str[4:6]}월 {today_str[6:]}일 06시 발표"
+            ann_18    = f"{today_str[:4]}년 {today_str[4:6]}월 {today_str[6:]}일 18시 발표"
+            ann_prev  = f"{prev_str[:4]}년 {prev_str[4:6]}월 {prev_str[6:]}일 18시 발표"
 
-            season_grades = [
-                g for k, g in [("pine", pine_g), ("oak", oak_g), ("grass", grass_g)]
-                if in_season[k]
-            ]
-            if not season_grades or all(g is None for g in season_grades):
-                return False
+            if h < 7:
+                # 자정~07시: tomorrow 표시
+                if c["tomorrow"] is None:
+                    g = await _fetch_one(kind, prev_str + "18", "tomorrow")
+                    if g == "UNSUB": return None
+                    if g is not None:
+                        c["tomorrow"] = g
+                        c["date_tomorrow"] = today_str
+                return c["tomorrow"]
 
-            order = ["좋음", "보통", "나쁨", "매우나쁨"]
-            known = [g for g in season_grades if g is not None]
-            worst = max(known, key=lambda g: order.index(g)) if known else None
+            else:
+                # 07시~자정: today 우선
+                if c["today"] is not None:
+                    # 19시 이후 tomorrow 백그라운드 갱신
+                    if h >= 19 and c["date_tomorrow"] != today_str:
+                        g = await _fetch_one(kind, today_str + "18", "tomorrow")
+                        if g == "UNSUB": return None
+                        if g is not None:
+                            c["tomorrow"] = g
+                            c["date_tomorrow"] = today_str
+                        else:
+                            c["tomorrow"] = None
+                            c["date_tomorrow"] = None
+                    return c["today"]
 
-            return {
-                "oak":   oak_g   if in_season["oak"]   else "좋음",
-                "pine":  pine_g  if in_season["pine"]  else "좋음",
-                "grass": grass_g if in_season["grass"] else "좋음",
-                "worst": worst,
-                "area_name": area_name, "area_no": area_no, "announcement": announcement,
-            }
+                # today 없으면 06시 호출
+                if c["date_today"] != today_str:
+                    g = await _fetch_one(kind, today_str + "06", "today")
+                    if g == "UNSUB": return None
+                    if g is not None:
+                        c["today"] = g
+                        c["date_today"] = today_str
+                        # 19시 이후면 tomorrow도 갱신
+                        if h >= 19 and c["date_tomorrow"] != today_str:
+                            tg = await _fetch_one(kind, today_str + "18", "tomorrow")
+                            if tg is not None and tg != "UNSUB":
+                                c["tomorrow"] = tg
+                                c["date_tomorrow"] = today_str
+                        return c["today"]
+
+                # 06시도 없으면 전날 18시 tomorrow
+                if c["tomorrow"] is None:
+                    g = await _fetch_one(kind, prev_str + "18", "tomorrow")
+                    if g == "UNSUB": return None
+                    if g is not None:
+                        c["tomorrow"] = g
+                        c["date_tomorrow"] = today_str
+                return c["tomorrow"]
 
         try:
-            ann_06 = f"{today_str[:4]}년 {today_str[4:6]}월 {today_str[6:]}일 06시 발표"
-            ann_18 = f"{today_str[:4]}년 {today_str[4:6]}월 {today_str[6:]}일 18시 발표"
-            prev_str = (now - timedelta(days=1)).strftime("%Y%m%d")
-            ann_prev18 = f"{prev_str[:4]}년 {prev_str[4:6]}월 {prev_str[6:]}일 18시 발표"
+            pine_g, oak_g, grass_g = await asyncio.gather(
+                _get_grade("pine"), _get_grade("oak"), _get_grade("grass"),
+                return_exceptions=True,
+            )
+            pine_g  = None if isinstance(pine_g,  Exception) else pine_g
+            oak_g   = None if isinstance(oak_g,   Exception) else oak_g
+            grass_g = None if isinstance(grass_g, Exception) else grass_g
 
-            # ── 자정~07시 ─────────────────────────────────────────────────
-            if h < 7:
-                if self._pollen_tomorrow is None:
-                    # tomorrow 없으면 전날 18시 1회 호출
-                    result = await _call(prev_str + "18", "tomorrow", ann_prev18)
-                    if result is None: return None
-                    if result is not False:
-                        self._pollen_tomorrow = result
-                        self._pollen_tomorrow_date = today_str
-                return self._pollen_tomorrow or {}
+            # 미신청 감지
+            if pine_g is None and oak_g is None and grass_g is None:
+                return {} if not any(in_season.values()) else {}
 
-            # ── 07시~자정 ─────────────────────────────────────────────────
-            # today 캐시 있으면 바로 반환
-            if self._pollen_today is not None:
-                # 19시 이후면 tomorrow 백그라운드 갱신
-                if h >= 19 and self._pollen_tomorrow_date != today_str:
-                    result = await _call(today_str + "18", "tomorrow", ann_18)
-                    if result is None: return None
-                    if result is not False:
-                        self._pollen_tomorrow = result
-                        self._pollen_tomorrow_date = today_str
-                        _LOGGER.debug("꽃가루 tomorrow 캐시 저장")
-                    else:
-                        self._pollen_tomorrow = None
-                        self._pollen_tomorrow_date = None
-                return self._pollen_today
+            order = ["좋음", "보통", "나쁨", "매우나쁨"]
+            season_known = [
+                g for k, g in [("pine", pine_g), ("oak", oak_g), ("grass", grass_g)]
+                if in_season[k] and g is not None
+            ]
+            worst = max(season_known, key=lambda g: order.index(g)) if season_known else None
 
-            # today 캐시 없음 → 오늘 06시 1회 호출
-            if self._pollen_today_date != today_str:
-                result = await _call(today_str + "06", "today", ann_06)
-                if result is None: return None
-                if result is not False:
-                    self._pollen_today = result
-                    self._pollen_today_date = today_str
-                    self._pollen_tomorrow = None
-                    self._pollen_tomorrow_date = None
-                    _LOGGER.debug("꽃가루 today 캐시 저장")
-                    # 19시 이후면 tomorrow도 갱신
-                    if h >= 19:
-                        tmr = await _call(today_str + "18", "tomorrow", ann_18)
-                        if tmr is not None and tmr is not False:
-                            self._pollen_tomorrow = tmr
-                            self._pollen_tomorrow_date = today_str
-                    return self._pollen_today
+            # announcement: 가장 최근 발표 시각
+            ann = (f"{today_str[:4]}년 {today_str[4:6]}월 {today_str[6:]}일 "
+                   f"{'18' if h >= 19 else '06'}시 발표")
 
-            # 오늘 06시 없음 → 전날 18시 tomorrow로 표시
-            if self._pollen_tomorrow is None:
-                result = await _call(prev_str + "18", "tomorrow", ann_prev18)
-                if result is None: return None
-                if result is not False:
-                    self._pollen_tomorrow = result
-                    self._pollen_tomorrow_date = today_str
-            return self._pollen_tomorrow or {}
+            return {
+                "pine":  pine_g  if pine_g  is not None else ("좋음" if not in_season["pine"]  else None),
+                "oak":   oak_g   if oak_g   is not None else ("좋음" if not in_season["oak"]   else None),
+                "grass": grass_g if grass_g is not None else ("좋음" if not in_season["grass"] else None),
+                "worst": worst,
+                "area_name": area_name, "area_no": area_no, "announcement": ann,
+            }
 
         except Exception as e:
             _LOGGER.error("꽃가루 조회 오류: %s", e)
