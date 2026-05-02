@@ -1225,9 +1225,9 @@ class TestPollenCacheAndGrade:
         api._fetch = mock_fetch
         now = datetime(2026, 4, 25, 7, 0, tzinfo=ZoneInfo("Asia/Seoul"))
         result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
-        assert api._pollen_today is not None
-        assert api._pollen_today_date == "20260425"
-        assert api._pollen_tomorrow is None  # today 저장 시 tomorrow 삭제
+        assert api._pollen_cache["pine"]["today"] is not None
+        assert api._pollen_cache["pine"]["date_today"] == "20260425"
+        assert api._pollen_cache["pine"]["tomorrow"] is None
 
     @pytest.mark.asyncio
     async def test_19h_gets_today_from_morning_broadcast(self):
@@ -1273,24 +1273,22 @@ class TestPollenCacheAndGrade:
     async def test_midnight_today_cache_cleared(self):
         """자정 지나면 today 캐시 삭제, tomorrow 캐시 반환"""
         api = self._make_api()
-        api._pollen_today = {"worst": "좋음", "oak": "좋음", "pine": "좋음",
-                              "grass": "좋음", "area_name": "", "area_no": "1111051500",
-                              "announcement": "-"}
-        api._pollen_today_date = "20260424"  # 어제 날짜
-        api._pollen_tomorrow = {"worst": "보통", "oak": "보통", "pine": "보통",
-                                 "grass": "좋음", "area_name": "", "area_no": "1111051500",
-                                 "announcement": "-"}
-        api._pollen_tomorrow_date = "20260424"
+        # 새 캐시 구조: 종류별 독립 캐시
+        for k in ("pine", "oak", "grass"):
+            api._pollen_cache[k]["today"] = "좋음"
+            api._pollen_cache[k]["date_today"] = "20260424"  # 어제 날짜
+            api._pollen_cache[k]["tomorrow"] = "보통"
+            api._pollen_cache[k]["date_tomorrow"] = "20260424"
         now = datetime(2026, 4, 25, 2, 0, tzinfo=ZoneInfo("Asia/Seoul"))  # 새벽 2시
         # _find_pollen_area mock
         async def mock_fetch(url, params):
             return self._make_response()
         api._fetch = mock_fetch
         result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
-        # pending 상태이면 캐시 무효화 후 API 재호출
-        # mock_fetch today="1"(좋음) 반환
         assert result is not None
-        assert api._pollen_today is None  # today 캐시 없음 (h<6이므로 tomorrow로 저장)
+        # 자정 지나면 today 캐시 만료 → tomorrow 반환
+        assert api._pollen_cache["pine"]["today"] is None
+        assert result.get("worst") is not None
 
     @pytest.mark.asyncio
     async def test_none_grade_means_unknown_worst(self):
