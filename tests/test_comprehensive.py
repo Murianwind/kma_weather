@@ -153,15 +153,18 @@ async def test_api_3_8_pollen_gather_error_fix(mock_api):
 async def test_api_3_9_pollen_grade_99_fix(mock_api):
     """[TC 3-9] _get_grade rc='99' 분기 타격 및 KeyError 방지 (Line 710)"""
     mock_api._approved_apis.add("pollen")
+    mock_api._pending_apis.discard("pollen")
     dt_on = datetime(2025, 5, 1, 10, 0)
-    # pine_data는 '00'이어야 로직이 중단되지 않음, oak_data에 '99' 주입
-    pine_ok = {"response": {"header": {"resultCode": "00"}}}
-    oak_99 = {"response": {"header": {"resultCode": "99"}}}
-    with patch("custom_components.kma_weather.api_kma.asyncio.gather", new_callable=AsyncMock) as mock_gather:
-        mock_gather.return_value = (pine_ok, oak_99, pine_ok)
-        # _get_pollen 시그니처 변경: (now, area_no, area_name)
-        res = await mock_api._get_pollen(dt_on, "110", "서울")
-        assert res["oak"] == "좋음" # rc=99는 '좋음' 반환
+
+    def _mock_fetch(url, params):
+        if "Oak" in url:
+            return {"response": {"header": {"resultCode": "99"}, "body": {"items": {"item": []}}}}
+        return {"response": {"header": {"resultCode": "00"}, "body": {
+            "items": {"item": [{"today": "1", "tomorrow": "1"}]}}}}
+
+    mock_api._fetch = AsyncMock(side_effect=_mock_fetch)
+    res = await mock_api._get_pollen(dt_on, "110", "서울")
+    assert res.get("oak") == "좋음"  # rc=99는 좋음
 
 @pytest.mark.asyncio
 async def test_api_3_10_merge_fallback_to_past(mock_api):
@@ -193,12 +196,13 @@ async def test_api_pollen_gather_partial_exception_coverage(mock_api):
     시나리오: asyncio.gather 내부에서 하나 이상의 Task가 Exception을 던질 때의 방어 로직
     """
     dt_on = datetime(2025, 5, 1, 10, 0) # 시즌 중
-    mock_api._pollen_today = {"worst": "나쁨"}  # 기존 캐시 존재
-    mock_api._pollen_today_date = "20250501"
+    for k in ("pine", "oak", "grass"):
+        mock_api._pollen_cache[k]["today"] = "나쁨"
+        mock_api._pollen_cache[k]["date_today"] = "20250501"
     mock_api._approved_apis.add("pollen")
     mock_api._pending_apis.discard("pollen")
-
-    # gather 예외 발생 시 today 캐시 반환
+    check_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": {"item": []}}}}
+    mock_api._fetch = AsyncMock(return_value=check_resp)
     with patch("custom_components.kma_weather.api_kma.asyncio.gather", side_effect=Exception("Partial Network Failure")):
         res = await mock_api._get_pollen(dt_on, "110", "서울")
         assert res is not None
