@@ -83,11 +83,11 @@ class KMAWeatherAPI:
         self._call_counter_ref = None
 
         # 꽃가루 캐시: 종류별(pine/oak/grass) 독립 관리
-        # 각 종류: {"today": 등급, "tomorrow": 등급, "date_today": YYYYMMDD, "date_tomorrow": YYYYMMDD}
+        # 각 종류: {"today": 등급, "tomorrow": 등급, "today_date": YYYYMMDD, "tomorrow_date": YYYYMMDD}
         self._pollen_cache: dict[str, dict] = {
-            "pine":  {"today": None, "tomorrow": None, "date_today": None, "date_tomorrow": None},
-            "oak":   {"today": None, "tomorrow": None, "date_today": None, "date_tomorrow": None},
-            "grass": {"today": None, "tomorrow": None, "date_today": None, "date_tomorrow": None},
+            "pine":  {"today": None, "tomorrow": None, "today_date": None, "tomorrow_date": None},
+            "oak":   {"today": None, "tomorrow": None, "today_date": None, "tomorrow_date": None},
+            "grass": {"today": None, "tomorrow": None, "today_date": None, "tomorrow_date": None},
         }
 
     def _build_nominatim_user_agent(self):
@@ -121,7 +121,7 @@ class KMAWeatherAPI:
         if service_key == "pollen":
             for _k in _POLLEN_KINDS:
                 self._pollen_cache[_k] = {"today": None, "tomorrow": None,
-                                           "date_today": None, "date_tomorrow": None}
+                                           "today_date": None, "tomorrow_date": None}
 
         # _approved에서 제거된 경우 _pending에 다시 추가 → 다음 업데이트에서 재확인
         if service_key not in self._pending_apis:
@@ -540,9 +540,9 @@ class KMAWeatherAPI:
         # ── 자정: today 캐시 만료 삭제 ───────────────────────────────────────
         for k in _POLLEN_KINDS:
             c = self._pollen_cache[k]
-            if c["date_today"] and c["date_today"] != today_str:
+            if c["today_date"] and c["today_date"] != today_str:
                 c["today"] = None
-                c["date_today"] = None
+                c["today_date"] = None
 
         # ── 비시즌 + 승인됨: API 호출 없이 좋음 ──────────────────────────────
         if offseason and "pollen" in self._approved_apis:
@@ -556,7 +556,7 @@ class KMAWeatherAPI:
             if "pollen" in self._pending_apis:
                 for k in _POLLEN_KINDS:
                     self._pollen_cache[k] = {"today": None, "tomorrow": None,
-                                             "date_today": None, "date_tomorrow": None}
+                                             "today_date": None, "tomorrow_date": None}
 
             check_time = today_str + "06" if h >= 6 else prev_str + "18"
             check_r = await self._fetch(
@@ -569,7 +569,7 @@ class KMAWeatherAPI:
             if check_code and self._check_unsubscribed("pollen", check_code):
                 for k in _POLLEN_KINDS:
                     self._pollen_cache[k] = {"today": None, "tomorrow": None,
-                                             "date_today": None, "date_tomorrow": None}
+                                             "today_date": None, "tomorrow_date": None}
                 return None
             if check_code == "00":
                 self._mark_approved("pollen")
@@ -637,37 +637,37 @@ class KMAWeatherAPI:
                     if g == "UNSUB": return None
                     if g is not None:
                         c["tomorrow"] = g
-                        c["date_tomorrow"] = today_str
+                        c["tomorrow_date"] = today_str
                 return c["tomorrow"]
 
             else:
                 # 07시~자정: today 우선
                 if c["today"] is not None:
                     # 19시 이후 tomorrow 백그라운드 갱신
-                    if h >= 19 and c["date_tomorrow"] != today_str:
+                    if h >= 19 and c["tomorrow_date"] != today_str:
                         g = await _fetch_one(kind, today_str + "18", "tomorrow")
                         if g == "UNSUB": return None
                         if g is not None:
                             c["tomorrow"] = g
-                            c["date_tomorrow"] = today_str
+                            c["tomorrow_date"] = today_str
                         else:
                             c["tomorrow"] = None
-                            c["date_tomorrow"] = None
+                            c["tomorrow_date"] = None
                     return c["today"]
 
                 # today 없으면 06시 호출
-                if c["date_today"] != today_str:
+                if c["today_date"] != today_str:
                     g = await _fetch_one(kind, today_str + "06", "today")
                     if g == "UNSUB": return None
                     if g is not None:
                         c["today"] = g
-                        c["date_today"] = today_str
+                        c["today_date"] = today_str
                         # 19시 이후면 tomorrow도 갱신
-                        if h >= 19 and c["date_tomorrow"] != today_str:
+                        if h >= 19 and c["tomorrow_date"] != today_str:
                             tg = await _fetch_one(kind, today_str + "18", "tomorrow")
                             if tg is not None and tg != "UNSUB":
                                 c["tomorrow"] = tg
-                                c["date_tomorrow"] = today_str
+                                c["tomorrow_date"] = today_str
                         return c["today"]
 
                 # 06시도 없으면 전날 18시 tomorrow
@@ -676,7 +676,7 @@ class KMAWeatherAPI:
                     if g == "UNSUB": return None
                     if g is not None:
                         c["tomorrow"] = g
-                        c["date_tomorrow"] = today_str
+                        c["tomorrow_date"] = today_str
                 return c["tomorrow"]
 
         try:
