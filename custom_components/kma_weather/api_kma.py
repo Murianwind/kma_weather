@@ -117,6 +117,12 @@ class KMAWeatherAPI:
             _LOGGER.warning("API 만료/중지 감지 [%s]: resultCode=%s → _approved_apis에서 제거", service_key, result_code)
             self._approved_apis.discard(service_key)
 
+        # pollen 중지 시 캐시 즉시 무효화 → 재활성화 후 새 데이터 호출
+        if service_key == "pollen":
+            for _k in _POLLEN_KINDS:
+                self._pollen_cache[_k] = {"today": None, "tomorrow": None,
+                                           "date_today": None, "date_tomorrow": None}
+
         # _approved에서 제거된 경우 _pending에 다시 추가 → 다음 업데이트에서 재확인
         if service_key not in self._pending_apis:
             self._pending_apis.add(service_key)
