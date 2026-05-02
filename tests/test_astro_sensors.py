@@ -1226,7 +1226,7 @@ class TestPollenCacheAndGrade:
         now = datetime(2026, 4, 25, 7, 0, tzinfo=ZoneInfo("Asia/Seoul"))
         result = await api._get_pollen(now, "1111051500", "서울특별시 종로구 청운효자동")
         assert api._pollen_cache["pine"]["today"] is not None
-        assert api._pollen_cache["pine"]["date_today"] == "20260425"
+        assert api._pollen_cache["pine"]["today_date"] == "20260425"
         assert api._pollen_cache["pine"]["tomorrow"] is None
 
     @pytest.mark.asyncio
@@ -1276,9 +1276,9 @@ class TestPollenCacheAndGrade:
         # 새 캐시 구조: 종류별 독립 캐시
         for k in ("pine", "oak", "grass"):
             api._pollen_cache[k]["today"] = "좋음"
-            api._pollen_cache[k]["date_today"] = "20260424"  # 어제 날짜
+            api._pollen_cache[k]["today_date"] = "20260424"  # 어제 날짜
             api._pollen_cache[k]["tomorrow"] = "보통"
-            api._pollen_cache[k]["date_tomorrow"] = "20260424"
+            api._pollen_cache[k]["tomorrow_date"] = "20260424"
         now = datetime(2026, 4, 25, 2, 0, tzinfo=ZoneInfo("Asia/Seoul"))  # 새벽 2시
         # _find_pollen_area mock
         async def mock_fetch(url, params):
