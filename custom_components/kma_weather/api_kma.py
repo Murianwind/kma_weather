@@ -645,8 +645,35 @@ class KMAWeatherAPI:
             prev_str = (now - timedelta(days=1)).strftime("%Y%m%d")
             ann_prev18 = f"{prev_str[:4]}년 {prev_str[4:6]}월 {prev_str[6:]}일 18시 발표"
 
-            if self._pollen_today_date != today_str and h >= 7:
-                # ── 07시 이후: today 캐시 없으면 항상 06시 발표 호출 ──────────
+            # ── 자정~07시 ─────────────────────────────────────────────────
+            if h < 7:
+                if self._pollen_tomorrow is None:
+                    # tomorrow 없으면 전날 18시 1회 호출
+                    result = await _call(prev_str + "18", "tomorrow", ann_prev18)
+                    if result is None: return None
+                    if result is not False:
+                        self._pollen_tomorrow = result
+                        self._pollen_tomorrow_date = today_str
+                return self._pollen_tomorrow or {}
+
+            # ── 07시~자정 ─────────────────────────────────────────────────
+            # today 캐시 있으면 바로 반환
+            if self._pollen_today is not None:
+                # 19시 이후면 tomorrow 백그라운드 갱신
+                if h >= 19 and self._pollen_tomorrow_date != today_str:
+                    result = await _call(today_str + "18", "tomorrow", ann_18)
+                    if result is None: return None
+                    if result is not False:
+                        self._pollen_tomorrow = result
+                        self._pollen_tomorrow_date = today_str
+                        _LOGGER.debug("꽃가루 tomorrow 캐시 저장")
+                    else:
+                        self._pollen_tomorrow = None
+                        self._pollen_tomorrow_date = None
+                return self._pollen_today
+
+            # today 캐시 없음 → 오늘 06시 1회 호출
+            if self._pollen_today_date != today_str:
                 result = await _call(today_str + "06", "today", ann_06)
                 if result is None: return None
                 if result is not False:
@@ -655,45 +682,22 @@ class KMAWeatherAPI:
                     self._pollen_tomorrow = None
                     self._pollen_tomorrow_date = None
                     _LOGGER.debug("꽃가루 today 캐시 저장")
-                # today 없어도 tomorrow 유지
-
-            if h >= 19 and self._pollen_tomorrow_date != today_str:
-                # ── 19시 이후: tomorrow 캐시 없으면 18시 발표 호출 ────────────
-                result = await _call(today_str + "18", "tomorrow", ann_18)
-                if result is None: return None
-                if result is not False:
-                    self._pollen_tomorrow = result
-                    self._pollen_tomorrow_date = today_str
-                    _LOGGER.debug("꽃가루 tomorrow 캐시 저장")
-                else:
-                    self._pollen_tomorrow = None
-                    self._pollen_tomorrow_date = None
-                    _LOGGER.debug("꽃가루 tomorrow 없음 → 캐시 초기화")
-
-            # ── 캐시 표시 ────────────────────────────────────────────────────
-            if h < 7:
-                # 자정~07시: tomorrow 표시. 없으면 전날 18시 1회 호출
-                if self._pollen_tomorrow is None:
-                    result = await _call(prev_str + "18", "tomorrow", ann_prev18)
-                    if result is None: return None
-                    if result is not False:
-                        self._pollen_tomorrow = result
-                        self._pollen_tomorrow_date = today_str
-                return self._pollen_tomorrow or {}
-            else:
-                # 07시~자정: today 표시. 없으면 tomorrow 표시. 둘 다 없으면 전날 18시 1회 호출
-                if self._pollen_today is not None:
+                    # 19시 이후면 tomorrow도 갱신
+                    if h >= 19:
+                        tmr = await _call(today_str + "18", "tomorrow", ann_18)
+                        if tmr is not None and tmr is not False:
+                            self._pollen_tomorrow = tmr
+                            self._pollen_tomorrow_date = today_str
                     return self._pollen_today
-                if self._pollen_tomorrow is not None:
-                    return self._pollen_tomorrow
-                # today도 tomorrow도 없음 → 전날 18시 1회 호출
+
+            # 오늘 06시 없음 → 전날 18시 tomorrow로 표시
+            if self._pollen_tomorrow is None:
                 result = await _call(prev_str + "18", "tomorrow", ann_prev18)
                 if result is None: return None
                 if result is not False:
                     self._pollen_tomorrow = result
                     self._pollen_tomorrow_date = today_str
-                    return result
-                return {}
+            return self._pollen_tomorrow or {}
 
         except Exception as e:
             _LOGGER.error("꽃가루 조회 오류: %s", e)
