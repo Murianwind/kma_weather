@@ -135,19 +135,18 @@ async def test_api_3_6_7_warning_cases(mock_api):
 async def test_api_3_8_pollen_gather_error_fix(mock_api):
     """[TC 3-8] 꽃가루 gather 중 예외 발생 시 캐시 반환 (Line 775)"""
     dt_on = datetime(2025, 5, 1, 10, 0) # 시즌
-    mock_api._pollen_today = {"worst": "나쁨"}
-    mock_api._pollen_today_date = "20250501"
+    for k in ("pine", "oak", "grass"):
+        mock_api._pollen_cache[k]["today"] = "나쁨"
+        mock_api._pollen_cache[k]["date_today"] = "20250501"
     mock_api._approved_apis.add("pollen")
     mock_api._pending_apis.discard("pollen")
-    # _fetch mock: 경량 check API 응답 (approved 상태 유지)
     check_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": {"item": []}}}}
     mock_api._fetch = AsyncMock(return_value=check_resp)
-    # asyncio.gather에서 Exception을 발생시켜 catch 구문 실행
-    with patch("custom_components.kma_weather.api_kma.asyncio.gather", side_effect=Exception):
-        res = await mock_api._get_pollen(dt_on, "110", "서울")
-        # today 캐시 있으면 캐시 반환
-        assert res is not None
-        assert res.get("worst") == "나쁨"
+    # asyncio.gather mock: _get_grade 내부 _fetch_one이 gather 대신 직접 _fetch 호출
+    # 캐시가 있으면 캐시 반환 → gather 호출 안 함
+    res = await mock_api._get_pollen(dt_on, "110", "서울")
+    assert res is not None
+    assert res.get("worst") == "나쁨"
 
 @pytest.mark.asyncio
 async def test_api_3_9_pollen_grade_99_fix(mock_api):
@@ -156,13 +155,13 @@ async def test_api_3_9_pollen_grade_99_fix(mock_api):
     mock_api._pending_apis.discard("pollen")
     dt_on = datetime(2025, 5, 1, 10, 0)
 
-    def _mock_fetch(url, params):
+    async def _mock_fetch(url, params):
         if "Oak" in url:
             return {"response": {"header": {"resultCode": "99"}, "body": {"items": {"item": []}}}}
         return {"response": {"header": {"resultCode": "00"}, "body": {
             "items": {"item": [{"today": "1", "tomorrow": "1"}]}}}}
 
-    mock_api._fetch = AsyncMock(side_effect=_mock_fetch)
+    mock_api._fetch = _mock_fetch
     res = await mock_api._get_pollen(dt_on, "110", "서울")
     assert res.get("oak") == "좋음"  # rc=99는 좋음
 
