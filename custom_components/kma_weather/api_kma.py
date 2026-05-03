@@ -248,9 +248,7 @@ class KMAWeatherAPI:
         def _should_call(key: str) -> bool:
             # _pending_apis:  미확인/미신청/만료 → 매 업데이트마다 호출해서 확인
             # _approved_apis: 승인됨 → 데이터 호출
-            result = key in self._approved_apis or key in self._pending_apis
-            if key == "pollen":
-                return result
+            return key in self._approved_apis or key in self._pending_apis
 
         tasks = [
             self._get_short_term(now),
