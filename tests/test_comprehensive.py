@@ -401,6 +401,8 @@ class TestRegressions:
         a._cache_mid_tm_fc_dt = None
         a._call_counts = {}
         a._call_date = None
+        from unittest.mock import MagicMock
+        a.hass = MagicMock()
         a._pollen_cache = {
             "pine":  {"today": None, "tomorrow": None, "today_date": None, "tomorrow_date": None},
             "oak":   {"today": None, "tomorrow": None, "today_date": None, "tomorrow_date": None},
@@ -571,6 +573,8 @@ class TestRegressions:
         from datetime import datetime
         from zoneinfo import ZoneInfo
         api.tz = ZoneInfo("Asia/Seoul")
+        from unittest.mock import MagicMock
+        api.hass = MagicMock()
 
         await api.fetch_data(
             lat=37.56, lon=126.98, nx=60, ny=127,
