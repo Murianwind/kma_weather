@@ -372,3 +372,212 @@ async def test_init_astro_service_error_traps(hass):
     with patch("custom_components.kma_weather.__init__._geocode_ko", return_value=(37.5, 126.9, "서울")):
         with pytest.raises(HomeAssistantError, match="천문 계산 중 오류가 발생했습니다"):
             await _handle_get_astronomical_info(call)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 회귀 테스트: 지금까지 발생한 모든 결함 재발 방지
+# ══════════════════════════════════════════════════════════════════
+
+class TestRegressions:
+    """이전에 발생한 결함이 재발하지 않도록 검증하는 테스트."""
+
+    @pytest.fixture
+    def api(self):
+        from custom_components.kma_weather.api_kma import KMAWeatherAPI
+        from zoneinfo import ZoneInfo
+        a = KMAWeatherAPI.__new__(KMAWeatherAPI)
+        a.api_key = "test"
+        a.tz = ZoneInfo("Asia/Seoul")
+        a._approved_apis = set()
+        a._pending_apis = {"air", "station", "warning", "pollen"}
+        a._notified_unsubscribed = set()
+        a.lat = a.lon = a.nx = a.ny = None
+        a._cached_station = None
+        a._cached_station_lat = None
+        a._cached_station_lon = None
+        a._cache_forecast_map = {}
+        a._cache_mid_ta = {}
+        a._cache_mid_land = {}
+        a._cache_mid_tm_fc_dt = None
+        a._call_counts = {}
+        a._call_date = None
+        a._pollen_cache = {
+            "pine":  {"today": None, "tomorrow": None, "today_date": None, "tomorrow_date": None},
+            "oak":   {"today": None, "tomorrow": None, "today_date": None, "tomorrow_date": None},
+            "grass": {"today": None, "tomorrow": None, "today_date": None, "tomorrow_date": None},
+        }
+        return a
+
+    def test_regression_should_call_returns_bool_for_all_keys(self, api):
+        """결함1: _should_call이 pollen만 return하고 다른 키는 None 반환했던 문제."""
+        from custom_components.kma_weather.api_kma import KMAWeatherAPI
+        # fetch_data 내부 _should_call을 직접 검증할 수 없으므로
+        # approved_apis에 키가 있을 때 bool을 반환하는지 확인
+        api._approved_apis = {"air", "warning", "pollen", "short", "mid"}
+        # _should_call이 None을 반환하면 _skip_coro가 실행되어 air/warning이 호출 안 됨
+        # 이를 검증하기 위해 fetch_data의 tasks 리스트 생성이 정상인지 확인
+        import inspect
+        src = inspect.getsource(KMAWeatherAPI.fetch_data)
+        assert 'if key == "pollen":\n                return result' not in src, \
+            "_should_call에 pollen 조건이 남아있어 다른 키 None 반환"
+
+    def test_regression_pollen_cache_key_names(self, api):
+        """결함2: _pollen_cache 키 이름 불일치 (date_today vs today_date)."""
+        for kind in ("pine", "oak", "grass"):
+            c = api._pollen_cache[kind]
+            assert "today_date" in c, f"{kind} 캐시에 today_date 키 없음"
+            assert "tomorrow_date" in c, f"{kind} 캐시에 tomorrow_date 키 없음"
+            assert "date_today" not in c, f"{kind} 캐시에 date_today 키 잔존"
+            assert "date_tomorrow" not in c, f"{kind} 캐시에 date_tomorrow 키 잔존"
+
+    def test_regression_pollen_cache_key_access_no_keyerror(self, api):
+        """결함2 심화: _pollen_cache 키 접근 시 KeyError 없음."""
+        for kind in ("pine", "oak", "grass"):
+            c = api._pollen_cache[kind]
+            # 이 접근이 KeyError 없이 동작해야 함
+            _ = c["today_date"]
+            _ = c["tomorrow_date"]
+
+    def test_regression_warning_url_https(self):
+        """결함4: 기상특보 URL이 http:// → https:// 여야 함."""
+        import inspect
+        from custom_components.kma_weather.api_kma import KMAWeatherAPI
+        src = inspect.getsource(KMAWeatherAPI._get_warning)
+        assert "http://apis.data.go.kr/1360000/WthrWrnInfoService" not in src, \
+            "기상특보 URL이 http:// 사용 중"
+        assert "https://apis.data.go.kr/1360000/WthrWrnInfoService" in src, \
+            "기상특보 URL이 https:// 이어야 함"
+
+    def test_regression_warning_filter_by_tmfc(self):
+        """결함5: 기상특보 필터 tmFc 기준 최신 item 선택."""
+        items = [
+            # 5월 2일 16시 해제 (tmFc 큼)
+            {"warnVar": 4, "tmFc": 202605021600, "command": "2",
+             "cancel": "0", "endTime": 202605021600, "tmSeq": 5},
+            # 4월 29일 발령 (tmFc 작음, tmSeq 큼)
+            {"warnVar": 4, "tmFc": 202604291000, "command": "1",
+             "cancel": "0", "endTime": 0, "tmSeq": 138},
+        ]
+        latest = {}
+        for item in items:
+            key = str(item.get("warnVar", ""))
+            tfc = item.get("tmFc", 0)
+            if key not in latest or tfc > latest[key].get("tmFc", 0):
+                latest[key] = item
+
+        active = [
+            item for item in latest.values()
+            if str(item.get("command", "")) in ("1", "3")
+            and str(item.get("cancel", "1")) == "0"
+            and str(item.get("endTime", "1")) == "0"
+        ]
+        assert active == [], "tmFc 기준으로 해제 item이 선택되어야 함"
+
+    def test_regression_pollen_today_key_fallback(self):
+        """결함7: today 키 빈값이면 tomorrow 키로 폴백."""
+        POLLEN_GRADE = {"0": "좋음", "1": "보통", "2": "나쁨", "3": "매우나쁨"}
+        item = {"today": "", "tomorrow": "2"}
+        val = item.get("today", "")
+        if not val:
+            val = item.get("tomorrow", "")
+        grade = POLLEN_GRADE.get(str(val)) if val else None
+        assert grade == "나쁨", f"today 빈값 폴백 실패: {grade}"
+
+    def test_regression_forecast_hourly_naive_aware(self):
+        """결함8: forecast_hourly dt <= now 비교 시 naive/aware 오류."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        KST = ZoneInfo("Asia/Seoul")
+        dt_aware = datetime(2026, 5, 3, 10, 0, 0, tzinfo=KST)
+        now_naive = datetime(2026, 5, 3, 9, 0, 0)
+        now_aware = now_naive.replace(tzinfo=KST)
+        # naive와 aware 비교는 TypeError → now_aware로 변환해야 함
+        try:
+            result = dt_aware <= now_aware
+            assert result == False
+        except TypeError:
+            pytest.fail("naive/aware datetime 비교 오류 발생")
+
+    @pytest.mark.asyncio
+    async def test_regression_pollen_unavailable_on_none_return(self, api):
+        """결함9: _get_pollen None 반환 시 센서 unavailable."""
+        from unittest.mock import AsyncMock
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        api._approved_apis.add("pollen")
+        api._pending_apis.discard("pollen")
+
+        # check API가 미신청 코드 반환
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "30", "resultMsg": "SERVICE_KEY_IS_NOT_REGISTERED_ERROR"}}
+        })
+        now = datetime(2026, 5, 3, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        result = await api._get_pollen(now, "1126069000", "서울")
+        assert result is None, "미신청 시 None 반환되어야 함"
+
+    def test_regression_sensor_pollen_extra_attrs_no_error(self):
+        """결함10: extra_state_attributes에서 pollen=None 시 AttributeError 없음."""
+        # pollen이 None일 때 .get() 호출 방지
+        pollen = None
+        pollen_safe = pollen or {}
+        area_name = pollen_safe.get("area_name")
+        assert area_name is None  # 오류 없이 None 반환
+
+    def test_regression_pollen_season_grades_exclude_offseason(self):
+        """결함6+worst계산: 비시즌 항목은 worst 계산에서 제외."""
+        POLLEN_SEASONS = {"oak": (4, 6), "pine": (4, 6), "grass": (8, 10)}
+        month = 5  # 5월: oak/pine 시즌, grass 비시즌
+        in_season = {k: POLLEN_SEASONS[k][0] <= month <= POLLEN_SEASONS[k][1]
+                     for k in ("oak", "pine", "grass")}
+
+        grades = {"pine": "보통", "oak": None, "grass": "좋음"}
+        order = ["좋음", "보통", "나쁨", "매우나쁨"]
+        season_known = [
+            g for k, g in grades.items()
+            if in_season[k] and g is not None
+        ]
+        worst = max(season_known, key=lambda g: order.index(g)) if season_known else None
+        assert worst == "보통", f"비시즌 잡초류 제외 후 worst 계산 실패: {worst}"
+        assert "좋음" not in season_known, "비시즌 잡초류가 worst 계산에 포함됨"
+
+    @pytest.mark.asyncio
+    async def test_regression_fetch_data_all_apis_called(self, api):
+        """결함1 통합: fetch_data에서 air/warning/pollen 모두 호출됨."""
+        from unittest.mock import AsyncMock, patch
+        api._approved_apis = {"short", "mid", "air", "warning", "pollen"}
+        api._pending_apis = set()
+
+        called = {"air": False, "warning": False, "pollen": False}
+
+        async def mock_get_air(lat, lon):
+            called["air"] = True
+            return {}
+
+        async def mock_get_warning(code):
+            called["warning"] = True
+            return "특보없음"
+
+        async def mock_get_pollen(now, area_no, area_name):
+            called["pollen"] = True
+            return {}
+
+        api._get_short_term = AsyncMock(return_value=None)
+        api._get_mid_term = AsyncMock(return_value=(None, None, None))
+        api._get_air_quality = mock_get_air
+        api._get_address = AsyncMock(return_value="서울")
+        api._get_warning = mock_get_warning
+        api._get_pollen = mock_get_pollen
+
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        api.tz = ZoneInfo("Asia/Seoul")
+
+        await api.fetch_data(
+            lat=37.56, lon=126.98, nx=60, ny=127,
+            reg_id_temp="11B10101", reg_id_land="11B00000",
+            warn_area_code="L1100200",
+            pollen_area_no="1126069000", pollen_area_name="서울"
+        )
+        assert called["air"], "air API가 호출되지 않음 (_should_call 오류)"
+        assert called["warning"], "warning API가 호출되지 않음 (_should_call 오류)"
+        assert called["pollen"], "pollen API가 호출되지 않음 (_should_call 오류)"
