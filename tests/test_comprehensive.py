@@ -564,7 +564,7 @@ class TestRegressions:
             return {}
 
         api._get_short_term = AsyncMock(return_value=None)
-        api._get_mid_term = AsyncMock(return_value=(None, None, None))
+        api._get_mid_term = AsyncMock(return_value=(None, None, datetime(2026, 5, 3, 6, 0, tzinfo=ZoneInfo("Asia/Seoul"))))
         api._get_air_quality = mock_get_air
         api._get_address = AsyncMock(return_value="서울")
         api._get_warning = mock_get_warning
