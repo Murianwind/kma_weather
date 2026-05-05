@@ -780,6 +780,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 "풍속":    f"{wsd} m/s" if wsd is not None else "-",
                 "달_조명율": illum_str,
                 "달_고도":  "-",
+                "은하수_고도": "-",
                 "날씨":    condition_kor or "-",
                 "주야간":  day_night,
                 "달_위상": moon_phase,
@@ -803,7 +804,17 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             moon_alt_str = f"{moon_alt_deg:.1f}°"
             moon_up = moon_alt_deg > 7.0
 
+            # 은하수 중심부 (궁수자리 A*) 고도 계산
+            from skyfield.api import Star as _Star
+            _mw_center = _Star(ra_hours=(17 + 45/60 + 40.04/3600),
+                               dec_degrees=-(29 + 0/60 + 28.1/3600))
+            mw_astr = (self._sf_eph["Earth"] + sf_loc).at(t_now).observe(_mw_center)
+            mw_alt, _, _ = mw_astr.apparent().altaz()
+            mw_alt_deg = mw_alt.degrees
+            mw_alt_str = f"{mw_alt_deg:.1f}°"
+
         except Exception:
+            mw_alt_str = "-"
             return "분석불가", _fallback_attrs()
 
         day_night = "주간" if sun_is_up else "야간"
@@ -879,17 +890,33 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         obs_reason = ", ".join(reasons) if reasons else "-"
 
+        # ── 은하수 가시성 판단 ────────────────────────────────────────────────
+        # 최우수/우수 등급이고 은하수 고도 20° 이상이면 은하수 관측 가능
+        # 30° 이상이면 최적 조건
+        mw_visible = False
+        mw_suffix = ""
+        if final_cond in ("최우수", "우수") and not sun_is_up:
+            try:
+                if mw_alt_deg >= 30:
+                    mw_visible = True
+                    mw_suffix = "(은하수)"
+            except Exception:
+                pass
+
+        display_cond = f"{final_cond}{mw_suffix}" if mw_suffix else final_cond
+
         attrs = {
             "풍속":    f"{wsd} m/s" if wsd is not None else "-",
             "달_조명율": illum_str,
             "달_고도":  moon_alt_str,
+            "은하수_고도": mw_alt_str,
             "날씨":    condition_kor or "-",
             "주야간":  day_night,
             "달_위상": moon_phase,
             "판단사유": obs_reason,
         }
 
-        return final_cond, attrs
+        return display_cond, attrs
 
 
     # ── 날짜 지정 천문 계산 (HA 서비스용) ──────────────────────────────────
@@ -1043,6 +1070,19 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             obs_dt = eval_dt or datetime(
                 target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=tz)
             obs_cond, obs_attrs = self._eval_observation(weather_for_obs, obs_dt, lat, lon)
+            # 은하수 중심부 고도 계산 (액션용)
+            try:
+                from skyfield.api import Star as _Star
+                _mw_center = _Star(ra_hours=(17 + 45/60 + 40.04/3600),
+                                   dec_degrees=-(29 + 0/60 + 28.1/3600))
+                t_eval = self._sf_ts.from_datetime(obs_dt)
+                sf_loc_action = _wgs84.latlon(lat, lon)
+                mw_astr = (self._sf_eph["Earth"] + sf_loc_action).at(t_eval).observe(_mw_center)
+                mw_alt_action, _, _ = mw_astr.apparent().altaz()
+                result["milkyway_altitude"] = round(mw_alt_action.degrees, 1)
+            except Exception:
+                result["milkyway_altitude"] = None
+
             result["observation_condition"] = obs_cond
             result["observation_attrs"]     = obs_attrs
             result["weather_source"]        = weather_source
