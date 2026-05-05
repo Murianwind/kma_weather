@@ -563,18 +563,18 @@ class TestRegressions:
             called["pollen"] = True
             return {}
 
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from unittest.mock import MagicMock
+        api.tz = ZoneInfo("Asia/Seoul")
+        api.hass = MagicMock()
+
         api._get_short_term = AsyncMock(return_value=None)
         api._get_mid_term = AsyncMock(return_value=(None, None, datetime(2026, 5, 3, 6, 0, tzinfo=ZoneInfo("Asia/Seoul"))))
         api._get_air_quality = mock_get_air
         api._get_address = AsyncMock(return_value="서울")
         api._get_warning = mock_get_warning
         api._get_pollen = mock_get_pollen
-
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        api.tz = ZoneInfo("Asia/Seoul")
-        from unittest.mock import MagicMock
-        api.hass = MagicMock()
 
         await api.fetch_data(
             lat=37.56, lon=126.98, nx=60, ny=127,
