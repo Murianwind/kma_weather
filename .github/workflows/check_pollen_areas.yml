@@ -1,0 +1,37 @@
+name: 꽃가루 rc=99 지역 전수 조사
+
+on:
+  workflow_dispatch:
+    inputs:
+      delay:
+        description: 'API 호출 간격(초)'
+        required: false
+        default: '1.0'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 전수 조사 실행
+        run: |
+          cd custom_components/kma_weather
+          python ../../scripts/check_pollen_areas.py \
+            --api-key "${{ secrets.DATA_GO_KR_API_KEY }}" \
+            --delay ${{ inputs.delay }}
+
+      - name: 결과 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: pollen-rc99-result
+          path: |
+            custom_components/kma_weather/pollen_rc99_areas.json
+            custom_components/kma_weather/pollen_check_progress.json
+          retention-days: 30
