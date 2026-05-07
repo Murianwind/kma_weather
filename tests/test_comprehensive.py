@@ -163,7 +163,7 @@ async def test_api_3_9_pollen_grade_99_fix(mock_api):
 
     mock_api._fetch = _mock_fetch
     res = await mock_api._get_pollen(dt_on, "110", "서울")
-    assert res.get("oak") == "좋음"  # rc=99는 좋음
+    assert res.get("oak") is None  # rc=99 → 지역 데이터 없음 → unknown
 
 @pytest.mark.asyncio
 async def test_api_3_10_merge_fallback_to_past(mock_api):
