@@ -557,14 +557,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     "debug_lon": curr_lon,
                 })
 
-                now_h = datetime.now(self.api.tz).hour
-                if now_h < 12:
-                    kor = self._wf_am_today or weather.get("current_condition_kor")
-                else:
-                    kor = self._wf_pm_today or self._wf_am_today or weather.get("current_condition_kor")
-
-                weather["current_condition_kor"] = kor
-                weather["current_condition"] = self.api.kor_to_condition(kor)
+                # current_condition은 _merge_all에서 단기예보 슬롯 기반으로 계산됨
+                # wf_am/pm_today는 오늘 날씨 요약용으로만 사용하고 현재 날씨를 덮어쓰지 않음
 
                 self._sync_today_forecast(weather)
 
