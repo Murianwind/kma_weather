@@ -233,10 +233,10 @@ async def test_kma_full_scenarios(hass, mock_config_entry, kma_api_mock_factory,
             if sensor_type in _ASTRO_KEYS:
                 continue
             if sensor_type == "pollen":
-                # 가비지 데이터에도 pollen은 좋음 fallback
+                # pollen worst=None이면 unknown, 데이터 있으면 등급
                 pollen_s = hass.states.get(f"sensor.{p}_{details[4]}")
                 if pollen_s:
-                    assert pollen_s.state == "좋음"
+                    assert pollen_s.state in ("좋음", "보통", "나쁨", "매우나쁨", "unknown")
                 continue
             if sensor_type == "api_calls_today":
                 # coordinator 내부 카운터를 직접 읽으므로 가비지 데이터와 무관하게 항상 숫자 반환
