@@ -581,8 +581,11 @@ class KMAWeatherAPI:
                                              "today_date": None, "tomorrow_date": None}
                 return None
             if check_code == "99":
-                # 지역 데이터 없음 → worst=None → unknown
-                return {"oak": None, "pine": None, "grass": None, "worst": None,
+                # 지역 데이터 없음 → 시즌 항목은 None(unknown), 비시즌 항목은 좋음
+                grades = {k: (None if in_season[k] else "좋음") for k in _POLLEN_KINDS}
+                season_known = [g for k, g in grades.items() if in_season[k] and g is not None]
+                worst = None  # 시즌 항목 모두 데이터 없음
+                return {**grades, "worst": worst,
                         "area_name": area_name, "area_no": area_no,
                         "announcement": "데이터없음"}
             if check_code == "00":
