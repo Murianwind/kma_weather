@@ -393,8 +393,10 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
             if "pollen" in approved:
                 pollen = self.coordinator.data.get("pollen") or {}
                 area_name = pollen.get("area_name")
+                area_no   = pollen.get("area_no")
                 if area_name:
-                    attrs["pollen_location"] = area_name
+                    loc = f"{area_name}({area_no})" if area_no else area_name
+                    attrs["pollen_location"] = loc
 
             return attrs if attrs else None
 
