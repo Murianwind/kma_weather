@@ -461,7 +461,7 @@ class TestPollenSensor:
         """[Given] pollen 데이터 없음(비시즌), [When] native_value를 조회하면,
         [Then] '좋음'을 반환해야 함 (pollen dict 없으면 좋음 fallback)"""
         sensor = self._make_sensor({})
-        assert sensor.native_value == "좋음", f"비시즌(데이터없음) 기대='좋음', 실제='{sensor.native_value}'"
+        assert sensor.native_value is None, f"데이터없음(worst=None) 기대=None, 실제='{sensor.native_value}'"
 
     def test_pollen_worst_is_state(self):
         """[Given] 나쁨 등급 꽃가루 데이터, [When] native_value를 조회하면,
@@ -1661,7 +1661,7 @@ class TestPollenUnavailableOnApiStop:
         [Then] "좋음" fallback 반환
         """
         sensor = self._make_pollen_sensor({})
-        assert sensor.native_value == "좋음"
+        assert sensor.native_value is None  # worst 키 없음 → unknown
 
     def test_pollen_with_worst_none_returns_unknown(self):
         """
