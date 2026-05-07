@@ -612,7 +612,9 @@ class KMAWeatherAPI:
             if code and self._check_unsubscribed("pollen", code):
                 return "UNSUB"
             if code == "99":
-                return "좋음"  # 비시즌 또는 데이터 없음
+                # 지역 데이터 없음 → worst=None → unknown
+                return {"oak": None, "pine": None, "grass": None, "worst": None,
+                        "area_name": area_name, "area_no": area_no}
             if code != "00":
                 return None
             self._mark_approved("pollen")
@@ -626,7 +628,7 @@ class KMAWeatherAPI:
             if not val:
                 fallback = "tomorrow" if fetch_key == "today" else "today"
                 val = items[0].get(fallback, "")
-            if code == "99": return "좋음"
+            if code == "99": return None  # 지역 데이터 없음 → unknown
             return _POLLEN_GRADE.get(str(val)) if val else None
 
         async def _get_grade(kind: str) -> str | None:
