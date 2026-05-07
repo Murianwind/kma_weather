@@ -82,14 +82,14 @@ class TestKorToConditionMethod:
 
 class TestCoordinatorConditionSync:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("hour,wf_am,wf_pm,expected_kor", [
-        (9,  "맑음", "구름많음", "맑음"),
-        (15, "맑음", "구름많음", "구름많음"),
-        (20, "구름많음", "흐림", "흐림"),
-        (3,  "비", "맑음", "비"),
+    @pytest.mark.parametrize("hour,slot_kor,expected_kor", [
+        (9,  "맑음",   "맑음"),
+        (15, "구름많음", "구름많음"),
+        (20, "흐림",   "흐림"),
+        (3,  "비",     "비"),
     ], ids=["오전9시", "오후15시", "저녁20시", "새벽3시"])
-    async def test_coordinator_sync_logic(self, hass, hour, wf_am, wf_pm, expected_kor):
-        # [Given] 코디네이터를 생성하고 시뮬레이션할 예보 데이터를 설정
+    async def test_coordinator_sync_logic(self, hass, hour, slot_kor, expected_kor):
+        """current_condition은 wf_pm_today가 아닌 단기예보 슬롯 기반으로 결정된다."""
         from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
         hass.config.latitude, hass.config.longitude = 37.56, 126.98
         entry = MagicMock(data={"api_key": "test", "prefix": "sync"}, options={}, entry_id="coord_test")
@@ -97,24 +97,24 @@ class TestCoordinatorConditionSync:
         coord = KMAWeatherUpdateCoordinator(hass, entry)
         coord.api.tz = TZ
 
-        # API 응답 결과 Mocking (실제 _merge_all 결과 딕셔너리와 구조 일치)
+        # _merge_all이 슬롯 기반으로 current_condition_kor를 이미 계산해서 반환
         coord.api.fetch_data = AsyncMock(return_value={
             "weather": {
-                "wf_am_today": wf_am, "wf_pm_today": wf_pm,
-                "current_condition_kor": wf_am, # 초기값
+                "wf_am_today": "맑음", "wf_pm_today": "흐림",  # wf_pm은 현재 날씨에 영향 없음
+                "current_condition_kor": slot_kor,  # 단기예보 슬롯 기반 현재 날씨
+                "current_condition": KOR_TO_CONDITION[slot_kor],
                 "forecast_twice_daily": [], "forecast_daily": []
             },
             "air": {}, "raw_forecast": {"20250601": {"0800": {"TMP": "20"}}}
         })
 
-        # [When] 특정 시각(hour)을 패치하여 코디네이터 데이터를 업데이트하면
         fake_now = datetime(2025, 6, 1, hour, 0, tzinfo=TZ)
         with patch("custom_components.kma_weather.coordinator.datetime") as mock_dt:
             mock_dt.now.return_value = fake_now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             result = await coord._async_update_data()
 
-        # [Then] 시각에 맞는 오전/오후 날씨가 현재 날씨(current_condition_kor)로 선택되어야 함
+        # current_condition은 wf_pm_today(흐림)가 아닌 슬롯 기반 값이어야 함
         assert result is not None
         assert result["weather"]["current_condition_kor"] == expected_kor
         assert result["weather"]["current_condition"] == KOR_TO_CONDITION[expected_kor]
