@@ -74,7 +74,8 @@ def _calc_warn_area_code(lat: float, lon: float) -> str | None:
 
 class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
-        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(hours=1))
+        # update_interval=None: 자동 주기 업데이트 비활성화, 매시 15분 스케줄로 대체
+        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=None)
         self.entry = entry
         self.api = KMAWeatherAPI(
             session=async_get_clientsession(hass),
@@ -85,6 +86,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._daily_date = self._daily_max_temp = self._daily_min_temp = None
         self._wf_am_today = self._wf_pm_today = None
         self._cached_data = None
+        self._unsub_timer = None
         self._update_lock = asyncio.Lock()
 
         # ── 위치 기반 구역코드 통합 캐시 (2km 이내 이동 시 재사용) ──────────
@@ -363,6 +365,23 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         _LOGGER.warning("꽃가루 지역 매칭 실패: (%.4f, %.4f)", lat, lon)
         return "", ""
+
+    async def async_setup(self) -> None:
+        """매시 15분 자동 업데이트 스케줄 등록."""
+        from homeassistant.helpers.event import async_track_time_change
+
+        async def _scheduled_update(now):
+            await self.async_refresh()
+
+        self._unsub_timer = async_track_time_change(
+            self.hass, _scheduled_update, minute=15, second=0
+        )
+
+    def async_teardown(self) -> None:
+        """스케줄 해제."""
+        if self._unsub_timer:
+            self._unsub_timer()
+            self._unsub_timer = None
 
     async def _restore_approved_apis(self) -> None:
         """재시작/재로드 후 승인된 API 목록을 복구한다."""
