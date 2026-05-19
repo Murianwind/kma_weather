@@ -20,8 +20,8 @@ except ImportError:
 def calculate_pm10_grade(value) -> str:
     try:
         val = int(float(value))
-        if val <= 50: return "좋음"
-        elif val <= 100: return "보통"
+        if val <= 30: return "좋음"
+        elif val <= 80: return "보통"
         elif val <= 150: return "나쁨"
         return "매우나쁨"
     except (ValueError, TypeError):
