@@ -900,21 +900,25 @@ class KMAWeatherAPI:
                     t_max = max(valid_temps) if valid_temps else None
                     t_min = min(valid_temps) if valid_temps else None
 
-                    am_slot = "0900" if "0900" in forecast_map[d_str] else next(
-                        (t for t in sorted(forecast_map[d_str].keys()) if t < "1200"), None)
-                    pm_slot = next(
-                        (t for t in ["1500", "1200", "1800"] if t in forecast_map[d_str]), None)
-
-                    if am_slot:
-                        wf_am = self._get_sky_kor(
-                            forecast_map[d_str][am_slot].get("SKY"),
-                            forecast_map[d_str][am_slot].get("PTY"))
-                    if pm_slot:
-                        wf_pm = self._get_sky_kor(
-                            forecast_map[d_str][pm_slot].get("SKY"),
-                            forecast_map[d_str][pm_slot].get("PTY"))
+                    if i == 0:
+                        # 오늘 날씨: 현재 시간 이후부터 자정까지 가장 많이 나타나는 날씨 집계
+                        rem_times = [t for t in sorted(forecast_map[d_str].keys()) if t > curr_h]
+                        if rem_times:
+                            conds = [self._get_sky_kor(forecast_map[d_str][t].get("SKY"), forecast_map[d_str][t].get("PTY")) for t in rem_times]
+                            # 가장 빈도가 높은 날씨 선택
+                            most_freq = max(set(conds), key=conds.count)
+                            wf_am = wf_pm = most_freq
+                        else:
+                            wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
+                    elif i == 1:
+                        # 내일 날씨: 정오(12:00) 슬롯의 날씨를 대표값으로 사용
+                        if "1200" in forecast_map[d_str]:
+                            wf_noon = self._get_sky_kor(forecast_map[d_str]["1200"].get("SKY"), forecast_map[d_str]["1200"].get("PTY"))
+                            wf_am = wf_pm = wf_noon
+                        else:
+                            wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
                     else:
-                        wf_pm = wf_am
+                        wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
 
                 _LOGGER.debug("단기예보 i=%d date=%s t_max=%s t_min=%s", i, d_str, t_max, t_min)
 
