@@ -72,7 +72,7 @@ MOCK_SCENARIOS = {
         },
         "air": {
             "pm10Value": 35,
-            "pm10Grade": "좋음",
+            "pm10Grade": "보통",
             "pm25Value": 15,
             "pm25Grade": "좋음",
             "station": "화성"
