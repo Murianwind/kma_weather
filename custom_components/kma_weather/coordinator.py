@@ -462,7 +462,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         today_t_min = self._daily_min_temp
         wf_am_today = self._wf_am_today or weather.get("wf_am_today")
         wf_pm_today = self._wf_pm_today or weather.get("wf_pm_today")
-        current_condition = weather.get("current_condition")
 
         tmrw_t_max = weather.get("TMX_tomorrow")
         tmrw_t_min = weather.get("TMN_tomorrow")
@@ -474,7 +473,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             if idx == 0:
                 if today_t_max is not None: entry["native_temperature"] = today_t_max
                 if today_t_min is not None: entry["native_templow"] = today_t_min
-                if current_condition is not None: entry["condition"] = current_condition
             elif idx == 1:
                 if tmrw_t_max is not None: entry["native_temperature"] = tmrw_t_max
                 if tmrw_t_min is not None: entry["native_templow"] = tmrw_t_min
