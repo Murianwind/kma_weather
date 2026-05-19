@@ -294,10 +294,12 @@ class TestLandCodeMapping:
     def test_land_code(self, temp_id, expected_land):
         assert _land_code(temp_id) == expected_land
 
-class TestTranslateGrade:
+class TestGetAirGrade:
     def _api(self): return KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
-    @pytest.mark.parametrize("grade,expected", [
-        ("1", "좋음"), (None, "정보없음"), ("5", "정보없음")
+    @pytest.mark.parametrize("val,p_type,expected", [
+        (15, "pm10", "좋음"), (50, "pm10", "보통"), (100, "pm10", "나쁨"), (200, "pm10", "매우나쁨"),
+        (5, "pm25", "좋음"), (25, "pm25", "보통"), (50, "pm25", "나쁨"), (100, "pm25", "매우나쁨"),
+        (None, "pm10", "정보없음"), ("-", "pm25", "정보없음")
     ])
-    def test_all_grades(self, grade, expected):
-        assert self._api()._translate_grade(grade) == expected
+    def test_all_grades(self, val, p_type, expected):
+        assert self._api()._get_air_grade(val, p_type) == expected
