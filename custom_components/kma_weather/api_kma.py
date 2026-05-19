@@ -351,19 +351,38 @@ class KMAWeatherAPI:
 
             ai = ai_list[0]
             self._mark_approved("air")
+            p10v = ai.get("pm10Value")
+            p25v = ai.get("pm25Value")
+
             return {
-                "pm10Value": ai.get("pm10Value"),
-                "pm10Grade": self._translate_grade(ai.get("pm10Grade") or ai.get("pm10Grade1h")),
-                "pm25Value": ai.get("pm25Value"),
-                "pm25Grade": self._translate_grade(ai.get("pm25Grade") or ai.get("pm25Grade1h")),
+                "pm10Value": p10v,
+                "pm10Grade": self._get_air_grade(p10v, "pm10"),
+                "pm25Value": p25v,
+                "pm25Grade": self._get_air_grade(p25v, "pm25"),
                 "station": sn,
             }
         except Exception as e:
             _LOGGER.error("Air quality fetch error: %s", e)
             return {}
 
-    def _translate_grade(self, g):
-        return {"1": "좋음", "2": "보통", "3": "나쁨", "4": "매우나쁨"}.get(str(g), "정보없음")
+    def _get_air_grade(self, val: object, p_type: str) -> str:
+        """농도 값을 기준으로 한국 환경부 표준 4단계 등급을 직접 계산한다."""
+        v = _safe_float(val)
+        if v is None:
+            return "정보없음"
+
+        if p_type == "pm10":
+            # 미세먼지(PM10) 기준: 30, 80, 150
+            if v <= 30: return "좋음"
+            if v <= 80: return "보통"
+            if v <= 150: return "나쁨"
+            return "매우나쁨"
+
+        # 초미세먼지(PM2.5) 기준: 15, 35, 75
+        if v <= 15: return "좋음"
+        if v <= 35: return "보통"
+        if v <= 75: return "나쁨"
+        return "매우나쁨"
 
     # ── 단기예보 ────────────────────────────────────────────────────────────
     async def _get_short_term(self, now: datetime) -> dict | None:
