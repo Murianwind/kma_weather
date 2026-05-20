@@ -296,7 +296,7 @@ class TestEvalObservation:
 
     def test_dawn_clear_excellent(self):
         """새벽 1시, 맑음, 달 없음 → 최우수"""
-        assert self._eval(1, "sunny", 5) == "최우수(은하수)"
+        assert self._eval(1, "sunny", 5) == "최우수"
 
     def test_dawn_4am_excellent(self):
         """새벽 4시, 맑음, 달 없음 → 최우수"""
