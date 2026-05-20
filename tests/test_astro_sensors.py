@@ -296,11 +296,11 @@ class TestEvalObservation:
 
     def test_dawn_clear_excellent(self):
         """새벽 1시, 맑음, 달 없음 → 최우수"""
-        assert self._eval(1, "sunny", 5) == "최우수"
+        assert self._eval(1, "sunny", 5) == "최우수(은하수)"
 
     def test_dawn_4am_excellent(self):
         """새벽 4시, 맑음, 달 없음 → 최우수"""
-        assert self._eval(4, "sunny", 5) == "최우수"
+        assert self._eval(4, "sunny", 5) == "최우수(은하수)"
 
     def test_partlycloudy_not_blocked(self):
         """구름조금은 관측 불가가 아닌 다른 등급이어야 함"""
