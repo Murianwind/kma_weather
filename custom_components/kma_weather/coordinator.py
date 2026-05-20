@@ -908,7 +908,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         mw_suffix = ""
         if final_cond in ("최우수", "우수") and not sun_is_up:
             try:
-                if mw_alt_deg >= 30:
+                if mw_alt_deg >= 20:
                     mw_visible = True
                     mw_suffix = "(은하수)"
             except Exception:
