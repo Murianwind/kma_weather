@@ -1030,7 +1030,7 @@ class TestCalcAstronomicalForDate:
 
         assert "error" not in result
         assert "observation_condition" in result
-        assert result["observation_condition"] in ["최우수", "우수", "보통", "불량", "관측불가"]
+        assert result["observation_condition"] in ["최우수", "우수", "최우수(은하수)", "우수(은하수)", "보통", "불량", "관측불가"]
 
 
 class TestAstronomicalActionService:
