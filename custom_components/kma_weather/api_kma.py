@@ -901,8 +901,12 @@ class KMAWeatherAPI:
                     t_min = min(valid_temps) if valid_temps else None
 
                     if i == 0:
-                        # 오늘 날씨: 현재 시간 이후부터 자정까지 가장 많이 나타나는 날씨 집계
-                        rem_times = [t for t in sorted(forecast_map[d_str].keys()) if t > curr_h]
+                        # 오늘 날씨: 현재 시간 포함~자정까지 가장 많이 나타나는 날씨 집계
+                        # 23시 이후 등 현재/미래 데이터가 없으면 오늘 데이터의 마지막 슬롯(23시 등) 사용
+                        rem_times = [t for t in sorted(forecast_map[d_str].keys()) if t >= curr_h]
+                        if not rem_times and forecast_map[d_str]:
+                            rem_times = [sorted(forecast_map[d_str].keys())[-1]]
+
                         if rem_times:
                             conds = [self._get_sky_kor(forecast_map[d_str][t].get("SKY"), forecast_map[d_str][t].get("PTY")) for t in rem_times]
                             # 가장 빈도가 높은 날씨 선택
