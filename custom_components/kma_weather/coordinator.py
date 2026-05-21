@@ -186,7 +186,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         이전 좌표에서 2km 이내 이동이면 캐시를 재사용한다.
 
         Returns:
-            (nx, ny, reg_id_temp, reg_id_land, warn_area_code, is_moved)
+            (nx, ny, reg_id_temp, reg_id_land, warn_area_code)
         """
         is_moved = False
         if (self._cached_area_lat is not None
@@ -198,7 +198,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 self._cached_nx, self._cached_ny,
                 self._cached_reg_id_temp, self._cached_reg_id_land,
                 self._cached_warn_area_code,
-                False,
             )
         nx, ny = convert_grid(lat, lon)
         reg_id_temp, reg_id_land = _calc_reg_ids(lat, lon)
@@ -229,7 +228,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             "구역코드 갱신: nx=%s ny=%s reg_temp=%s reg_land=%s warn=%s",
             nx, ny, reg_id_temp, reg_id_land, warn_area_code,
         )
-        return nx, ny, reg_id_temp, reg_id_land, warn_area_code, is_moved
+        return nx, ny, reg_id_temp, reg_id_land, warn_area_code
 
     # ── API 카운터 초기화/콜백 주입 ─────────────────────────────────────────
     # ── 공유 카운터 접근 헬퍼 ────────────────────────────────────────────────
@@ -520,8 +519,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if curr_lat is None:
                     return self._cached_data or {"weather": {}, "air": {}}
 
+                # 기기 이동 여부 확인 (기존 테스트와의 호환성을 위해 외부에서 판단)
+                is_moved = (
+                    self._cached_area_lat is not None and
+                    haversine(self._cached_area_lat, self._cached_area_lon, curr_lat, curr_lon) > 2.0
+                )
+
                 # coordinator가 모든 구역코드를 결정해서 api에 전달
-                nx, ny, reg_id_temp, reg_id_land, warn_area_code, is_moved = self._resolve_area_codes(
+                nx, ny, reg_id_temp, reg_id_land, warn_area_code = self._resolve_area_codes(
                     curr_lat, curr_lon
                 )
 
