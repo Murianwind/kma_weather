@@ -904,22 +904,31 @@ class KMAWeatherAPI:
                     t_min = min(valid_temps) if valid_temps else None
 
                     if i == 0:
-                        # 오늘(Day 0)의 오전/오후 대표 날씨 계산 (00-12시, 12-24시 구간 고정)
+                        # 오늘(Day 0)의 오전/오후 대표 날씨 계산 (업데이트 시점부터 구간 설정)
                         today_slots = forecast_map[d_str]
                         all_times = sorted(today_slots.keys())
-                        
-                        def get_range_freq(target_times):
-                            if not target_times: return None
+                        h_now = now.hour
+
+                        def get_range_freq(target_times, fallback_key=None):
+                            if not target_times:
+                                if fallback_key and fallback_key in today_slots:
+                                    s = today_slots[fallback_key]
+                                    return self._get_sky_kor(s.get("SKY"), s.get("PTY"))
+                                return None
                             c_list = [self._get_sky_kor(today_slots[t].get("SKY"), today_slots[t].get("PTY")) for t in target_times]
                             return max(set(c_list), key=c_list.count)
 
-                        # 오전 대표 (00:00 ~ 12:00 미만 구간)
-                        am_times = [t for t in all_times if int(t[:2]) < 12]
-                        wf_am = get_range_freq(am_times) or "맑음"
-                        
-                        # 오후 대표 (12:00 ~ 24:00 미만 구간)
-                        pm_times = [t for t in all_times if int(t[:2]) >= 12]
-                        wf_pm = get_range_freq(pm_times) or "맑음"
+                        # 오전: 현재 시각 ~ 12:00 (오후에는 업데이트 안 함)
+                        if h_now < 12:
+                            am_range = [t for t in all_times if h_now <= int(t[:2]) < 12]
+                            wf_am = get_range_freq(am_range, "1100") or "맑음"
+                        else:
+                            wf_am = None
+
+                        # 오후: max(12, 현재 시각) ~ 24:00
+                        pm_start = max(12, h_now)
+                        pm_range = [t for t in all_times if pm_start <= int(t[:2]) < 24]
+                        wf_pm = get_range_freq(pm_range, "2300") or "맑음"
                     elif i == 1:
                         # 내일 날씨: 정오(12:00) 슬롯의 날씨를 대표값으로 사용
                         if "1200" in forecast_map[d_str]:
