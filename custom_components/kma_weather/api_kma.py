@@ -918,17 +918,17 @@ class KMAWeatherAPI:
                             c_list = [self._get_sky_kor(today_slots[t].get("SKY"), today_slots[t].get("PTY")) for t in target_times]
                             return max(set(c_list), key=c_list.count)
 
-                        # 오전: 현재 시각 ~ 12:00 (오후에는 업데이트 안 함)
+                        # 오전(Day 0): 현재 시각 ~ 12:00. 12시 이후라면 11:00 슬롯 사용 (이동/초기화 대응)
                         if h_now < 12:
                             am_range = [t for t in all_times if h_now <= int(t[:2]) < 12]
-                            wf_am = get_range_freq(am_range, "1100") or "맑음"
+                            wf_am = get_range_freq(am_range, "1100")
                         else:
-                            wf_am = None
+                            wf_am = get_range_freq([], "1100")
 
                         # 오후: max(12, 현재 시각) ~ 24:00
                         pm_start = max(12, h_now)
                         pm_range = [t for t in all_times if pm_start <= int(t[:2]) < 24]
-                        wf_pm = get_range_freq(pm_range, "2300") or "맑음"
+                        wf_pm = get_range_freq(pm_range, "2300")
                     elif i == 1:
                         # 내일 날씨: 정오(12:00) 슬롯의 날씨를 대표값으로 사용
                         if "1200" in forecast_map[d_str]:
