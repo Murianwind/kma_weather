@@ -4,10 +4,12 @@ import asyncio
 import math
 import json
 import hashlib
+import aiohttp
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
+from homeassistant.core import HomeAssistant
 from .const import haversine as _haversine_fn, safe_float as _safe_float
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,7 +47,6 @@ KOR_TO_CONDITION: dict[str, str] = {
     "흐리고 비/눈": "snowy-rainy",
     "흐리고 소나기": "pouring",
 }
-
 
 class KMAWeatherAPI:
     def __init__(self, session: aiohttp.ClientSession, api_key: str, hass: HomeAssistant | None = None) -> None:
@@ -388,13 +389,15 @@ class KMAWeatherAPI:
     async def _get_short_term(self, now: datetime) -> dict | None:
         adj = now - timedelta(minutes=10)
         hour = adj.hour
-        valid_hours = [h for h in [2, 5, 8, 11, 14, 17, 20, 23] if h <= hour]
-        if valid_hours:
-            base_h = max(valid_hours)
-            base_d = adj.strftime("%Y%m%d")
+
+        # 23시~익일 02시 사이에는 안정성을 위해 직전(20시) 발표 데이터를 사용함
+        if hour >= 23 or hour < 2:
+            base_h = 20
+            base_d = (adj - timedelta(days=1)).strftime("%Y%m%d") if hour < 2 else adj.strftime("%Y%m%d")
         else:
-            base_h = 23
-            base_d = (adj - timedelta(days=1)).strftime("%Y%m%d")
+            # 02:10 ~ 22:59 사이: 현재 시간 기준 가장 최근 발표 시각 선택 (2, 5, 8, 11, 14, 17, 20)
+            base_h = max(h for h in [2, 5, 8, 11, 14, 17, 20] if h <= hour)
+            base_d = adj.strftime("%Y%m%d")
 
         data = await self._fetch(
             "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
@@ -901,19 +904,22 @@ class KMAWeatherAPI:
                     t_min = min(valid_temps) if valid_temps else None
 
                     if i == 0:
-                        # 오늘 날씨: 현재 시간 포함~자정까지 가장 많이 나타나는 날씨 집계
-                        # 23시 이후 등 현재/미래 데이터가 없으면 오늘 데이터의 마지막 슬롯(23시 등) 사용
-                        rem_times = [t for t in sorted(forecast_map[d_str].keys()) if t >= curr_h]
-                        if not rem_times and forecast_map[d_str]:
-                            rem_times = [sorted(forecast_map[d_str].keys())[-1]]
+                        # 오늘(Day 0)의 오전/오후 대표 날씨 계산 (00-12시, 12-24시 구간 고정)
+                        today_slots = forecast_map[d_str]
+                        all_times = sorted(today_slots.keys())
+                        
+                        def get_range_freq(target_times):
+                            if not target_times: return None
+                            c_list = [self._get_sky_kor(today_slots[t].get("SKY"), today_slots[t].get("PTY")) for t in target_times]
+                            return max(set(c_list), key=c_list.count)
 
-                        if rem_times:
-                            conds = [self._get_sky_kor(forecast_map[d_str][t].get("SKY"), forecast_map[d_str][t].get("PTY")) for t in rem_times]
-                            # 가장 빈도가 높은 날씨 선택
-                            most_freq = max(set(conds), key=conds.count)
-                            wf_am = wf_pm = most_freq
-                        else:
-                            wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
+                        # 오전 대표 (00:00 ~ 12:00 미만 구간)
+                        am_times = [t for t in all_times if int(t[:2]) < 12]
+                        wf_am = get_range_freq(am_times) or "맑음"
+                        
+                        # 오후 대표 (12:00 ~ 24:00 미만 구간)
+                        pm_times = [t for t in all_times if int(t[:2]) >= 12]
+                        wf_pm = get_range_freq(pm_times) or "맑음"
                     elif i == 1:
                         # 내일 날씨: 정오(12:00) 슬롯의 날씨를 대표값으로 사용
                         if "1200" in forecast_map[d_str]:
@@ -1048,7 +1054,19 @@ class KMAWeatherAPI:
                 })
 
         weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast, "forecast_hourly": hourly_forecast})
-        kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
+        
+        # 오늘 날씨 요약 (현재 시각 ~ 오늘 자정까지의 최빈값)
+        kor_now = None
+        if today_str in forecast_map:
+            today_slots = forecast_map[today_str]
+            rem_times = [t for t in sorted(today_slots.keys()) if t >= curr_h]
+            if not rem_times:
+                rem_times = [sorted(today_slots.keys())[-1]]  # 23시 이후 폴백
+            c_list = [self._get_sky_kor(today_slots[t].get("SKY"), today_slots[t].get("PTY")) for t in rem_times]
+            kor_now = max(set(c_list), key=c_list.count)
+        if not kor_now:
+            kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
+            
         weather_data.update({
             "current_condition_kor": kor_now,
             "current_condition": self.kor_to_condition(kor_now),
