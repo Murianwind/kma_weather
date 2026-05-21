@@ -186,16 +186,20 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         이전 좌표에서 2km 이내 이동이면 캐시를 재사용한다.
 
         Returns:
-            (nx, ny, reg_id_temp, reg_id_land, warn_area_code)
+            (nx, ny, reg_id_temp, reg_id_land, warn_area_code, is_moved)
         """
+        is_moved = False
         if (self._cached_area_lat is not None
-                and haversine(self._cached_area_lat, self._cached_area_lon, lat, lon) <= 2.0):
+                and haversine(self._cached_area_lat, self._cached_area_lon, lat, lon) > 2.0):
+            is_moved = True
+
+        if not is_moved and self._cached_area_lat is not None:
             return (
                 self._cached_nx, self._cached_ny,
                 self._cached_reg_id_temp, self._cached_reg_id_land,
                 self._cached_warn_area_code,
+                False,
             )
-
         nx, ny = convert_grid(lat, lon)
         reg_id_temp, reg_id_land = _calc_reg_ids(lat, lon)
         warn_area_code = _calc_warn_area_code(lat, lon)
@@ -225,7 +229,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             "구역코드 갱신: nx=%s ny=%s reg_temp=%s reg_land=%s warn=%s",
             nx, ny, reg_id_temp, reg_id_land, warn_area_code,
         )
-        return nx, ny, reg_id_temp, reg_id_land, warn_area_code
+        return nx, ny, reg_id_temp, reg_id_land, warn_area_code, is_moved
 
     # ── API 카운터 초기화/콜백 주입 ─────────────────────────────────────────
     # ── 공유 카운터 접근 헬퍼 ────────────────────────────────────────────────
@@ -508,6 +512,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 await self._restore_approved_apis()
                 await self._restore_daily_temps()
                 await self._restore_api_calls()
+
                 # 업데이트 이유를 카운터에 반영 (기본: 자동 업데이트)
                 self._inject_counter(getattr(self, "_update_reason", "자동 업데이트"))
                 self._update_reason = "자동 업데이트"  # 다음 업데이트를 위해 초기화
@@ -516,7 +521,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     return self._cached_data or {"weather": {}, "air": {}}
 
                 # coordinator가 모든 구역코드를 결정해서 api에 전달
-                nx, ny, reg_id_temp, reg_id_land, warn_area_code = self._resolve_area_codes(
+                nx, ny, reg_id_temp, reg_id_land, warn_area_code, is_moved = self._resolve_area_codes(
                     curr_lat, curr_lon
                 )
 
@@ -562,14 +567,30 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
                 if "raw_forecast" in new_data:
                     temp_changed = self._update_daily_temperatures(new_data["raw_forecast"])
+                    
+                    # 오전/오후 날씨 요약 갱신 로직 (사용자 요구사항 반영)
+                    reason = getattr(self, "_update_reason", "자동 업데이트")
+                    is_scheduled = (reason == "자동 업데이트")
+                    
+                    # 업데이트 수행 조건: 주기적 업데이트 OR 기기 이동 OR 날짜 변경 OR 초기 설정(None)
+                    should_update_summary = is_scheduled or is_moved or is_new_day or (self._wf_pm_today is None)
+                    
                     api_am = weather.get("wf_am_today")
                     api_pm = weather.get("wf_pm_today")
                     summary_changed = False
-                    # 날짜가 바뀌었거나 값이 없는 경우에만 오늘 데이터로 갱신 후 고정
-                    if (is_new_day or self._wf_am_today is None) and api_am:
-                        self._wf_am_today, summary_changed = api_am, True
-                    if (is_new_day or self._wf_pm_today is None) and api_pm:
-                        self._wf_pm_today, summary_changed = api_pm, True
+
+                    if should_update_summary:
+                        now_hour = datetime.now(self.api.tz).hour
+                        # 오전(12시 이전): 오전/오후 모두 업데이트
+                        if now_hour < 12:
+                            if api_am: self._wf_am_today, summary_changed = api_am, True
+                            if api_pm: self._wf_pm_today, summary_changed = api_pm, True
+                        # 오후(12시 이후): 오후만 업데이트 (단, 오전이 None이면 초기화를 위해 업데이트)
+                        else:
+                            if api_pm: self._wf_pm_today, summary_changed = api_pm, True
+                            if self._wf_am_today is None and api_am:
+                                self._wf_am_today, summary_changed = api_am, True
+
                     if temp_changed or summary_changed:
                         await self._save_daily_temps()
 
