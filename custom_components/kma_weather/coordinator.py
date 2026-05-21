@@ -444,7 +444,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         if self._daily_date != today_date:
             self._daily_date, self._daily_max_temp, self._daily_min_temp = today_date, None, None
-            self._wf_am_today = self._wf_pm_today = None
+            # 자정 이후에도 첫 업데이트 전까지 이전 값을 유지하기 위해 오전/오후 날씨 초기화 제거
             changed = True
 
         temps = [float(s["TMP"]) for s in forecast_map.get(today_str, {}).values() if s.get("TMP")]
@@ -468,6 +468,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         wf_am_tomorrow = weather.get("wf_am_tomorrow")
         wf_pm_tomorrow = weather.get("wf_pm_tomorrow")
 
+        # forecast_daily의 condition은 이미 api_kma에서 wf_pm(계산된 대표날씨)으로 설정되어 옴
+        # 이를 current_condition으로 덮어쓰지 않음으로써 하루 전체의 요약 정보를 유지함
         for entry in weather.get("forecast_daily", []):
             idx = entry.get("_day_index")
             if idx == 0:
@@ -550,14 +552,19 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
                 weather = new_data.setdefault("weather", {})
 
+                # 업데이트 전 날짜 변경 여부 확인
+                current_today = datetime.now(self.api.tz).date()
+                is_new_day = (self._daily_date != current_today)
+
                 if "raw_forecast" in new_data:
                     temp_changed = self._update_daily_temperatures(new_data["raw_forecast"])
                     api_am = weather.get("wf_am_today")
                     api_pm = weather.get("wf_pm_today")
                     summary_changed = False
-                    if api_am and self._wf_am_today != api_am:
+                    # 날짜가 바뀌었거나 값이 없는 경우에만 오늘 데이터로 갱신 후 고정
+                    if (is_new_day or self._wf_am_today is None) and api_am:
                         self._wf_am_today, summary_changed = api_am, True
-                    if api_pm and self._wf_pm_today != api_pm:
+                    if (is_new_day or self._wf_pm_today is None) and api_pm:
                         self._wf_pm_today, summary_changed = api_pm, True
                     if temp_changed or summary_changed:
                         await self._save_daily_temps()
