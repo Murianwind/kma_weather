@@ -167,6 +167,12 @@ class KMAWeatherAPI:
         self._pending_apis.discard(service_key)
         self._notified_unsubscribed.discard(service_key)
 
+    def _mask_key(self, msg: str) -> str:
+        """로그 메시지 내의 API 키를 마스킹 처리한다."""
+        if self.api_key and self.api_key in str(msg):
+            return str(msg).replace(self.api_key, "********")
+        return str(msg)
+
     # URL → 카운팅 키 매핑
     _CALL_COUNT_KEY: dict[str, str] = {
         "VilageFcstInfoService_2.0": "단기예보",
@@ -200,18 +206,14 @@ class KMAWeatherAPI:
                     return {"_http_error": "404"}
                 response.raise_for_status()
                 text = await response.text()
-                # JSON 우선 파싱, 실패 시 XML로 처리
-                # (일부 API는 dataType=JSON 요청에도 XML 반환)
+                # JSON 파싱
                 try:
                     return json.loads(text)
                 except (json.JSONDecodeError, ValueError):
-                    if text.strip().startswith("<"):
-                        _LOGGER.debug("XML 응답 감지 (%s) → XML 파싱", url)
-                        return self._parse_xml_to_dict(text)
                     _LOGGER.error("API 응답 파싱 실패 (%s): 알 수 없는 형식", url)
                     return None
         except Exception as err:
-            _LOGGER.error("API 호출 실패 (%s): %s", url, err)
+            _LOGGER.error("API 호출 실패 (%s): %s", url, self._mask_key(err))
         return None
 
     def _extract_result_code(self, data: dict | None) -> str | None:
@@ -363,7 +365,7 @@ class KMAWeatherAPI:
                 "station": sn,
             }
         except Exception as e:
-            _LOGGER.error("Air quality fetch error: %s", e)
+            _LOGGER.error("Air quality fetch error: %s", self._mask_key(e))
             return {}
 
     def _get_air_grade(self, val: object, p_type: str) -> str:
@@ -542,7 +544,7 @@ class KMAWeatherAPI:
             return ", ".join(warn_names) if warn_names else "특보없음"
 
         except Exception as e:
-            _LOGGER.error("기상특보 조회 오류: %s", e)
+            _LOGGER.error("기상특보 조회 오류: %s", self._mask_key(e))
             return None
 
     # ── 꽃가루 농도 위험지수 ────────────────────────────────────────────────
@@ -750,7 +752,7 @@ class KMAWeatherAPI:
             }
 
         except Exception as e:
-            _LOGGER.error("꽃가루 조회 오류: %s", e)
+            _LOGGER.error("꽃가루 조회 오류: %s", self._mask_key(e))
             return {}
 
     
