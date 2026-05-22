@@ -2,6 +2,7 @@ import json
 import logging
 import asyncio
 import pathlib
+import zlib
 from datetime import datetime, timedelta, timezone, date
 try:
     from skyfield.api import Loader as _SkyLoader, wgs84 as _wgs84
@@ -199,6 +200,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 self._cached_reg_id_temp, self._cached_reg_id_land,
                 self._cached_warn_area_code,
             )
+
         nx, ny = convert_grid(lat, lon)
         reg_id_temp, reg_id_land = _calc_reg_ids(lat, lon)
         warn_area_code = _calc_warn_area_code(lat, lon)
@@ -378,6 +380,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         from homeassistant.helpers.event import async_track_time_change
 
         async def _scheduled_update(now):
+            # 기기별로 고유한 지연 시간(0~30초)을 부여하여 429(Too Many Requests) 에러를 방지합니다.
+            delay = zlib.adler32(self.entry.entry_id.encode()) % 31
+            if delay > 0:
+                _LOGGER.debug("[%s] 동시 호출 방지를 위해 %d초 후 업데이트를 시작합니다.", self.entry.data.get(CONF_PREFIX, "kma"), delay)
+                await asyncio.sleep(delay)
             await self.async_refresh()
 
         self._unsub_timer = async_track_time_change(
