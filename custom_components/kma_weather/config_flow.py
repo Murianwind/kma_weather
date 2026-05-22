@@ -84,7 +84,11 @@ async def _validate_api_key(hass, api_key: str) -> str | None:
             return "api_error"
 
     except Exception as e:
-        _LOGGER.error("API 키 검증 중 오류: %s", e)
+        # aiohttp 에러 객체 등에 포함된 API 키 마스킹
+        err_msg = str(e)
+        if api_key and api_key in err_msg:
+            err_msg = err_msg.replace(api_key, "********")
+        _LOGGER.error("API 키 검증 중 오류: %s", err_msg)
         return "cannot_connect"
 
 
