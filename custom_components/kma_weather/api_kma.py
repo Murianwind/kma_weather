@@ -51,6 +51,7 @@ KOR_TO_CONDITION: dict[str, str] = {
 class KMAWeatherAPI:
     def __init__(self, session: aiohttp.ClientSession, api_key: str, hass: HomeAssistant | None = None) -> None:
         self.session = session
+        self._raw_api_key = api_key  # 사용자가 입력한 인코딩된 키 저장
         self.api_key = unquote(api_key)
         self.hass = hass
         self.tz = ZoneInfo("Asia/Seoul")
@@ -169,9 +170,12 @@ class KMAWeatherAPI:
 
     def _mask_key(self, msg: str) -> str:
         """로그 메시지 내의 API 키를 마스킹 처리한다."""
-        if self.api_key and self.api_key in str(msg):
-            return str(msg).replace(self.api_key, "********")
-        return str(msg)
+        msg_str = str(msg)
+        # 인코딩된 키와 디코딩된 키 모두 마스킹
+        for key in (self._raw_api_key, self.api_key):
+            if key and len(key) > 5 and key in msg_str:
+                msg_str = msg_str.replace(key, "********")
+        return msg_str
 
     # URL → 카운팅 키 매핑
     _CALL_COUNT_KEY: dict[str, str] = {
