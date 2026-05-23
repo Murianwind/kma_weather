@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import voluptuous as vol
@@ -86,6 +87,10 @@ async def _validate_api_key(hass, api_key: str) -> str | None:
     except Exception as e:
         # aiohttp 에러 객체 등에 포함된 API 키 마스킹
         err_msg = str(e)
+        # URL 내의 serviceKey 파라미터 마스킹
+        if "serviceKey=" in err_msg:
+            err_msg = re.sub(r"serviceKey=[^&'\" ]*", "serviceKey=********", err_msg)
+            
         # 입력받은 인코딩된 키와 내부적으로 풀린 키 모두 확인
         for k in (api_key, decoded_key):
             if k and len(k) > 5 and k in err_msg:
