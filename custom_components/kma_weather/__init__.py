@@ -1,5 +1,7 @@
 """Initialize the KMA Weather integration."""
 import logging
+import asyncio
+import zlib
 from datetime import datetime, timedelta, date, time as dt_time
 
 import voluptuous as vol
@@ -9,7 +11,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from zoneinfo import ZoneInfo
 
-from .const import DOMAIN, is_korean_coord_strict
+from .const import DOMAIN, CONF_PREFIX, is_korean_coord_strict
 from .coordinator import KMAWeatherUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,8 +80,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up KMA Weather from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     coordinator = KMAWeatherUpdateCoordinator(hass, entry)
+
     # 재로드(다시 읽어오기) 시 첫 갱신 이유 표시
     coordinator._update_reason = "다시 읽어오기"
+
+    # HA 시작 시 여러 디바이스가 동시에 API를 호출하여 429 에러가 발생하는 것을 방지
+    delay = zlib.adler32(entry.entry_id.encode()) % 31
+    if delay > 0:
+        _LOGGER.debug("[%s] 부하 분산을 위해 %d초 후 첫 데이터를 가져옵니다.", entry.data.get(CONF_PREFIX, "kma"), delay)
+        await asyncio.sleep(delay)
+
     await coordinator.async_config_entry_first_refresh()
     await coordinator.async_setup()
 
