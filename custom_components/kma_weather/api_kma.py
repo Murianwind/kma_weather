@@ -253,6 +253,12 @@ class KMAWeatherAPI:
         async def _skip_coro(default):
             return default
 
+        async def _skip_coro(default):
+            return default
+
+        async def _skip_coro(default):
+            return default
+
         # 승인 여부 판단:
         # _approved_apis에 있음 → 실제 데이터 호출 (_get_* 내부 로직 정상 실행)
         # _pending_apis에 있음 → 승인 확인용 경량 호출 (_get_* 내부에서 resultCode만 확인)
