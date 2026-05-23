@@ -85,7 +85,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator._update_reason = "다시 읽어오기"
 
     # HA 시작 시 여러 디바이스가 동시에 API를 호출하여 429 에러가 발생하는 것을 방지
-    delay = zlib.adler32(str(entry.entry_id).encode()) % 31
+    delay = 10 + (zlib.adler32(str(entry.entry_id).encode()) % 21)
     if delay > 0:
         _LOGGER.debug("[%s] 부하 분산을 위해 %d초 후 첫 데이터를 가져옵니다.", entry.data.get(CONF_PREFIX, "kma"), delay)
         await asyncio.sleep(delay)
