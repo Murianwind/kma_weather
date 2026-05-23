@@ -398,7 +398,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             # 테스트 환경(pytest)에서는 지연 없이 즉시 실행하여 전체 테스트 속도를 유지합니다.
             import sys
             if "pytest" not in sys.modules:  # 운영 환경에서만 실행
-                delay = zlib.adler32(str(self.entry.entry_id).encode()) % 31
+                delay = 10 + (zlib.adler32(str(self.entry.entry_id).encode()) % 21)
                 if delay > 0:
                     _LOGGER.debug("[%s] 동시 호출 방지를 위해 %d초 후 업데이트를 시작합니다.", self.entry.data.get(CONF_PREFIX, "kma"), delay)
                     await asyncio.sleep(delay)
