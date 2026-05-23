@@ -939,6 +939,8 @@ class KMAWeatherAPI:
                                 return None
                             c_list = [self._get_sky_kor(today_slots[t].get("SKY"), today_slots[t].get("PTY")) for t in target_times]
                             return max(set(c_list), key=c_list.count)
+
+                        # 오전: 현재 시각 ~ 12:00 (오후에는 업데이트 안 함)
                         if h_now < 12:
                             am_range = [t for t in all_times if h_now <= int(t[:2]) < 12]
                         # 오전(Day 0): 현재 시각 ~ 12:00. 12시 이후라면 11:00 슬롯 사용 (이동/초기화 대응)
