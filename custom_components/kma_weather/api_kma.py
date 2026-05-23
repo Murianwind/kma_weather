@@ -262,24 +262,24 @@ class KMAWeatherAPI:
             # _approved_apis: 승인됨 → 데이터 호출
             return key in self._approved_apis or key in self._pending_apis
 
-        tasks = [
-            self._get_short_term(now),
-            self._get_mid_term(now, reg_id_temp, reg_id_land),
-            self._get_air_quality(lat, lon)
-                if _should_call("air") or _should_call("station")
-                else _skip_coro({}),
-            self._get_address(lat, lon),
-            self._get_warning(warn_area_code)
-                if _should_call("warning")
-                else _skip_coro(None),
-            self._get_pollen(now, pollen_area_no, pollen_area_name)
-                if _should_call("pollen")
-                else _skip_coro(None),
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        short_res, mid_res, air_data, address, warning, pollen_data = [
-            r if not isinstance(r, Exception) else None for r in results
-        ]
+                air_data = {}
+                
+            address = await self._get_address(lat, lon)
+            
+            if _should_call("warning"):
+                warning = await self._get_warning(warn_area_code)
+            else:
+                warning = None
+                
+            if _should_call("pollen"):
+                pollen_data = await self._get_pollen(now, pollen_area_no, pollen_area_name)
+            else:
+                pollen_data = None
+                
+        except Exception as e:
+            _LOGGER.error("데이터 수집 중 오류 발생: %s", self._mask_key(e))
+            return None
+
         merged = self._merge_all(now, short_res, mid_res, air_data, address, warning, pollen_data)
         # 단기/중기 미신청 신호: coordinator가 감지하도록 data에 포함
         # TODO: 향후 (data, flags) 튜플로 분리하여 SRP 개선 가능
