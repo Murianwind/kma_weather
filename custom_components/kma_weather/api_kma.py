@@ -200,29 +200,38 @@ class KMAWeatherAPI:
                     if hasattr(self, "_call_counter_ref") and self._call_counter_ref is not None:
                         self._call_counter_ref(key)
                     break
-        try:
-            async with self.session.get(
-                url, params=params, headers=headers, timeout=timeout
-            ) as response:
-                if response.status == 401 or response.status == 403:
-                    # 인증 실패 → 미신청/만료와 동일하게 처리
-                    # WARNING은 _check_unsubscribed에서 출력하므로 여기서는 DEBUG만
-                    _LOGGER.debug("API 인증 실패 (%s): HTTP %s", self._mask_key(url), response.status)
-                    return {"_http_error": str(response.status)}
-                if response.status == 404:
-                    # 404는 API URL 문제 또는 서비스 비활성화
-                    _LOGGER.debug("API 404 응답 (%s) - 미신청 또는 중지된 서비스일 수 있음", self._mask_key(url))
-                    return {"_http_error": "404"}
-                response.raise_for_status()
-                text = await response.text()
-                # JSON 파싱
-                try:
-                    return json.loads(text)
-                except (json.JSONDecodeError, ValueError):
-                    _LOGGER.error("API 응답 파싱 실패 (%s): 알 수 없는 형식", self._mask_key(url))
-                    return None
-        except Exception as err:
-            _LOGGER.error("API 호출 실패 (%s): %s", self._mask_key(url), self._mask_key(err))
+
+        for attempt in range(2):  # 429 에러 발생 시 최대 1회 재시도
+            try:
+                async with self.session.get(
+                    url, params=params, headers=headers, timeout=timeout
+                ) as response:
+                    if response.status == 429:
+                        if attempt == 0:
+                            _LOGGER.warning("API 429 Too Many Requests 발생. 3초 후 재시도합니다. (%s)", self._mask_key(url))
+                            await asyncio.sleep(3.0)
+                            continue
+                        return {"_http_error": "429"}
+
+                    if response.status in (401, 403):
+                        _LOGGER.debug("API 인증 실패 (%s): HTTP %s", self._mask_key(url), response.status)
+                        return {"_http_error": str(response.status)}
+                    if response.status == 404:
+                        _LOGGER.debug("API 404 응답 (%s) - 미신청 또는 중지된 서비스", self._mask_key(url))
+                        return {"_http_error": "404"}
+
+                    response.raise_for_status()
+                    text = await response.text()
+                    try:
+                        return json.loads(text)
+                    except (json.JSONDecodeError, ValueError):
+                        _LOGGER.error("API 응답 파싱 실패 (%s): 알 수 없는 형식", self._mask_key(url))
+                        return None
+            except Exception as err:
+                if attempt == 1 or "429" not in str(err):
+                    _LOGGER.error("API 호출 실패 (%s): %s", self._mask_key(url), self._mask_key(err))
+                    break
+                await asyncio.sleep(3.0)
         return None
 
     def _extract_result_code(self, data: dict | None) -> str | None:
@@ -230,6 +239,7 @@ class KMAWeatherAPI:
             return None
         # HTTP 오류 응답 (401/403/404) → 미신청 코드로 매핑
         if "_http_error" in data:
+            if data["_http_error"] == "429": return "429"
             return "30"  # 미신청 코드와 동일하게 처리
         return (
             data.get("response", {})
@@ -266,23 +276,23 @@ class KMAWeatherAPI:
         try:
             # ── API 순차 호출 (429 Too Many Requests 방지) ──
             short_res = await self._get_short_term(now)
-            await asyncio.sleep(0.7)  # API 서버 버스트 제한 방지를 위한 지연 추가
+            await asyncio.sleep(1.2)  # 간격을 1.2초로 상향 조정
 
             mid_res = await self._get_mid_term(now, reg_id_temp, reg_id_land)
-            await asyncio.sleep(0.7)
+            await asyncio.sleep(1.2)
 
             if _should_call("air") or _should_call("station"):
                 air_data = await self._get_air_quality(lat, lon)
-                await asyncio.sleep(0.7)
+                await asyncio.sleep(1.2)
             else:
                 air_data = {}
 
             address = await self._get_address(lat, lon)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
 
             if _should_call("warning"):
                 warning = await self._get_warning(warn_area_code)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1.0)
             else:
                 warning = None
 
@@ -460,7 +470,7 @@ class KMAWeatherAPI:
                 {"serviceKey": self.api_key, "dataType": "JSON",
                  "regId": reg_id_temp, "tmFc": b},
             )
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
             res2 = await self._fetch(
                 "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst",
                 {"serviceKey": self.api_key, "dataType": "JSON",
@@ -745,9 +755,9 @@ class KMAWeatherAPI:
         try:
             # ── 429 에러 방지를 위해 순차 호출로 변경 ──
             pine_g = await _get_grade("pine")
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.8)
             oak_g = await _get_grade("oak")
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.8)
             grass_g = await _get_grade("grass")
 
             # 미신청 감지
@@ -943,14 +953,14 @@ class KMAWeatherAPI:
                         # 오전: 현재 시각 ~ 12:00 (오후에는 업데이트 안 함)
                         if h_now < 12:
                             am_range = [t for t in all_times if h_now <= int(t[:2]) < 12]
-                        # 오전(Day 0): 현재 시각 ~ 12:00. 12시 이후라면 11:00 슬롯 사용 (이동/초기화 대응)
+                            wf_am = get_range_freq(am_range, "1100")
                         else:
-                            am_range = [t for t in all_times if h_now <= int(t[:2]) < 12]
+                            wf_am = get_range_freq([], "1100")
 
                         # 오후: max(12, 현재 시각) ~ 24:00
                         pm_start = max(12, h_now)
                         pm_range = [t for t in all_times if pm_start <= int(t[:2]) < 24]
-                        # 오후: max(12, 현재 시각) ~ 24:00
+                        wf_pm = get_range_freq(pm_range, "2300")
                     elif i == 1:
                         # 내일 날씨: 정오(12:00) 슬롯의 날씨를 대표값으로 사용
                         if "1200" in forecast_map[d_str]:
