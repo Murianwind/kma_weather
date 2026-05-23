@@ -258,24 +258,33 @@ class KMAWeatherAPI:
         # _pending_apis에 있음 → 승인 확인용 경량 호출 (_get_* 내부에서 resultCode만 확인)
         # 둘 다 없음 → 건너뜀 (승인 후 _pending 제거됐으나 _approved에도 없는 이상 상태)
         def _should_call(key: str) -> bool:
-            # _pending_apis:  미확인/미신청/만료 → 매 업데이트마다 호출해서 확인
-            # _approved_apis: 승인됨 → 데이터 호출
+            """승인 여부 판단 헬퍼 함수"""
             return key in self._approved_apis or key in self._pending_apis
 
+        # 변수 초기화 (에디터의 '정의되지 않았을 수 있음' 경고 방지)
+        short_res = mid_res = air_data = address = warning = pollen_data = None
+
+        try:
+            # ── API 순차 호출 (429 Too Many Requests 방지) ──
+            short_res = await self._get_short_term(now)
+            mid_res = await self._get_mid_term(now, reg_id_temp, reg_id_land)
+
+            if _should_call("air") or _should_call("station"):
+                air_data = await self._get_air_quality(lat, lon)
+            else:
                 air_data = {}
-                
+
             address = await self._get_address(lat, lon)
-            
+
             if _should_call("warning"):
                 warning = await self._get_warning(warn_area_code)
             else:
                 warning = None
-                
+
             if _should_call("pollen"):
                 pollen_data = await self._get_pollen(now, pollen_area_no, pollen_area_name)
             else:
                 pollen_data = None
-                
         except Exception as e:
             _LOGGER.error("데이터 수집 중 오류 발생: %s", self._mask_key(e))
             return None
