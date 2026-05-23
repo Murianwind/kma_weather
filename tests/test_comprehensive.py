@@ -287,7 +287,7 @@ async def test_coordinator_astronomical_loop_coverage(hass):
             }
             
             # [CRITICAL FIX]: await를 추가하여 코루틴 에러(TypeError) 해결
-            res = await coordinator.calc_astronomical_for_date(scene["date"], scene["lat"], scene["lon"])
+            res = await coordinator.calc_astronomical_for_date(scene["lat"], scene["lon"], scene["date"])
             
             # 결과 확인 및 호출 여부 검증
             assert res["moon_phase"] == 0.5
