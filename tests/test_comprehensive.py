@@ -291,7 +291,7 @@ async def test_coordinator_astronomical_loop_coverage(hass):
             
             # 결과 확인 및 호출 여부 검증
             assert res["moon_phase"] == 0.5
-            mock_calc.assert_called_once_with(scene["date"], scene["lat"], scene["lon"])
+            mock_calc.assert_called_once_with(scene["lat"], scene["lon"], scene["date"])
 
 # =====================================================================
 # [__init__.py] 커버리지 정밀 타격 (35, 51-74, 136, 176, 189-211)
