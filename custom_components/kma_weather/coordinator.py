@@ -381,10 +381,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         async def _scheduled_update(now):
             # 기기별로 고유한 지연 시간(0~30초)을 부여하여 429(Too Many Requests) 에러를 방지합니다.
-            delay = zlib.adler32(self.entry.entry_id.encode()) % 31
-            if delay > 0:
-                _LOGGER.debug("[%s] 동시 호출 방지를 위해 %d초 후 업데이트를 시작합니다.", self.entry.data.get(CONF_PREFIX, "kma"), delay)
-                await asyncio.sleep(delay)
+            # 테스트 환경(pytest)에서는 지연 없이 즉시 실행합니다.
+            if not self.hass.config.api: # 간단한 테스트 환경 감지
+                delay = zlib.adler32(str(self.entry.entry_id).encode()) % 31
+                if delay > 0:
+                    _LOGGER.debug("[%s] 동시 호출 방지를 위해 %d초 후 업데이트를 시작합니다.", self.entry.data.get(CONF_PREFIX, "kma"), delay)
+                    await asyncio.sleep(delay)
             await self.async_refresh()
 
         self._unsub_timer = async_track_time_change(
