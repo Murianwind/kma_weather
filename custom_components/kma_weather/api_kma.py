@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import math
+import re
 import json
 import hashlib
 import aiohttp
@@ -171,6 +172,10 @@ class KMAWeatherAPI:
     def _mask_key(self, msg: str) -> str:
         """로그 메시지 내의 API 키를 마스킹 처리한다."""
         msg_str = str(msg)
+        # URL 내의 serviceKey 파라미터 값을 우선적으로 마스킹 (인코딩 변종 대응)
+        if "serviceKey=" in msg_str:
+            msg_str = re.sub(r"serviceKey=[^&'\" ]*", "serviceKey=********", msg_str)
+            
         # 인코딩된 키와 디코딩된 키 모두 마스킹
         for key in (self._raw_api_key, self.api_key):
             if key and len(key) > 5 and key in msg_str:
@@ -202,11 +207,11 @@ class KMAWeatherAPI:
                 if response.status == 401 or response.status == 403:
                     # 인증 실패 → 미신청/만료와 동일하게 처리
                     # WARNING은 _check_unsubscribed에서 출력하므로 여기서는 DEBUG만
-                    _LOGGER.debug("API 인증 실패 (%s): HTTP %s", url, response.status)
+                    _LOGGER.debug("API 인증 실패 (%s): HTTP %s", self._mask_key(url), response.status)
                     return {"_http_error": str(response.status)}
                 if response.status == 404:
                     # 404는 API URL 문제 또는 서비스 비활성화
-                    _LOGGER.debug("API 404 응답 (%s) - 미신청 또는 중지된 서비스일 수 있음", url)
+                    _LOGGER.debug("API 404 응답 (%s) - 미신청 또는 중지된 서비스일 수 있음", self._mask_key(url))
                     return {"_http_error": "404"}
                 response.raise_for_status()
                 text = await response.text()
@@ -214,10 +219,10 @@ class KMAWeatherAPI:
                 try:
                     return json.loads(text)
                 except (json.JSONDecodeError, ValueError):
-                    _LOGGER.error("API 응답 파싱 실패 (%s): 알 수 없는 형식", url)
+                    _LOGGER.error("API 응답 파싱 실패 (%s): 알 수 없는 형식", self._mask_key(url))
                     return None
         except Exception as err:
-            _LOGGER.error("API 호출 실패 (%s): %s", url, self._mask_key(err))
+            _LOGGER.error("API 호출 실패 (%s): %s", self._mask_key(url), self._mask_key(err))
         return None
 
     def _extract_result_code(self, data: dict | None) -> str | None:
