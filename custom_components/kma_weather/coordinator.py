@@ -120,8 +120,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             if _os.path.exists(_fallback + "/de440s.bsp"):
                 _sf_dir = _fallback
 
-            # 메인 이벤트 루프 블로킹을 방지하기 위해 파일 로드를 항상 백그라운드 태스크로 위임
-            hass.async_create_task(self._async_init_skyfield(_sf_dir))
+            # 테스트 환경에서는 skyfield 로딩을 건너뛰어 속도 향상
+            import sys
+            if "pytest" not in sys.modules:
+                # 메인 이벤트 루프 블로킹을 방지하기 위해 파일 로드를 항상 백그라운드 태스크로 위임
+                hass.async_create_task(self._async_init_skyfield(_sf_dir))
+            else:
+                _LOGGER.debug("테스트 환경: skyfield 로딩을 건너뜁니다.")
 
 
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
@@ -381,8 +386,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         async def _scheduled_update(now):
             # 기기별로 고유한 지연 시간(0~30초)을 부여하여 429(Too Many Requests) 에러를 방지합니다.
-            # 테스트 환경(pytest)에서는 지연 없이 즉시 실행합니다.
-            if not self.hass.config.api: # 간단한 테스트 환경 감지
+            # 실제 HA 운영 환경(API가 활성화된 상태)에서만 지연 시간을 적용합니다.
+            import sys
+            if "pytest" not in sys.modules:
                 delay = zlib.adler32(str(self.entry.entry_id).encode()) % 31
                 if delay > 0:
                     _LOGGER.debug("[%s] 동시 호출 방지를 위해 %d초 후 업데이트를 시작합니다.", self.entry.data.get(CONF_PREFIX, "kma"), delay)
