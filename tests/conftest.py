@@ -14,6 +14,13 @@ def allow_pycares_thread(monkeypatch):
     monkeypatch.setattr(threading, "enumerate", patched_enumerate)
 
 @pytest.fixture(autouse=True)
+def fast_sleep():
+    """부하 분산을 위한 asyncio.sleep 대기 시간을 테스트 환경에서 무력화합니다."""
+    with patch("custom_components.kma_weather.coordinator.asyncio.sleep", return_value=None), \
+         patch("custom_components.kma_weather.asyncio.sleep", return_value=None):
+        yield
+
+@pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
