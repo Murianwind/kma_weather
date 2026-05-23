@@ -253,12 +253,6 @@ class KMAWeatherAPI:
         async def _skip_coro(default):
             return default
 
-        async def _skip_coro(default):
-            return default
-
-        async def _skip_coro(default):
-            return default
-
         # 승인 여부 판단:
         # _approved_apis에 있음 → 실제 데이터 호출 (_get_* 내부 로직 정상 실행)
         # _pending_apis에 있음 → 승인 확인용 경량 호출 (_get_* 내부에서 resultCode만 확인)
@@ -266,24 +260,29 @@ class KMAWeatherAPI:
         def _should_call(key: str) -> bool:
             """승인 여부 판단 헬퍼 함수"""
             return key in self._approved_apis or key in self._pending_apis
-
         # 변수 초기화 (에디터의 '정의되지 않았을 수 있음' 경고 방지)
         short_res = mid_res = air_data = address = warning = pollen_data = None
 
         try:
             # ── API 순차 호출 (429 Too Many Requests 방지) ──
             short_res = await self._get_short_term(now)
+            await asyncio.sleep(0.7)  # API 서버 버스트 제한 방지를 위한 지연 추가
+
             mid_res = await self._get_mid_term(now, reg_id_temp, reg_id_land)
+            await asyncio.sleep(0.7)
 
             if _should_call("air") or _should_call("station"):
                 air_data = await self._get_air_quality(lat, lon)
+                await asyncio.sleep(0.7)
             else:
                 air_data = {}
 
             address = await self._get_address(lat, lon)
+            await asyncio.sleep(0.5)
 
             if _should_call("warning"):
                 warning = await self._get_warning(warn_area_code)
+                await asyncio.sleep(0.5)
             else:
                 warning = None
 
@@ -389,8 +388,8 @@ class KMAWeatherAPI:
                 "station": sn,
             }
         except Exception as e:
-            _LOGGER.error("Air quality fetch error: %s", self._mask_key(e))
-            return {}
+            _LOGGER.error("에어코리아 데이터 호출 실패: %s", self._mask_key(e))
+            return {"station": sn} if sn else {}
 
     def _get_air_grade(self, val: object, p_type: str) -> str:
         """농도 값을 기준으로 한국 환경부 표준 4단계 등급을 직접 계산한다."""
@@ -456,19 +455,18 @@ class KMAWeatherAPI:
         base = tm_fc_dt.strftime("%Y%m%d%H%M")
 
         async def _fetch_both(b):
-            return await asyncio.gather(
-                self._fetch(
-                    "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa",
-                    {"serviceKey": self.api_key, "dataType": "JSON",
-                     "regId": reg_id_temp, "tmFc": b},
-                ),
-                self._fetch(
-                    "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst",
-                    {"serviceKey": self.api_key, "dataType": "JSON",
-                     "regId": reg_id_land, "tmFc": b},
-                ),
-                return_exceptions=True,
+            res1 = await self._fetch(
+                "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa",
+                {"serviceKey": self.api_key, "dataType": "JSON",
+                 "regId": reg_id_temp, "tmFc": b},
             )
+            await asyncio.sleep(0.5)
+            res2 = await self._fetch(
+                "https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst",
+                {"serviceKey": self.api_key, "dataType": "JSON",
+                 "regId": reg_id_land, "tmFc": b},
+            )
+            return (res1, res2)
 
         results = await _fetch_both(base)
 
@@ -745,13 +743,12 @@ class KMAWeatherAPI:
                 return c["tomorrow"]
 
         try:
-            pine_g, oak_g, grass_g = await asyncio.gather(
-                _get_grade("pine"), _get_grade("oak"), _get_grade("grass"),
-                return_exceptions=True,
-            )
-            pine_g  = None if isinstance(pine_g,  Exception) else pine_g
-            oak_g   = None if isinstance(oak_g,   Exception) else oak_g
-            grass_g = None if isinstance(grass_g, Exception) else grass_g
+            # ── 429 에러 방지를 위해 순차 호출로 변경 ──
+            pine_g = await _get_grade("pine")
+            await asyncio.sleep(0.4)
+            oak_g = await _get_grade("oak")
+            await asyncio.sleep(0.4)
+            grass_g = await _get_grade("grass")
 
             # 미신청 감지
             if pine_g is None and oak_g is None and grass_g is None:
@@ -776,10 +773,9 @@ class KMAWeatherAPI:
             }
 
         except Exception as e:
-            _LOGGER.error("꽃가루 조회 오류: %s", self._mask_key(e))
+            _LOGGER.error("꽃가루 데이터 수집 중 오류 발생: %s", self._mask_key(e))
             return {}
 
-    
     # ── 유틸리티 ────────────────────────────────────────────────────────────
 
 
@@ -943,18 +939,16 @@ class KMAWeatherAPI:
                                 return None
                             c_list = [self._get_sky_kor(today_slots[t].get("SKY"), today_slots[t].get("PTY")) for t in target_times]
                             return max(set(c_list), key=c_list.count)
-
-                        # 오전(Day 0): 현재 시각 ~ 12:00. 12시 이후라면 11:00 슬롯 사용 (이동/초기화 대응)
                         if h_now < 12:
                             am_range = [t for t in all_times if h_now <= int(t[:2]) < 12]
-                            wf_am = get_range_freq(am_range, "1100")
+                        # 오전(Day 0): 현재 시각 ~ 12:00. 12시 이후라면 11:00 슬롯 사용 (이동/초기화 대응)
                         else:
-                            wf_am = get_range_freq([], "1100")
+                            am_range = [t for t in all_times if h_now <= int(t[:2]) < 12]
 
                         # 오후: max(12, 현재 시각) ~ 24:00
                         pm_start = max(12, h_now)
                         pm_range = [t for t in all_times if pm_start <= int(t[:2]) < 24]
-                        wf_pm = get_range_freq(pm_range, "2300")
+                        # 오후: max(12, 현재 시각) ~ 24:00
                     elif i == 1:
                         # 내일 날씨: 정오(12:00) 슬롯의 날씨를 대표값으로 사용
                         if "1200" in forecast_map[d_str]:
