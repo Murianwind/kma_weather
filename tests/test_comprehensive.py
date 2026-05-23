@@ -268,7 +268,7 @@ async def test_coordinator_astronomical_loop_coverage(hass):
     
     # 911-952 라인 내부의 세부 계산 로직을 타격하기 위한 시나리오 리스트
     scenarios = [
-        {"lat": 37.5665, "lon": 126.9780, "date": datetime(2025, 1, 15).date()}, # 서울
+        {"lat": 37.5665, "lon": 126.9780, "date": date(2025, 1, 15)}, # 서울
         {"lat": 33.4996, "lon": 126.5312, "date": datetime(2025, 6, 25).date()}, # 제주
     ]
     
