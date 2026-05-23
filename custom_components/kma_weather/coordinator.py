@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from .api_kma import KMAWeatherAPI
-from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, convert_grid, haversine, is_korean_coord_loose, safe_float as _safe_float
+from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX, convert_grid, haversine, is_korean_coord_loose, safe_float as _safe_float
 
 _LOGGER = logging.getLogger(__name__)
 
