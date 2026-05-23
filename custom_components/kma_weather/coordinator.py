@@ -18,6 +18,10 @@ from .const import DOMAIN, CONF_API_KEY, CONF_LOCATION_ENTITY, CONF_PREFIX, conv
 
 _LOGGER = logging.getLogger(__name__)
 
+# skyfield 객체 전역 캐시 (프로세스당 1회 로드하여 테스트 속도 및 안정성 확보)
+_SF_TS = None
+_SF_EPH = None
+
 # ── 중기예보 구역코드 테이블 (area.json) ────────────────────────────────────
 # 모듈 레벨에서 동기 로드 → HA 시작 시 1회만 실행되며 파일 크기가 작아 실질 영향 미미.
 # 엄격한 비동기 환경 대비: _load_area_data()로 분리하여 첫 coordinator 업데이트 시 실행.
@@ -120,13 +124,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             if _os.path.exists(_fallback + "/de440s.bsp"):
                 _sf_dir = _fallback
 
-            # 테스트 환경에서는 skyfield 로딩을 건너뛰어 속도 향상
-            import sys
-            if "pytest" not in sys.modules:
-                # 메인 이벤트 루프 블로킹을 방지하기 위해 파일 로드를 항상 백그라운드 태스크로 위임
-                hass.async_create_task(self._async_init_skyfield(_sf_dir))
-            else:
-                _LOGGER.debug("테스트 환경: skyfield 로딩을 건너뜁니다.")
+            # 메인 이벤트 루프 블로킹 방지를 위해 파일 로드를 백그라운드 태스크로 위임합니다.
+            # 전역 캐시를 사용하므로 여러 기기가 있어도 시스템 리소스 소모는 1회로 제한됩니다.
+            hass.async_create_task(self._async_init_skyfield(_sf_dir))
 
 
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
@@ -171,14 +171,22 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
     def _sync_init_skyfield(self, sf_dir: str) -> None:
         """동기 컨텍스트에서 skyfield 로드 (executor에서 실행)"""
+        global _SF_TS, _SF_EPH
         if not _SKYFIELD_OK:
             return
+        # 이미 로드된 캐시가 있으면 즉시 재사용
+        if _SF_TS is not None and _SF_EPH is not None:
+            self._sf_ts = _SF_TS
+            self._sf_eph = _SF_EPH
+            return
+
         try:
             import os as _os
             _os.makedirs(sf_dir, exist_ok=True)
             _loader = _SkyLoader(sf_dir)
             ts  = _loader.timescale()
             eph = _loader("de440s.bsp")
+            _SF_TS, _SF_EPH = ts, eph
             self._sf_ts  = ts
             self._sf_eph = eph
             _LOGGER.debug("skyfield de440s.bsp 백그라운드 로드 완료")
@@ -387,8 +395,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         async def _scheduled_update(now):
             # 기기별로 고유한 지연 시간(0~30초)을 부여하여 429(Too Many Requests) 에러를 방지합니다.
             # 실제 HA 운영 환경(API가 활성화된 상태)에서만 지연 시간을 적용합니다.
+            # 테스트 환경(pytest)에서는 지연 없이 즉시 실행하여 전체 테스트 속도를 유지합니다.
             import sys
-            if "pytest" not in sys.modules:
+            if "pytest" not in sys.modules:  # 운영 환경에서만 실행
                 delay = zlib.adler32(str(self.entry.entry_id).encode()) % 31
                 if delay > 0:
                     _LOGGER.debug("[%s] 동시 호출 방지를 위해 %d초 후 업데이트를 시작합니다.", self.entry.data.get(CONF_PREFIX, "kma"), delay)
