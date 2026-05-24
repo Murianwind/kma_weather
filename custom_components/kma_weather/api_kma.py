@@ -201,17 +201,17 @@ class KMAWeatherAPI:
                         self._call_counter_ref(key)
                     break
 
-        for attempt in range(2):  # 429 에러 발생 시 최대 1회 재시도
+        for attempt in range(2):  # 일시적 오류(429, 5xx) 발생 시 최대 1회 재시도
             try:
                 async with self.session.get(
                     url, params=params, headers=headers, timeout=timeout
                 ) as response:
-                    if response.status == 429:
+                    if response.status in (429, 500, 502, 503, 504):
                         if attempt == 0:
-                            _LOGGER.warning("API 429 Too Many Requests 발생. 3초 후 재시도합니다. (%s)", self._mask_key(url))
+                            _LOGGER.warning("API %s 오류 발생 (서버 불안정). 3초 후 재시도합니다. (%s)", response.status, self._mask_key(url))
                             await asyncio.sleep(3.0)
                             continue
-                        return {"_http_error": "429"}
+                        return {"_http_error": str(response.status)}
 
                     if response.status in (401, 403):
                         _LOGGER.debug("API 인증 실패 (%s): HTTP %s", self._mask_key(url), response.status)
@@ -228,7 +228,9 @@ class KMAWeatherAPI:
                         _LOGGER.error("API 응답 파싱 실패 (%s): 알 수 없는 형식", self._mask_key(url))
                         return None
             except Exception as err:
-                if attempt == 1 or "429" not in str(err):
+                # 재시도 대상 에러가 아니거나, 이미 재시도를 한 경우에만 에러 로그 출력
+                is_retryable = any(code in str(err) for code in ("429", "500", "502", "503", "504"))
+                if attempt == 1 or not is_retryable:
                     _LOGGER.error("API 호출 실패 (%s): %s", self._mask_key(url), self._mask_key(err))
                     break
                 await asyncio.sleep(3.0)
