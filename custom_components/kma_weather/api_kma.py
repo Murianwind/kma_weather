@@ -208,8 +208,8 @@ class KMAWeatherAPI:
                 ) as response:
                     if response.status in (429, 500, 502, 503, 504):
                         if attempt == 0:
-                            _LOGGER.warning("API %s 오류 발생 (서버 불안정). 3초 후 재시도합니다. (%s)", response.status, self._mask_key(url))
-                            await asyncio.sleep(3.0)
+                            _LOGGER.warning("API %s 발생 (트래픽 초과). 10초 후 재시도합니다. (%s)", response.status, self._mask_key(url))
+                            await asyncio.sleep(10.0)
                             continue
                         return {"_http_error": str(response.status)}
 
@@ -278,23 +278,24 @@ class KMAWeatherAPI:
         try:
             # ── API 순차 호출 (429 Too Many Requests 방지) ──
             short_res = await self._get_short_term(now)
-            await asyncio.sleep(1.2)  # 간격을 1.2초로 상향 조정
+            await asyncio.sleep(2.0)  # 호출 간격 2초로 상향 (429 방어)
 
             mid_res = await self._get_mid_term(now, reg_id_temp, reg_id_land)
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(2.0)
 
             if _should_call("air") or _should_call("station"):
                 air_data = await self._get_air_quality(lat, lon)
-                await asyncio.sleep(1.2)
+                await asyncio.sleep(2.0)
             else:
                 air_data = {}
 
             address = await self._get_address(lat, lon)
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(1.2)
+            await asyncio.sleep(1.5)
 
             if _should_call("warning"):
                 warning = await self._get_warning(warn_area_code)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1.2)
             else:
                 warning = None
 
@@ -757,9 +758,9 @@ class KMAWeatherAPI:
         try:
             # ── 429 에러 방지를 위해 순차 호출로 변경 ──
             pine_g = await _get_grade("pine")
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(1.2)  # 꽃가루 개별 API 간격 상향
             oak_g = await _get_grade("oak")
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(1.2)
             grass_g = await _get_grade("grass")
 
             # 미신청 감지
@@ -824,8 +825,8 @@ class KMAWeatherAPI:
 
         am_hours = [f"{h:02d}00" for h in range(6, 12)]
         pm_hours = [f"{h:02d}00" for h in range(12, 18)]
-        wf_am = rep_slot(am_hours) or "맑음"
-        wf_pm = rep_slot(pm_hours) or wf_am
+        wf_am = rep_slot(am_hours)
+        wf_pm = rep_slot(pm_hours)
         return wf_am, wf_pm
 
     # ── 데이터 병합 ─────────────────────────────────────────────────────────
@@ -977,19 +978,16 @@ class KMAWeatherAPI:
 
             else:
                 mid_day_idx = (target_date.date() - tm_fc_dt.date()).days
-                t_max_mid = _safe_float(mid_ta.get(f"taMax{mid_day_idx}")) if mid_ta else None
-                t_min_mid = _safe_float(mid_ta.get(f"taMin{mid_day_idx}")) if mid_ta else None
-                wf_am_mid = self._translate_mid_condition_kor(
-                    mid_land.get(f"wf{mid_day_idx}Am") or mid_land.get(f"wf{mid_day_idx}")
-                ) if mid_land else None
-                wf_pm_mid = self._translate_mid_condition_kor(
-                    mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}")
-                ) if mid_land else None
-
-                if t_max_mid is not None and t_min_mid is not None:
-                    t_max, t_min = t_max_mid, t_min_mid
-                    wf_am = wf_am_mid or "맑음"
-                    wf_pm = wf_pm_mid or "맑음"
+                if mid_ta and f"taMax{mid_day_idx}" in mid_ta:
+                    t_max = _safe_float(mid_ta.get(f"taMax{mid_day_idx}"))
+                    t_min = _safe_float(mid_ta.get(f"taMin{mid_day_idx}"))
+                    if mid_land:
+                        wf_am = self._translate_mid_condition_kor(
+                            mid_land.get(f"wf{mid_day_idx}Am") or mid_land.get(f"wf{mid_day_idx}")
+                        )
+                        wf_pm = self._translate_mid_condition_kor(
+                            mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}")
+                        )
                 elif i <= 5 and d_str in forecast_map:
                     short_temps = [
                         _safe_float(v.get("TMP"))
