@@ -229,8 +229,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 "today": None, "tomorrow": None,
                 "today_date": None, "tomorrow_date": None,
             }
-        # 위치 변경 시 오늘 오전/오후 날씨 캐시 무효화 (오후에는 오후만 업데이트)
-        if datetime.now(self.api.tz).hour < 12:
+        # 위치 변경 시 오늘 오전/오후 날씨 캐시 무효화.
+        # 기상청 단기예보는 11시 발표(11:00 base_time)부터 오늘 오전(09시) 데이터가 사라지므로, 11시 이후엔 무효화하지 않음.
+        if datetime.now(self.api.tz).hour < 11:
             self._wf_am_today = None
         self._wf_pm_today = None
         self._cached_nx = nx
