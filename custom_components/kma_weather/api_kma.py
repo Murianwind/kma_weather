@@ -1096,17 +1096,9 @@ class KMAWeatherAPI:
 
         weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast, "forecast_hourly": hourly_forecast})
         
-        # 오늘 날씨 요약 (현재 시각 ~ 오늘 자정까지의 최빈값)
-        kor_now = None
-        if today_str in forecast_map:
-            today_slots = forecast_map[today_str]
-            rem_times = [t for t in sorted(today_slots.keys()) if t >= curr_h]
-            if not rem_times:
-                rem_times = [sorted(today_slots.keys())[-1]]  # 23시 이후 폴백
-            c_list = [self._get_sky_kor(today_slots[t].get("SKY"), today_slots[t].get("PTY")) for t in rem_times]
-            kor_now = max(set(c_list), key=c_list.count)
-        if not kor_now:
-            kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
+        # 현재 날씨 (현재 시각에 가장 가까운 예보 슬롯의 날씨)
+        # weather_data는 이미 best_t 슬롯의 값으로 업데이트되어 있음
+        kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
             
         weather_data.update({
             "current_condition_kor": kor_now,
