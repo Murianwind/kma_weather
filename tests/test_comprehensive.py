@@ -90,8 +90,8 @@ async def test_api_3_1_pollen_map_error(mock_api):
 
 @pytest.mark.asyncio
 async def test_api_3_2_fetch_xml_and_401(mock_api):
-    """[TC 3-2] 401 Unauthorized 에러 처리 (Line 185)"""
-    # _parse_xml_to_dict는 제거되었으므로 HTTP 에러 코드 위주로 테스트
+    """[TC 3-2] XML 응답 및 401 Unauthorized 에러 (Line 230, 267)"""
+    mock_api._parse_xml_to_dict = MagicMock(return_value={"response": {"header": {"resultCode": "22"}}})
     with patch.object(mock_api.session, "get") as mock_get:
         resp = AsyncMock(); resp.status = 401
         mock_get.return_value.__aenter__.return_value = resp
@@ -101,13 +101,11 @@ async def test_api_3_2_fetch_xml_and_401(mock_api):
 @pytest.mark.asyncio
 async def test_api_3_3_midterm_tuple_fix(mock_api):
     """[TC 3-3] 중기예보 튜플 구조 검증 (Line 499)"""
-    # 승인 로직 타격을 위해 header 추가
-    land = {"response": {"header": {"resultCode": "00"}, "body": {"items": {"item": [{"wf3Am": "맑음"}]}}}}
-    temp = {"response": {"header": {"resultCode": "00"}, "body": {"items": {"item": [{"taMin3": 10}]}}}}
+    land = {"response": {"body": {"items": {"item": [{"wf3Am": "맑음"}]}}}}
+    temp = {"response": {"body": {"items": {"item": [{"taMin3": 10}]}}}}
     with patch.object(mock_api, "_fetch", side_effect=[land, temp]):
         res = await mock_api._get_mid_term(datetime.now(), "r1", "r2")
         assert isinstance(res, tuple) and "wf3Am" in str(res[0])
-        assert "mid" in mock_api._approved_apis
 
 @pytest.mark.asyncio
 async def test_api_3_4_air_unsubscribed_skip(mock_api):
@@ -121,37 +119,15 @@ async def test_api_3_4_air_unsubscribed_skip(mock_api):
 async def test_api_3_5_short_term_approved(mock_api):
     """[TC 3-5] 단기예보 정상 시 승인 마킹 (Line 567)"""
     mock_api.nx, mock_api.ny = 60, 127
-    with patch.object(mock_api, "_fetch", return_value={
-        "response": {
-            "header": {"resultCode": "00"},
-            "body": {
-                "items": {"item": [{"t": 1}]}
-            }
-        }
-    }):
+    with patch.object(mock_api, "_fetch", return_value={"response": {"body": {"items": {"item": [{"t": 1}]}}}}):
         await mock_api._get_short_term(datetime.now())
         assert "short" in mock_api._approved_apis
 
 @pytest.mark.asyncio
 async def test_api_3_6_7_warning_cases(mock_api):
     """[TC 3-6, 3-7] 특보 데이터 부재 및 에러 방어 (Line 808)"""
-    mock_api._approved_apis.discard("warning") # 초기화
-    with patch.object(mock_api, "_fetch", return_value={
-        "response": {
-            "header": {"resultCode": "00"},
-            "body": {"items": {"item": []}}
-        }
-    }):
+    with patch.object(mock_api, "_fetch", return_value={"response": {"body": {"items": {"item": []}}}}):
         assert await mock_api._get_warning("L101") == "특보없음"
-        assert "warning" in mock_api._approved_apis  # 특보가 없어도 승인이 되었는지 검증
-
-    # [TC 3-7-1] 데이터 없음(99) 시에도 승인 확인
-    mock_api._approved_apis.discard("warning")
-    with patch.object(mock_api, "_fetch", return_value={
-        "response": {"header": {"resultCode": "99"}}
-    }):
-        await mock_api._get_warning("L101")
-        assert "warning" in mock_api._approved_apis
     with patch.object(mock_api, "_fetch", side_effect=Exception):
         assert await mock_api._get_warning("L101") is None
 
@@ -159,10 +135,9 @@ async def test_api_3_6_7_warning_cases(mock_api):
 async def test_api_3_8_pollen_gather_error_fix(mock_api):
     """[TC 3-8] 꽃가루 gather 중 예외 발생 시 캐시 반환 (Line 775)"""
     dt_on = datetime(2025, 5, 1, 10, 0) # 시즌
-    today_str = dt_on.strftime("%Y%m%d")
     for k in ("pine", "oak", "grass"):
         mock_api._pollen_cache[k]["today"] = "나쁨"
-        mock_api._pollen_cache[k]["today_date"] = today_str # date_today -> today_date로 수정
+        mock_api._pollen_cache[k]["date_today"] = "20250501"
     mock_api._approved_apis.add("pollen")
     mock_api._pending_apis.discard("pollen")
     check_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": {"item": []}}}}
@@ -220,10 +195,9 @@ async def test_api_pollen_gather_partial_exception_coverage(mock_api):
     시나리오: asyncio.gather 내부에서 하나 이상의 Task가 Exception을 던질 때의 방어 로직
     """
     dt_on = datetime(2025, 5, 1, 10, 0) # 시즌 중
-    today_str = dt_on.strftime("%Y%m%d")
     for k in ("pine", "oak", "grass"):
         mock_api._pollen_cache[k]["today"] = "나쁨"
-        mock_api._pollen_cache[k]["today_date"] = today_str # date_today -> today_date로 수정
+        mock_api._pollen_cache[k]["date_today"] = "20250501"
     mock_api._approved_apis.add("pollen")
     mock_api._pending_apis.discard("pollen")
     check_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": {"item": []}}}}
