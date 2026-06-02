@@ -634,6 +634,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     "debug_ny": ny,
                     "debug_lat": curr_lat,
                     "debug_lon": curr_lon,
+                    "debug_warn_area_code": warn_area_code,
                 })
 
                 # current_condition은 _merge_all에서 단기예보 슬롯 기반으로 계산됨
