@@ -363,10 +363,10 @@ class KMAWeatherAPI:
                      "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"},
                 )
                 code = self._extract_result_code(st_json)
-                if code == "00":
-                    self._mark_approved("station")
                 if code and self._check_unsubscribed("station", code):
                     return {}
+                if code in ("00", "99"):
+                    self._mark_approved("station")
                 items = (st_json.get("response", {}).get("body", {}).get("items", [])
                          if st_json else [])
                 if not items:
@@ -382,10 +382,10 @@ class KMAWeatherAPI:
                  "stationName": sn, "dataTerm": "daily", "ver": "1.3"},
             )
             code = self._extract_result_code(air_json)
-            if code == "00":
-                self._mark_approved("air")
             if code and self._check_unsubscribed("air", code):
                 return {"station": sn}
+            if code in ("00", "99"):
+                self._mark_approved("air")
 
             ai_list = (air_json.get("response", {}).get("body", {}).get("items", [])
                        if air_json else [])
@@ -447,10 +447,10 @@ class KMAWeatherAPI:
              "nx": self.nx, "ny": self.ny, "numOfRows": 1500},
         )
         code = self._extract_result_code(data)
-        if code == "00":
-            self._mark_approved("short")
         if code and self._check_unsubscribed("short", code):
             return "UNSUBSCRIBED"  # 미신청/만료 → 업데이트 중단 신호
+        if code in ("00", "99"):
+            self._mark_approved("short")
         return data
 
     # ── 중기예보 ────────────────────────────────────────────────────────────
@@ -515,8 +515,9 @@ class KMAWeatherAPI:
 
         r0 = results[0] if not isinstance(results[0], Exception) else None
         r1 = results[1] if not isinstance(results[1], Exception) else None
-        # 두 응답 중 하나라도 정상(00)이면 API 사용 가능으로 판단
-        if (self._extract_result_code(r0) == "00") or (self._extract_result_code(r1) == "00"):
+        # 두 응답 중 하나라도 정상(00/99)이면 API 사용 가능으로 판단
+        c0, c1 = self._extract_result_code(r0), self._extract_result_code(r1)
+        if c0 in ("00", "99") or c1 in ("00", "99"):
             self._mark_approved("mid")
         return (r0, r1, tm_fc_dt)
 
@@ -542,7 +543,7 @@ class KMAWeatherAPI:
             if not data:
                 return None
 
-            if code == "00":
+            if code in ("00", "99"):
                 self._mark_approved("warning")
 
             items = (
@@ -652,7 +653,7 @@ class KMAWeatherAPI:
                 return {**grades, "worst": worst,
                         "area_name": area_name, "area_no": area_no,
                         "announcement": "데이터없음"}
-            if check_code == "00":
+            if check_code in ("00", "99"):
                 self._mark_approved("pollen")
 
         # ── 단일 엔드포인트 호출 헬퍼 ────────────────────────────────────────
@@ -683,11 +684,10 @@ class KMAWeatherAPI:
             code = self._extract_result_code(r)
             if code and self._check_unsubscribed("pollen", code):
                 return "UNSUB"
-            if code == "99":
-                return None  # 지역 데이터 없음
-            if code != "00":
+            if code in ("00", "99"):
+                self._mark_approved("pollen")
+            if code != "00": # 99 포함 기타 에러는 데이터 없음 처리
                 return None
-            self._mark_approved("pollen")
             if offseason:
                 return "좋음"
             items = (r.get("response", {}).get("body", {})
