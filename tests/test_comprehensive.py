@@ -144,6 +144,14 @@ async def test_api_3_6_7_warning_cases(mock_api):
     }):
         assert await mock_api._get_warning("L101") == "특보없음"
         assert "warning" in mock_api._approved_apis  # 특보가 없어도 승인이 되었는지 검증
+
+    # [TC 3-7-1] 데이터 없음(99) 시에도 승인 확인
+    mock_api._approved_apis.discard("warning")
+    with patch.object(mock_api, "_fetch", return_value={
+        "response": {"header": {"resultCode": "99"}}
+    }):
+        await mock_api._get_warning("L101")
+        assert "warning" in mock_api._approved_apis
     with patch.object(mock_api, "_fetch", side_effect=Exception):
         assert await mock_api._get_warning("L101") is None
 
