@@ -119,7 +119,14 @@ async def test_api_3_4_air_unsubscribed_skip(mock_api):
 async def test_api_3_5_short_term_approved(mock_api):
     """[TC 3-5] 단기예보 정상 시 승인 마킹 (Line 567)"""
     mock_api.nx, mock_api.ny = 60, 127
-    with patch.object(mock_api, "_fetch", return_value={"response": {"body": {"items": {"item": [{"t": 1}]}}}}):
+    with patch.object(mock_api, "_fetch", return_value={
+        "response": {
+            "header": {"resultCode": "00"},
+            "body": {
+                "items": {"item": [{"t": 1}]}
+            }
+        }
+    }):
         await mock_api._get_short_term(datetime.now())
         assert "short" in mock_api._approved_apis
 
