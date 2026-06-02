@@ -363,21 +363,12 @@ class KMAWeatherAPI:
                      "tmX": f"{tm_x:.2f}", "tmY": f"{tm_y:.2f}"},
                 )
                 code = self._extract_result_code(st_json)
-                if code == "00":
-                    self._mark_approved("station")
                 if code and self._check_unsubscribed("station", code):
                     return {}
                 items = (st_json.get("response", {}).get("body", {}).get("items", [])
                          if st_json else [])
                 if not items:
-                    # 측정소를 찾지 못하더라도 API 시도 자체는 성공했으므로 승인 처리 (엔티티 생성 보장)
-                    if "station" in self._pending_apis:
-                        self._mark_approved("station")
-                    if "air" in self._pending_apis:
-                        self._mark_approved("air")
                     return {}
-                # 통신 성공 시 측정소 API 승인
-                self._mark_approved("station")
                 sn = items[0].get("stationName")
                 self._cached_station = sn
                 self._cached_station_lat = lat
@@ -391,8 +382,6 @@ class KMAWeatherAPI:
             code = self._extract_result_code(air_json)
             if code and self._check_unsubscribed("air", code):
                 return {"station": sn}
-            if code in ("00", "99"):
-                self._mark_approved("air")
 
             ai_list = (air_json.get("response", {}).get("body", {}).get("items", [])
                        if air_json else [])
@@ -400,6 +389,7 @@ class KMAWeatherAPI:
                 return {"station": sn}
 
             ai = ai_list[0]
+            self._mark_approved("air")
             p10v = ai.get("pm10Value")
             p25v = ai.get("pm25Value")
 
@@ -454,10 +444,11 @@ class KMAWeatherAPI:
              "nx": self.nx, "ny": self.ny, "numOfRows": 1500},
         )
         code = self._extract_result_code(data)
-        if code == "00":
-            self._mark_approved("short")
         if code and self._check_unsubscribed("short", code):
             return "UNSUBSCRIBED"  # 미신청/만료 → 업데이트 중단 신호
+        items = (data or {}).get("response", {}).get("body", {}).get("items", {}).get("item", [])
+        if items:
+            self._mark_approved("short")
         return data
 
     # ── 중기예보 ────────────────────────────────────────────────────────────
@@ -522,17 +513,13 @@ class KMAWeatherAPI:
 
         r0 = results[0] if not isinstance(results[0], Exception) else None
         r1 = results[1] if not isinstance(results[1], Exception) else None
-        # 두 응답 중 하나라도 정상(00)이면 API 사용 가능으로 판단
-        if (self._extract_result_code(r0) == "00") or (self._extract_result_code(r1) == "00"):
+        if _is_valid(r0) and _is_valid(r1):
             self._mark_approved("mid")
         return (r0, r1, tm_fc_dt)
 
     # ── 기상특보 ────────────────────────────────────────────────────────────
     async def _get_warning(self, warn_area_code: str | None) -> str | None:
         if not warn_area_code:
-            # 구역 코드가 없더라도 좌표가 유효하여 호출을 시도했다면 승인 처리 (엔티티 생성 보장)
-            if "warning" in self._pending_apis:
-                self._mark_approved("warning")
             return None
         try:
             now = datetime.now(self.tz)
@@ -551,9 +538,6 @@ class KMAWeatherAPI:
                 return None
             if not data:
                 return None
-
-            if code in ("00", "99"):
-                self._mark_approved("warning")
 
             items = (
                 data.get("response", {})
@@ -579,6 +563,7 @@ class KMAWeatherAPI:
                 and str(item.get("cancel", "1")) == "0"
                 and str(item.get("endTime", "1")) == "0"
             ]
+            self._mark_approved("warning")
             if not active:
                 return "특보없음"
 
