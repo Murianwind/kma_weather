@@ -1,4 +1,4 @@
-APimport logging
+import logging
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -253,8 +253,6 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
         """API 미신청/중지 시 unavailable 반환."""
         if not super().available:
             return False
-        if not self.coordinator.data:
-            return False
         if self._type in ("api_expire", "api_calls_today"):
             return True
 
@@ -263,7 +261,7 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
             if api_key is not None and self._type in sensor_types:
                 return api_key in self.coordinator.api._approved_apis
 
-        return True
+        return self.coordinator.data is not None
 
     async def async_added_to_hass(self) -> None:
         """HA 재시작 후 이전 상태 복원."""
