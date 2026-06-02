@@ -390,6 +390,12 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
             if lon is not None:
                 attrs["longitude"] = lon
 
+            # 기상특보 API 승인 시에만 특보구역코드 표시
+            if "warning" in approved:
+                warn_code = w.get("debug_warn_area_code")
+                if warn_code:
+                    attrs["warn_area_code"] = warn_code
+
             # 꽃가루 API 승인 시에만 꽃가루 조회 지역 표시
             if "pollen" in approved:
                 pollen = self.coordinator.data.get("pollen") or {}
