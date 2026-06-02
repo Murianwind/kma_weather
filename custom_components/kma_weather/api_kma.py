@@ -539,6 +539,10 @@ class KMAWeatherAPI:
             if not data:
                 return None
 
+            # "00"(정상) 또는 "03"(데이터없음)인 경우 API가 정상적으로 승인된 것으로 판단
+            if code in ("00", "03"):
+                self._mark_approved("warning")
+
             items = (
                 data.get("response", {})
                     .get("body", {})
@@ -563,7 +567,6 @@ class KMAWeatherAPI:
                 and str(item.get("cancel", "1")) == "0"
                 and str(item.get("endTime", "1")) == "0"
             ]
-            self._mark_approved("warning")
             if not active:
                 return "특보없음"
 
