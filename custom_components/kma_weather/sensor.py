@@ -253,15 +253,22 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
         """API 미신청/중지 시 unavailable 반환."""
         if not super().available:
             return False
+        if not self.coordinator.data:
+            return False
         if self._type in ("api_expire", "api_calls_today"):
             return True
 
         # SENSOR_API_GROUPS에서 API별 센서 목록 파생 → 중복 정의 없음
         for api_key, sensor_types in SENSOR_API_GROUPS.items():
             if api_key is not None and self._type in sensor_types:
+                if api_key == "pollen":
+                    return self.coordinator.data.get("pollen") is not None
+                if api_key == "warning":
+                    w = self.coordinator.data.get("weather", {})
+                    return w.get("warning") is not None
                 return api_key in self.coordinator.api._approved_apis
 
-        return self.coordinator.data is not None
+        return True
 
     async def async_added_to_hass(self) -> None:
         """HA 재시작 후 이전 상태 복원."""
