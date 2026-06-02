@@ -1,4 +1,4 @@
-import logging
+APimport logging
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -261,11 +261,6 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
         # SENSOR_API_GROUPS에서 API별 센서 목록 파생 → 중복 정의 없음
         for api_key, sensor_types in SENSOR_API_GROUPS.items():
             if api_key is not None and self._type in sensor_types:
-                if api_key == "pollen":
-                    return self.coordinator.data.get("pollen") is not None
-                if api_key == "warning":
-                    w = self.coordinator.data.get("weather", {})
-                    return w.get("warning") is not None
                 return api_key in self.coordinator.api._approved_apis
 
         return True
