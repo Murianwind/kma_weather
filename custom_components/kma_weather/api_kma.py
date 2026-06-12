@@ -6,7 +6,7 @@ import re
 import json
 import hashlib
 import aiohttp
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
@@ -906,22 +906,32 @@ class KMAWeatherAPI:
                         today_str, last_date, times[-1],
                     )
 
+        # ── 강수 시작 시각: 오늘~모레(현재 이후) 슬롯만 탐색 ─────────────────
         _PTY_LABEL = {"1": "비", "2": "비/눈", "3": "눈", "4": "소나기"}
+        now_str = now.strftime("%Y%m%d")
+        now_time_str = f"{now.hour:02d}00"
+        today = now.date()
         for d_str in sorted(forecast_map.keys()):
+            target_day = date(int(d_str[:4]), int(d_str[4:6]), int(d_str[6:]))
+            diff = (target_day - today).days
+            # 오늘~모레(0~2일)만 탐색
+            if diff < 0 or diff > 2:
+                continue
             rain_times = [
                 t_str for t_str in sorted(forecast_map[d_str].keys())
                 if _safe_float(forecast_map[d_str][t_str].get("PTY", "0")) > 0
+                and (d_str > now_str or (d_str == now_str and t_str >= now_time_str))
             ]
             if rain_times:
                 t = rain_times[0]
-                month, day = int(d_str[4:6]), int(d_str[6:8])
+                day_label = ["오늘", "내일", "모레"][diff]
                 hour, minute = int(t[:2]), int(t[2:])
                 pty_val = str(forecast_map[d_str][t].get("PTY", "0"))
                 label = _PTY_LABEL.get(pty_val, "강수")
                 if minute > 0:
-                    weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시 {minute}분 {label}"
+                    weather_data["rain_start_time"] = f"{day_label} {hour}시 {minute}분 {label}"
                 else:
-                    weather_data["rain_start_time"] = f"{month}월 {day}일 {hour}시 {label}"
+                    weather_data["rain_start_time"] = f"{day_label} {hour}시 {label}"
                 break
 
         twice_daily, daily_forecast = [], []
