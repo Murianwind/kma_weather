@@ -924,7 +924,12 @@ class KMAWeatherAPI:
             ]
             if rain_times:
                 t = rain_times[0]
-                day_label = ["오늘", "내일", "모레"][diff]
+                if diff == 0:
+                    day_label = "오늘"
+                elif diff == 1:
+                    day_label = "내일"
+                else:
+                    day_label = f"모레({target_day.month}/{target_day.day})"
                 hour, minute = int(t[:2]), int(t[2:])
                 pty_val = str(forecast_map[d_str][t].get("PTY", "0"))
                 label = _PTY_LABEL.get(pty_val, "강수")
