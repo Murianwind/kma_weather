@@ -181,3 +181,113 @@ class TestBoundaryTimeScenarios:
         mid_day_idx = (target_date - tm_fc_dt.date()).days
         entry_4 = next(e for e in result["weather"]["forecast_daily"] if e["_day_index"] == 4)
         assert entry_4["native_temperature"] == float(20 + mid_day_idx)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _get_mid_term 재시도 및 _is_valid 추가 커버리지
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetMidTermRetry:
+    """_get_mid_term 재시도 분기 추가 테스트"""
+
+    @pytest.mark.asyncio
+    async def test_empty_response_retries_and_succeeds(self):
+        """최신 응답 비어있을 때 이전 시각으로 재시도 성공"""
+        api = make_api()
+        now = datetime(2026, 6, 1, 10, 0, tzinfo=TZ)
+        tm_fc_dt = api._get_mid_base_dt(now)
+
+        empty_resp = {"response": {"header": {"resultCode": "00"},
+                                   "body": {"items": {"item": []}}}}
+        valid_ta   = {"response": {"body": {"items": {"item": [{"taMax3": "25", "taMin3": "15"}]}}}}
+        valid_land = {"response": {"body": {"items": {"item": [{"wf3Am": "맑음", "wf3Pm": "흐림"}]}}}}
+
+        call_count = {"n": 0}
+
+        async def mock_fetch(url, params, **kwargs):
+            call_count["n"] += 1
+            # 처음 2번(최신)은 빈 응답, 이후(재시도)는 정상 응답
+            if call_count["n"] <= 2:
+                return empty_resp
+            if "getMidTa" in url:
+                return valid_ta
+            return valid_land
+
+        api._fetch = mock_fetch
+        r0, r1, dt = await api._get_mid_term(now, "11B10101", "11B00000")
+        assert r0 is not None
+        assert r1 is not None
+        assert call_count["n"] == 4  # 최신 2번 + 재시도 2번
+
+    @pytest.mark.asyncio
+    async def test_empty_response_retries_and_fails(self):
+        """최신 응답 비어있고 재시도도 비어있을 때 빈 튜플 반환"""
+        api = make_api()
+        now = datetime(2026, 6, 1, 10, 0, tzinfo=TZ)
+
+        empty_resp = {"response": {"header": {"resultCode": "00"},
+                                   "body": {"items": {"item": []}}}}
+
+        api._fetch = AsyncMock(return_value=empty_resp)
+        r0, r1, dt = await api._get_mid_term(now, "11B10101", "11B00000")
+        # 재시도도 실패 → r0, r1은 빈 응답 그대로
+        assert dt is not None
+
+    @pytest.mark.asyncio
+    async def test_is_valid_returns_false_for_unsubscribed(self):
+        """_is_valid에서 UNSUBSCRIBED 문자열은 False 반환"""
+        api = make_api()
+        now = datetime(2026, 6, 1, 10, 0, tzinfo=TZ)
+
+        unsubscribed_resp = {"response": {"header": {"resultCode": "30"}}}
+        api._fetch = AsyncMock(return_value=unsubscribed_resp)
+        result = await api._get_mid_term(now, "11B10101", "11B00000")
+        # 미신청 코드 → ("UNSUBSCRIBED", None, tm_fc_dt)
+        assert result[0] == "UNSUBSCRIBED"
+        assert result[1] is None
+
+    @pytest.mark.asyncio
+    async def test_retry_uses_prev_hour_correctly_at_06(self):
+        """tmFc가 06시일 때 재시도는 전날 18시를 사용"""
+        api = make_api()
+        # 06:31 → tmFc = 당일 06시
+        now = datetime(2026, 6, 1, 6, 31, tzinfo=TZ)
+        tm_fc_dt = api._get_mid_base_dt(now)
+        assert tm_fc_dt.hour == 6
+
+        called_bases = []
+        empty_resp = {"response": {"header": {"resultCode": "00"},
+                                   "body": {"items": {"item": []}}}}
+
+        async def mock_fetch(url, params, **kwargs):
+            called_bases.append(params.get("tmFc", ""))
+            return empty_resp
+
+        api._fetch = mock_fetch
+        await api._get_mid_term(now, "11B10101", "11B00000")
+
+        # 재시도 tmFc는 전날 18시여야 함
+        retry_bases = called_bases[2:]  # 처음 2개는 최신, 이후가 재시도
+        assert any("18" in b[-4:] for b in retry_bases)
+
+    @pytest.mark.asyncio
+    async def test_retry_uses_prev_hour_correctly_at_18(self):
+        """tmFc가 18시일 때 재시도는 당일 06시를 사용"""
+        api = make_api()
+        # 18:31 → tmFc = 당일 18시
+        now = datetime(2026, 6, 1, 18, 31, tzinfo=TZ)
+        tm_fc_dt = api._get_mid_base_dt(now)
+        assert tm_fc_dt.hour == 18
+
+        called_bases = []
+        empty_resp = {"response": {"header": {"resultCode": "00"},
+                                   "body": {"items": {"item": []}}}}
+
+        async def mock_fetch(url, params, **kwargs):
+            called_bases.append(params.get("tmFc", ""))
+            return empty_resp
+
+        api._fetch = mock_fetch
+        await api._get_mid_term(now, "11B10101", "11B00000")
+
+        retry_bases = called_bases[2:]
+        assert any("0600" in b[-4:] for b in retry_bases)
