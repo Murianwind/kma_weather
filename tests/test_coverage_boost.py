@@ -1,3 +1,10 @@
+"""
+test_coverage_boost.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[변경 이력]
+  - test_haversine_known_distance() 제거 → test_coordinator_validation.py 에 있음
+  - TestLandCodeMapping 클래스 제거     → test_coordinator_validation.py 에 있음
+"""
 import pytest
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
@@ -21,7 +28,7 @@ class TestSafeFloat:
 # ─────────────────────────────────────────────────────────────────────────────
 class TestApparentTemp:
     def _api(self):
-        return KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
+        return KMAWeatherAPI(MagicMock(), "key")
 
     def test_wind_chill_branch(self):
         api = self._api()
@@ -55,7 +62,7 @@ class TestApparentTemp:
 # ─────────────────────────────────────────────────────────────────────────────
 class TestGetVecKor:
     def _api(self):
-        return KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
+        return KMAWeatherAPI(MagicMock(), "key")
 
     @pytest.mark.parametrize("vec,expected", [
         (0, "북"), (22.5, "북동"), (67.5, "동"), (112.5, "남동"),
@@ -75,7 +82,7 @@ class TestGetVecKor:
 # ─────────────────────────────────────────────────────────────────────────────
 class TestTranslateMidCondition:
     def _api(self):
-        return KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
+        return KMAWeatherAPI(MagicMock(), "key")
 
     @pytest.mark.parametrize("wf,expected_kor", [
         ("맑음",       "맑음"),
@@ -107,7 +114,7 @@ class TestTranslateMidCondition:
 # ─────────────────────────────────────────────────────────────────────────────
 class TestWgs84ToTm:
     def test_seoul_tm_coords(self):
-        api = KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
+        api = KMAWeatherAPI(MagicMock(), "key")
         x, y = api._wgs84_to_tm(37.5665, 126.9780)
         assert 100_000 < x < 500_000
         assert 300_000 < y < 700_000
@@ -117,7 +124,7 @@ class TestWgs84ToTm:
 # ─────────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_air_quality_cache_hit():
-    api = KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
+    api = KMAWeatherAPI(MagicMock(), "key")
     api.lat, api.lon = 37.56, 126.98
     api._cached_station = "화성"
     api._cached_station_lat = 37.56
@@ -144,7 +151,7 @@ async def test_air_quality_cache_hit():
 
 @pytest.mark.asyncio
 async def test_air_quality_no_station_items():
-    api = KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
+    api = KMAWeatherAPI(MagicMock(), "key")
     api.lat, api.lon = 37.56, 126.98
 
     async def mock_fetch(url, params=None, timeout=10):
@@ -158,7 +165,7 @@ async def test_air_quality_no_station_items():
 
 @pytest.mark.asyncio
 async def test_air_quality_no_air_data_items():
-    api = KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
+    api = KMAWeatherAPI(MagicMock(), "key")
     api.lat, api.lon = 37.56, 126.98
 
     async def mock_fetch(url, params=None, timeout=10):
@@ -172,7 +179,7 @@ async def test_air_quality_no_air_data_items():
 
 @pytest.mark.asyncio
 async def test_air_quality_fetch_returns_none():
-    api = KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
+    api = KMAWeatherAPI(MagicMock(), "key")
     api.lat, api.lon = 37.56, 126.98
 
     async def mock_fetch(url, params=None, timeout=10):
@@ -274,28 +281,13 @@ async def test_options_flow(hass, mock_config_entry, kma_api_mock_factory):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. 유틸리티 헬퍼
+# [중복 제거] test_haversine_known_distance, TestLandCodeMapping
+#             → test_coordinator_validation.py 에 있으므로 이 파일에서 삭제
 # ─────────────────────────────────────────────────────────────────────────────
-from custom_components.kma_weather.coordinator import _land_code
-from custom_components.kma_weather.coordinator import _load_area_data
-_load_area_data()  # 테스트 실행 전 정적 데이터 로드
-
-from custom_components.kma_weather.const import haversine as _haversine
-
-def test_haversine_known_distance():
-    d = _haversine(37.5665, 126.9780, 35.1796, 129.0756)
-    assert 310 < d < 340
-
-class TestLandCodeMapping:
-    @pytest.mark.parametrize("temp_id,expected_land", [
-        ("11B10101", "11B00000"),
-        ("11A00101", "11A00101"),
-        ("11H10101", "11H10000"),
-    ])
-    def test_land_code(self, temp_id, expected_land):
-        assert _land_code(temp_id) == expected_land
 
 class TestGetAirGrade:
-    def _api(self): return KMAWeatherAPI(MagicMock(), "key")  # reg_id 제거
+    def _api(self): return KMAWeatherAPI(MagicMock(), "key")
+
     @pytest.mark.parametrize("val,p_type,expected", [
         (15, "pm10", "좋음"), (50, "pm10", "보통"), (100, "pm10", "나쁨"), (200, "pm10", "매우나쁨"),
         (5, "pm25", "좋음"), (25, "pm25", "보통"), (50, "pm25", "나쁨"), (100, "pm25", "매우나쁨"),
@@ -348,7 +340,6 @@ class TestPollenAdditionalCoverage:
         api = self._make_api()
         today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
 
-        # today 캐시 세팅
         for k in ("pine", "oak", "grass"):
             api._pollen_cache[k]["today"] = "좋음"
             api._pollen_cache[k]["today_date"] = today_str
@@ -357,18 +348,15 @@ class TestPollenAdditionalCoverage:
 
         async def mock_fetch(url, params):
             fetch_count["n"] += 1
-            # tomorrow 갱신 시도 → None 반환 (데이터 없음)
             return {"response": {"header": {"resultCode": "00"},
-                    "body": {"items": {"item": []}}}}  # items 비어있음 → None
+                    "body": {"items": {"item": []}}}}
 
         api._fetch = mock_fetch
         now = datetime.now(ZoneInfo("Asia/Seoul")).replace(hour=19, minute=0)
         result = await api._get_pollen(now, "1111051500", "서울")
 
-        # today 캐시 반환
         assert result is not None
         assert result.get("pine") == "좋음"
-        # tomorrow 캐시 초기화 확인
         for k in ("pine", "oak", "grass"):
             assert api._pollen_cache[k]["tomorrow"] is None
             assert api._pollen_cache[k]["tomorrow_date"] is None
@@ -389,7 +377,6 @@ class TestPollenAdditionalCoverage:
 
         assert result is not None
         assert result.get("pine") == "좋음"  # today 캐시 반환
-        # tomorrow 캐시 갱신 확인
         for k in ("pine", "oak", "grass"):
             assert api._pollen_cache[k]["tomorrow"] is not None
             assert api._pollen_cache[k]["tomorrow_date"] == today_str
