@@ -366,7 +366,8 @@ class TestPollenAdditionalCoverage:
 
         assert result is not None, "today 캐시 있을 때 None 반환됨"
         assert result.get("pine") == "좋음"
-        for k in ("pine", "oak", "grass"):
+        # grass는 비시즌(8~10월)이라 tomorrow 갱신 대상 아님 → pine/oak만 검증
+        for k in ("pine", "oak"):
             assert api._pollen_cache[k]["tomorrow"] is None
             assert api._pollen_cache[k]["tomorrow_date"] is None
 
@@ -395,6 +396,8 @@ class TestPollenAdditionalCoverage:
 
         assert result is not None, "today 캐시 있을 때 None 반환됨"
         assert result.get("pine") == "좋음", f"today 캐시 반환 실패: {result.get('pine')}"
-        for k in ("pine", "oak", "grass"):
+        # grass는 8~10월만 시즌 → 6월 기준 비시즌이므로 tomorrow 갱신 대상 아님
+        # pine/oak(4~6월 시즌)만 tomorrow 갱신 검증
+        for k in ("pine", "oak"):
             assert api._pollen_cache[k]["tomorrow"] is not None, f"{k} tomorrow 캐시 갱신 안 됨"
             assert api._pollen_cache[k]["tomorrow_date"] == today_str
