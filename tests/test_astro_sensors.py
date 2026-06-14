@@ -1671,3 +1671,98 @@ class TestPollenUnavailableOnApiStop:
         """
         sensor = self._make_pollen_sensor({"worst": None, "pine": None, "oak": None, "grass": "좋음"})
         assert sensor.native_value is None
+
+# ══════════════════════════════════════════════════════════════════════════════
+# calc_astronomical_for_date 추가 커버리지
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCalcAstronomicalShortForecast:
+    """calc_astronomical_for_date 내 단기예보 조회 분기 추가 테스트"""
+
+    @pytest.mark.asyncio
+    @_skip_no_sf
+    async def test_weather_source_with_short_approved_and_items(self, hass, mock_config_entry, kma_api_mock_factory):
+        """short 승인 + 단기예보 아이템 있음 → weather_source='날씨+천문'"""
+        kma_api_mock_factory("full_test")
+        mock_config_entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        from homeassistant.util import dt as dt_util
+        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+        coordinator.api._approved_apis.add("short")
+
+        short_items = [
+            {"fcstDate": dt_util.now().strftime("%Y%m%d"), "fcstTime": "1200",
+             "category": "SKY", "fcstValue": "1"},
+            {"fcstDate": dt_util.now().strftime("%Y%m%d"), "fcstTime": "1200",
+             "category": "PTY", "fcstValue": "0"},
+            {"fcstDate": dt_util.now().strftime("%Y%m%d"), "fcstTime": "1500",
+             "category": "WSD", "fcstValue": "2.5"},
+        ]
+        mock_resp = {"response": {"header": {"resultCode": "00"},
+                                  "body": {"items": {"item": short_items}}}}
+
+        with patch.object(coordinator.api, "_fetch", new_callable=AsyncMock, return_value=mock_resp):
+            result = await coordinator.calc_astronomical_for_date(
+                lat=37.56, lon=126.98,
+                target_date=dt_util.now().date(),
+            )
+
+        assert result.get("weather_source") == "날씨+천문"
+        assert result.get("weather_condition") not in (None, "API 조회 불가")
+
+    @pytest.mark.asyncio
+    @_skip_no_sf
+    async def test_weather_source_with_short_approved_but_fetch_exception(self, hass, mock_config_entry, kma_api_mock_factory):
+        """short 승인 + 단기예보 조회 중 예외 → weather_source='천문만'"""
+        kma_api_mock_factory("full_test")
+        mock_config_entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        from homeassistant.util import dt as dt_util
+        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+        coordinator.api._approved_apis.add("short")
+
+        with patch.object(coordinator.api, "_fetch", new_callable=AsyncMock,
+                          side_effect=Exception("네트워크 오류")):
+            result = await coordinator.calc_astronomical_for_date(
+                lat=37.56, lon=126.98,
+                target_date=dt_util.now().date(),
+            )
+
+        assert result.get("weather_source") == "천문만"
+        assert result.get("weather_condition") == "API 조회 불가"
+
+    @pytest.mark.asyncio
+    @_skip_no_sf
+    async def test_weather_source_wsd_none_searches_other_slots(self, hass, mock_config_entry, kma_api_mock_factory):
+        """best_t 슬롯에 WSD 없을 때 다른 슬롯에서 WSD 탐색"""
+        kma_api_mock_factory("full_test")
+        mock_config_entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        from homeassistant.util import dt as dt_util
+        coordinator = hass.data[DOMAIN][mock_config_entry.entry_id]
+        coordinator.api._approved_apis.add("short")
+
+        today = dt_util.now().strftime("%Y%m%d")
+        # 1200 슬롯에는 WSD 없음, 1500 슬롯에만 WSD 있음
+        short_items = [
+            {"fcstDate": today, "fcstTime": "1200", "category": "SKY", "fcstValue": "1"},
+            {"fcstDate": today, "fcstTime": "1200", "category": "PTY", "fcstValue": "0"},
+            {"fcstDate": today, "fcstTime": "1500", "category": "WSD", "fcstValue": "3.0"},
+        ]
+        mock_resp = {"response": {"header": {"resultCode": "00"},
+                                  "body": {"items": {"item": short_items}}}}
+
+        with patch.object(coordinator.api, "_fetch", new_callable=AsyncMock, return_value=mock_resp):
+            result = await coordinator.calc_astronomical_for_date(
+                lat=37.56, lon=126.98,
+                target_date=dt_util.now().date(),
+            )
+
+        assert "error" not in result
+        assert result.get("weather_source") == "날씨+천문"
