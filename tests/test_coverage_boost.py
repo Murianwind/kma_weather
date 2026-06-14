@@ -367,6 +367,9 @@ class TestPollenAdditionalCoverage:
         api = self._make_api()
         today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
 
+        # today 캐시 세팅 + pending 해제 (pending 상태면 캐시 무효화되므로)
+        api._approved_apis.add("pollen")
+        api._pending_apis.discard("pollen")
         for k in ("pine", "oak", "grass"):
             api._pollen_cache[k]["today"] = "좋음"
             api._pollen_cache[k]["today_date"] = today_str
