@@ -303,3 +303,93 @@ class TestGetAirGrade:
     ])
     def test_all_grades(self, val, p_type, expected):
         assert self._api()._get_air_grade(val, p_type) == expected
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _get_pollen 추가 커버리지
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPollenAdditionalCoverage:
+    """_get_pollen 미커버 분기 추가 테스트"""
+
+    def _make_api(self):
+        api = KMAWeatherAPI(MagicMock(), "test_key")
+        api.hass = None
+        api._approved_apis.add("pollen")
+        api._pending_apis.discard("pollen")
+        return api
+
+    def _ok_response(self, today="1"):
+        return {"response": {"header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                "body": {"dataType": "JSON", "items": {"item": [{
+                    "today": today, "tomorrow": "2",
+                }]}, "pageNo": 1, "numOfRows": 10, "totalCount": 1}}}
+
+    def _99_response(self):
+        return {"response": {"header": {"resultCode": "99", "resultMsg": "NO_DATA"},
+                "body": {"items": {"item": []}}}}
+
+    @pytest.mark.asyncio
+    async def test_check_code_99_returns_none_for_season_kinds(self):
+        """check_code=99 → 시즌 항목 None, 비시즌 항목 좋음"""
+        api = self._make_api()
+        api._fetch = AsyncMock(return_value=self._99_response())
+        now = datetime(2026, 5, 1, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))  # oak/pine 시즌
+        result = await api._get_pollen(now, "1111051500", "서울")
+        assert result is not None
+        assert result.get("oak") is None    # 시즌 → unknown
+        assert result.get("pine") is None   # 시즌 → unknown
+        assert result.get("grass") == "좋음"  # 비시즌 → 좋음
+        assert result.get("worst") is None
+        assert result.get("announcement") == "데이터없음"
+
+    @pytest.mark.asyncio
+    async def test_today_cache_exists_19h_tomorrow_g_none(self):
+        """today 캐시 있고 19시 이후 tomorrow 갱신 시 g=None → tomorrow 캐시 초기화"""
+        api = self._make_api()
+        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+
+        # today 캐시 세팅
+        for k in ("pine", "oak", "grass"):
+            api._pollen_cache[k]["today"] = "좋음"
+            api._pollen_cache[k]["today_date"] = today_str
+
+        fetch_count = {"n": 0}
+
+        async def mock_fetch(url, params):
+            fetch_count["n"] += 1
+            # tomorrow 갱신 시도 → None 반환 (데이터 없음)
+            return {"response": {"header": {"resultCode": "00"},
+                    "body": {"items": {"item": []}}}}  # items 비어있음 → None
+
+        api._fetch = mock_fetch
+        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(hour=19, minute=0)
+        result = await api._get_pollen(now, "1111051500", "서울")
+
+        # today 캐시 반환
+        assert result is not None
+        assert result.get("pine") == "좋음"
+        # tomorrow 캐시 초기화 확인
+        for k in ("pine", "oak", "grass"):
+            assert api._pollen_cache[k]["tomorrow"] is None
+            assert api._pollen_cache[k]["tomorrow_date"] is None
+
+    @pytest.mark.asyncio
+    async def test_today_cache_exists_19h_tomorrow_updated(self):
+        """today 캐시 있고 19시 이후 tomorrow 갱신 성공"""
+        api = self._make_api()
+        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+
+        for k in ("pine", "oak", "grass"):
+            api._pollen_cache[k]["today"] = "좋음"
+            api._pollen_cache[k]["today_date"] = today_str
+
+        api._fetch = AsyncMock(return_value=self._ok_response(today="2"))
+        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(hour=19, minute=0)
+        result = await api._get_pollen(now, "1111051500", "서울")
+
+        assert result is not None
+        assert result.get("pine") == "좋음"  # today 캐시 반환
+        # tomorrow 캐시 갱신 확인
+        for k in ("pine", "oak", "grass"):
+            assert api._pollen_cache[k]["tomorrow"] is not None
+            assert api._pollen_cache[k]["tomorrow_date"] == today_str
