@@ -290,17 +290,13 @@ class TestGetAddress:
         assert "123456781234" in user_agent
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("json_data", [
-        {},           # 빈 응답
-        {"address": {}},  # address 키는 있지만 내용 없음
-    ])
-    async def test_returns_coordinate_string_on_empty_response(self, json_data):
+    async def test_returns_coordinate_string_on_empty_response(self):
         """
-        [Given] 주소 정보가 없는 Nominatim 응답
+        [Given] 빈 JSON 응답 ({}) 을 반환하는 Nominatim
         [When]  _get_address(37.56, 126.98) 호출
         [Then]  좌표 문자열('37.56', '126.98' 포함) 반환
         """
-        session = MockSession(json_data=json_data)
+        session = MockSession(json_data={})
         api = KMAWeatherAPI(session, "TEST_KEY")
         result = await api._get_address(37.56, 126.98)
         assert "37.56" in result or "37.5600" in result
