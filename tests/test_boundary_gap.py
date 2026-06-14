@@ -232,3 +232,98 @@ class TestConsecutiveApiFailures:
         for _ in range(3):
             result = api._merge_all(now, None, None, air_data={})
             assert_d3_d4_not_none(result, "연속 실패 중 데이터 유지")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# rain_start_time 추가 커버리지
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestRainStartTime:
+    """rain_start_time 오늘/내일/모레 및 minute>0 분기 테스트"""
+
+    def _make_forecast(self, now, d_offset, t_str, pty="1"):
+        """특정 날짜/시각에 강수가 있는 forecast_map 생성"""
+        target = now + timedelta(days=d_offset)
+        d_str = target.strftime("%Y%m%d")
+        return {d_str: {t_str: {"PTY": pty, "SKY": "4", "TMP": "20",
+                                 "REH": "80", "WSD": "2.0", "POP": "80"}}}
+
+    def test_rain_today(self):
+        """오늘 강수 → '오늘 H시 비'"""
+        api = make_api()
+        now = datetime(2026, 6, 14, 10, 0, tzinfo=TZ)
+        forecast_map = self._make_forecast(now, 0, "1500", pty="1")
+        result = api._merge_all(now, None, None, {})
+        # forecast_map 직접 주입
+        api._cache_forecast_map = forecast_map
+        result = api._merge_all(now, None, None, {})
+        assert result["weather"]["rain_start_time"] == "오늘 15시 비"
+
+    def test_rain_tomorrow(self):
+        """내일 강수 → '내일 H시 비'"""
+        api = make_api()
+        now = datetime(2026, 6, 14, 10, 0, tzinfo=TZ)
+        forecast_map = self._make_forecast(now, 1, "1200", pty="1")
+        api._cache_forecast_map = forecast_map
+        result = api._merge_all(now, None, None, {})
+        assert result["weather"]["rain_start_time"] == "내일 12시 비"
+
+    def test_rain_day_after_tomorrow(self):
+        """모레 강수 → '모레(M/D) H시 소나기'"""
+        api = make_api()
+        now = datetime(2026, 6, 14, 10, 0, tzinfo=TZ)
+        target = now + timedelta(days=2)
+        forecast_map = self._make_forecast(now, 2, "0900", pty="4")
+        api._cache_forecast_map = forecast_map
+        result = api._merge_all(now, None, None, {})
+        expected = f"모레({target.month}/{target.day}) 9시 소나기"
+        assert result["weather"]["rain_start_time"] == expected
+
+    def test_rain_with_minute(self):
+        """강수 시각에 분이 있을 때 '오늘 H시 M분 비'"""
+        api = make_api()
+        now = datetime(2026, 6, 14, 10, 0, tzinfo=TZ)
+        d_str = now.strftime("%Y%m%d")
+        forecast_map = {d_str: {"1530": {"PTY": "1", "SKY": "4", "TMP": "20",
+                                          "REH": "80", "WSD": "2.0", "POP": "80"}}}
+        api._cache_forecast_map = forecast_map
+        result = api._merge_all(now, None, None, {})
+        assert result["weather"]["rain_start_time"] == "오늘 15시 30분 비"
+
+    def test_past_rain_ignored(self):
+        """현재 시각 이전 강수 슬롯은 무시 → 강수없음"""
+        api = make_api()
+        now = datetime(2026, 6, 14, 16, 0, tzinfo=TZ)
+        d_str = now.strftime("%Y%m%d")
+        # 15시 슬롯(과거)에만 강수
+        forecast_map = {d_str: {"1500": {"PTY": "1", "SKY": "4", "TMP": "20",
+                                          "REH": "80", "WSD": "2.0", "POP": "80"}}}
+        api._cache_forecast_map = forecast_map
+        result = api._merge_all(now, None, None, {})
+        assert result["weather"]["rain_start_time"] == "강수없음"
+
+    def test_rain_beyond_day2_ignored(self):
+        """3일 이후 강수는 탐색 안 함 → 강수없음"""
+        api = make_api()
+        now = datetime(2026, 6, 14, 10, 0, tzinfo=TZ)
+        forecast_map = self._make_forecast(now, 3, "1200", pty="1")
+        api._cache_forecast_map = forecast_map
+        result = api._merge_all(now, None, None, {})
+        assert result["weather"]["rain_start_time"] == "강수없음"
+
+    def test_rain_snow(self):
+        """PTY=3 → '눈'"""
+        api = make_api()
+        now = datetime(2026, 6, 14, 10, 0, tzinfo=TZ)
+        forecast_map = self._make_forecast(now, 0, "1800", pty="3")
+        api._cache_forecast_map = forecast_map
+        result = api._merge_all(now, None, None, {})
+        assert result["weather"]["rain_start_time"] == "오늘 18시 눈"
+
+    def test_rain_sleet(self):
+        """PTY=2 → '비/눈'"""
+        api = make_api()
+        now = datetime(2026, 6, 14, 10, 0, tzinfo=TZ)
+        forecast_map = self._make_forecast(now, 1, "0600", pty="2")
+        api._cache_forecast_map = forecast_map
+        result = api._merge_all(now, None, None, {})
+        assert result["weather"]["rain_start_time"] == "내일 6시 비/눈"
