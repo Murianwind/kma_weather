@@ -2,14 +2,14 @@
 import pytest
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock  # AsyncMock 추가
 
 from custom_components.kma_weather.api_kma import KMAWeatherAPI
 
 TZ = ZoneInfo("Asia/Seoul")
 
 def make_api():
-    api = KMAWeatherAPI(MagicMock(), "TEST_KEY")  # reg_id 제거
+    api = KMAWeatherAPI(MagicMock(), "TEST_KEY")
     api.lat, api.lon, api.nx, api.ny = 37.56, 126.98, 60, 127
     return api
 
@@ -182,6 +182,7 @@ class TestBoundaryTimeScenarios:
         entry_4 = next(e for e in result["weather"]["forecast_daily"] if e["_day_index"] == 4)
         assert entry_4["native_temperature"] == float(20 + mid_day_idx)
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # _get_mid_term 재시도 및 _is_valid 추가 커버리지
 # ══════════════════════════════════════════════════════════════════════════════
@@ -191,10 +192,13 @@ class TestGetMidTermRetry:
 
     @pytest.mark.asyncio
     async def test_empty_response_retries_and_succeeds(self):
-        """최신 응답 비어있을 때 이전 시각으로 재시도 성공"""
+        """
+        [Given] 최신 tmFc 응답이 빈 배열
+        [When]  _get_mid_term 호출
+        [Then]  이전 시각으로 재시도 후 정상 응답 반환 (총 호출 4회)
+        """
         api = make_api()
         now = datetime(2026, 6, 1, 10, 0, tzinfo=TZ)
-        tm_fc_dt = api._get_mid_base_dt(now)
 
         empty_resp = {"response": {"header": {"resultCode": "00"},
                                    "body": {"items": {"item": []}}}}
@@ -205,7 +209,6 @@ class TestGetMidTermRetry:
 
         async def mock_fetch(url, params, **kwargs):
             call_count["n"] += 1
-            # 처음 2번(최신)은 빈 응답, 이후(재시도)는 정상 응답
             if call_count["n"] <= 2:
                 return empty_resp
             if "getMidTa" in url:
@@ -216,43 +219,50 @@ class TestGetMidTermRetry:
         r0, r1, dt = await api._get_mid_term(now, "11B10101", "11B00000")
         assert r0 is not None
         assert r1 is not None
-        assert call_count["n"] == 4  # 최신 2번 + 재시도 2번
+        assert call_count["n"] == 4
 
     @pytest.mark.asyncio
     async def test_empty_response_retries_and_fails(self):
-        """최신 응답 비어있고 재시도도 비어있을 때 빈 튜플 반환"""
+        """
+        [Given] 최신 + 재시도 모두 빈 응답
+        [When]  _get_mid_term 호출
+        [Then]  tm_fc_dt는 반환되고 r0/r1은 빈 응답 그대로
+        """
         api = make_api()
         now = datetime(2026, 6, 1, 10, 0, tzinfo=TZ)
 
         empty_resp = {"response": {"header": {"resultCode": "00"},
                                    "body": {"items": {"item": []}}}}
-
         api._fetch = AsyncMock(return_value=empty_resp)
         r0, r1, dt = await api._get_mid_term(now, "11B10101", "11B00000")
-        # 재시도도 실패 → r0, r1은 빈 응답 그대로
         assert dt is not None
 
     @pytest.mark.asyncio
     async def test_is_valid_returns_false_for_unsubscribed(self):
-        """_is_valid에서 UNSUBSCRIBED 문자열은 False 반환"""
+        """
+        [Given] 미신청 응답 코드(30)
+        [When]  _get_mid_term 호출
+        [Then]  ("UNSUBSCRIBED", None, tm_fc_dt) 반환
+        """
         api = make_api()
         now = datetime(2026, 6, 1, 10, 0, tzinfo=TZ)
 
         unsubscribed_resp = {"response": {"header": {"resultCode": "30"}}}
         api._fetch = AsyncMock(return_value=unsubscribed_resp)
         result = await api._get_mid_term(now, "11B10101", "11B00000")
-        # 미신청 코드 → ("UNSUBSCRIBED", None, tm_fc_dt)
         assert result[0] == "UNSUBSCRIBED"
         assert result[1] is None
 
     @pytest.mark.asyncio
     async def test_retry_uses_prev_hour_correctly_at_06(self):
-        """tmFc가 06시일 때 재시도는 전날 18시를 사용"""
+        """
+        [Given] tmFc=당일 06시 (06:31 기준)
+        [When]  빈 응답으로 재시도 발생
+        [Then]  재시도 tmFc는 전날 18시여야 함
+        """
         api = make_api()
-        # 06:31 → tmFc = 당일 06시
         now = datetime(2026, 6, 1, 6, 31, tzinfo=TZ)
-        tm_fc_dt = api._get_mid_base_dt(now)
-        assert tm_fc_dt.hour == 6
+        assert api._get_mid_base_dt(now).hour == 6
 
         called_bases = []
         empty_resp = {"response": {"header": {"resultCode": "00"},
@@ -264,19 +274,19 @@ class TestGetMidTermRetry:
 
         api._fetch = mock_fetch
         await api._get_mid_term(now, "11B10101", "11B00000")
-
-        # 재시도 tmFc는 전날 18시여야 함
-        retry_bases = called_bases[2:]  # 처음 2개는 최신, 이후가 재시도
+        retry_bases = called_bases[2:]
         assert any("18" in b[-4:] for b in retry_bases)
 
     @pytest.mark.asyncio
     async def test_retry_uses_prev_hour_correctly_at_18(self):
-        """tmFc가 18시일 때 재시도는 당일 06시를 사용"""
+        """
+        [Given] tmFc=당일 18시 (18:31 기준)
+        [When]  빈 응답으로 재시도 발생
+        [Then]  재시도 tmFc는 당일 06시여야 함
+        """
         api = make_api()
-        # 18:31 → tmFc = 당일 18시
         now = datetime(2026, 6, 1, 18, 31, tzinfo=TZ)
-        tm_fc_dt = api._get_mid_base_dt(now)
-        assert tm_fc_dt.hour == 18
+        assert api._get_mid_base_dt(now).hour == 18
 
         called_bases = []
         empty_resp = {"response": {"header": {"resultCode": "00"},
@@ -288,6 +298,5 @@ class TestGetMidTermRetry:
 
         api._fetch = mock_fetch
         await api._get_mid_term(now, "11B10101", "11B00000")
-
         retry_bases = called_bases[2:]
         assert any("0600" in b[-4:] for b in retry_bases)
