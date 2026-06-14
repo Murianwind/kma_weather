@@ -585,3 +585,242 @@ class TestRegressions:
         assert called["air"], "air API가 호출되지 않음 (_should_call 오류)"
         assert called["warning"], "warning API가 호출되지 않음 (_should_call 오류)"
         assert called["pollen"], "pollen API가 호출되지 않음 (_should_call 오류)"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# config_flow.py 추가 커버리지
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestConfigFlowAdditional:
+    """config_flow.py 미커버 분기 추가 테스트"""
+
+    @pytest.mark.asyncio
+    async def test_async_step_user_no_input_shows_form(self, hass):
+        """user_input 없이 호출 시 폼을 표시해야 함"""
+        from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
+        flow = KMAWeatherConfigFlow()
+        flow.hass = hass
+        result = await flow.async_step_user(user_input=None)
+        assert result["type"] == "form"
+        assert result["step_id"] == "user"
+        assert result["errors"] == {}
+
+    @pytest.mark.asyncio
+    async def test_async_step_user_invalid_api_key_shows_error(self, hass, aioclient_mock):
+        """API 키 검증 실패 시 errors에 error_key가 담겨야 함"""
+        from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
+        aioclient_mock.get(
+            "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+            status=200,
+            json={"response": {"header": {"resultCode": "30"}}},
+        )
+        flow = KMAWeatherConfigFlow()
+        flow.hass = hass
+        result = await flow.async_step_user(user_input={
+            "api_key": "bad_key",
+            "prefix": "test",
+            "location_entity": None,
+        })
+        assert result["type"] == "form"
+        assert "api_key" in result["errors"]
+
+    @pytest.mark.asyncio
+    async def test_async_step_user_no_location_entity_uses_default_name(self, hass, aioclient_mock):
+        """location_entity 없을 때 이름이 '우리집'이어야 함"""
+        from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
+        from homeassistant.data_entry_flow import FlowResultType
+        aioclient_mock.get(
+            "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+            status=200,
+            json={"response": {"header": {"resultCode": "00"}}},
+        )
+        flow = KMAWeatherConfigFlow()
+        flow.hass = hass
+        flow.context = {"source": "user"}
+        result = await flow.async_step_user(user_input={
+            "api_key": "valid_key",
+            "prefix": "home",
+        })
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert "우리집" in result["title"]
+
+    @pytest.mark.asyncio
+    async def test_async_step_user_entity_id_no_state_uses_suffix(self, hass, aioclient_mock):
+        """location_entity 있지만 state 없을 때 entity_id 뒤에서 이름 추출해야 함"""
+        from custom_components.kma_weather.config_flow import KMAWeatherConfigFlow
+        from homeassistant.data_entry_flow import FlowResultType
+        aioclient_mock.get(
+            "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+            status=200,
+            json={"response": {"header": {"resultCode": "00"}}},
+        )
+        flow = KMAWeatherConfigFlow()
+        flow.hass = hass
+        flow.context = {"source": "user"}
+        result = await flow.async_step_user(user_input={
+            "api_key": "valid_key",
+            "prefix": "home",
+            "location_entity": "zone.my_home",
+        })
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert "my_home" in result["title"]
+
+    @pytest.mark.asyncio
+    async def test_validate_api_key_network_exception(self, hass, aioclient_mock):
+        """네트워크 오류 시 cannot_connect 반환해야 함"""
+        from custom_components.kma_weather.config_flow import _validate_api_key
+        aioclient_mock.get(
+            "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+            exc=Exception("Connection refused"),
+        )
+        result = await _validate_api_key(hass, "any_key")
+        assert result == "cannot_connect"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# api_kma._fetch 추가 커버리지
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFetchAdditional:
+    """_fetch 미커버 분기 추가 테스트"""
+
+    def _make_api(self):
+        return KMAWeatherAPI(MagicMock(), "key")
+
+    @pytest.mark.asyncio
+    async def test_fetch_429_retries_then_returns_error(self):
+        """429 첫 번째 → 재시도 → 두 번째도 429 → _http_error 반환"""
+        api = self._make_api()
+        call_count = {"n": 0}
+
+        class MockResp:
+            status = 429
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+
+        def mock_get(url, **kwargs):
+            call_count["n"] += 1
+            return MockResp()
+
+        api.session.get = mock_get
+        with patch("custom_components.kma_weather.api_kma.asyncio.sleep", return_value=None):
+            result = await api._fetch("http://test.com", {})
+        assert result == {"_http_error": "429"}
+        assert call_count["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_401_returns_http_error(self):
+        """401 응답 시 _http_error 반환"""
+        api = self._make_api()
+
+        class MockResp:
+            status = 401
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+
+        api.session.get = lambda *a, **kw: MockResp()
+        result = await api._fetch("http://test.com", {})
+        assert result == {"_http_error": "401"}
+
+    @pytest.mark.asyncio
+    async def test_fetch_404_returns_http_error(self):
+        """404 응답 시 _http_error 반환"""
+        api = self._make_api()
+
+        class MockResp:
+            status = 404
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+
+        api.session.get = lambda *a, **kw: MockResp()
+        result = await api._fetch("http://test.com", {})
+        assert result == {"_http_error": "404"}
+
+    @pytest.mark.asyncio
+    async def test_fetch_invalid_json_returns_none(self):
+        """JSON 파싱 실패 시 None 반환"""
+        api = self._make_api()
+
+        class MockResp:
+            status = 200
+            def raise_for_status(self): pass
+            async def text(self): return "NOT_JSON<xml>"
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+
+        api.session.get = lambda *a, **kw: MockResp()
+        result = await api._fetch("http://test.com", {})
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_non_retryable_exception_breaks_immediately(self):
+        """재시도 대상 아닌 예외는 즉시 None 반환"""
+        api = self._make_api()
+        call_count = {"n": 0}
+
+        def mock_get(*a, **kw):
+            call_count["n"] += 1
+            raise ValueError("unexpected")
+
+        api.session.get = mock_get
+        result = await api._fetch("http://test.com", {})
+        assert result is None
+        assert call_count["n"] == 1  # 재시도 없이 즉시 종료
+
+    @pytest.mark.asyncio
+    async def test_fetch_data_exception_in_collection_returns_none(self):
+        """fetch_data 내부 수집 중 예외 발생 시 None 반환"""
+        api = self._make_api()
+        api.nx, api.ny = 60, 127
+
+        async def mock_short(now):
+            raise Exception("갑작스러운 오류")
+
+        api._get_short_term = mock_short
+        result = await api.fetch_data(
+            lat=37.56, lon=126.98, nx=60, ny=127,
+            reg_id_temp="11B10101", reg_id_land="11B00000",
+            warn_area_code="L1100200",
+            pollen_area_no="", pollen_area_name="",
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_data_should_call_false_skips_air_warning_pollen(self):
+        """_should_call이 False인 경우 air={}, warning=None, pollen=None"""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        api = self._make_api()
+        api._approved_apis = set()
+        api._pending_apis = set()  # air/warning/pollen 모두 pending에서도 제거
+
+        api._get_short_term = AsyncMock(return_value=None)
+        api._get_mid_term = AsyncMock(return_value=(None, None, datetime(2026, 6, 1, 6, 0, tzinfo=ZoneInfo("Asia/Seoul"))))
+        api._get_address = AsyncMock(return_value="서울")
+
+        called = {"air": False, "warning": False, "pollen": False}
+
+        async def mock_air(lat, lon):
+            called["air"] = True
+            return {}
+
+        async def mock_warning(code):
+            called["warning"] = True
+            return "없음"
+
+        async def mock_pollen(now, no, name):
+            called["pollen"] = True
+            return {}
+
+        api._get_air_quality = mock_air
+        api._get_warning = mock_warning
+        api._get_pollen = mock_pollen
+
+        await api.fetch_data(
+            lat=37.56, lon=126.98, nx=60, ny=127,
+            reg_id_temp="11B10101", reg_id_land="11B00000",
+            warn_area_code="L1100200",
+            pollen_area_no="", pollen_area_name="",
+        )
+        assert not called["air"]
+        assert not called["warning"]
+        assert not called["pollen"]
