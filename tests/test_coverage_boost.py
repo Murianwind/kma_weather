@@ -336,9 +336,18 @@ class TestPollenAdditionalCoverage:
 
     @pytest.mark.asyncio
     async def test_today_cache_exists_19h_tomorrow_g_none(self):
-        """today 캐시 있고 19시 이후 tomorrow 갱신 시 g=None → tomorrow 캐시 초기화"""
+        """
+        [Given] today 캐시 있음 + pollen 승인됨(_pending 없음) + 19시 이후
+                tomorrow API가 빈 items 반환 → g=None
+        [When]  _get_pollen 호출
+        [Then]  today 캐시 반환 + tomorrow 캐시 초기화됨
+        """
         api = self._make_api()
         today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+
+        # _pending에서 제거 + _approved에만 있어야 캐시를 신뢰함
+        api._pending_apis.discard("pollen")
+        api._approved_apis.add("pollen")
 
         for k in ("pine", "oak", "grass"):
             api._pollen_cache[k]["today"] = "좋음"
@@ -352,10 +361,10 @@ class TestPollenAdditionalCoverage:
                     "body": {"items": {"item": []}}}}
 
         api._fetch = mock_fetch
-        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(hour=19, minute=0)
+        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(hour=19, minute=0, second=0, microsecond=0)
         result = await api._get_pollen(now, "1111051500", "서울")
 
-        assert result is not None
+        assert result is not None, "today 캐시 있을 때 None 반환됨"
         assert result.get("pine") == "좋음"
         for k in ("pine", "oak", "grass"):
             assert api._pollen_cache[k]["tomorrow"] is None
@@ -363,23 +372,29 @@ class TestPollenAdditionalCoverage:
 
     @pytest.mark.asyncio
     async def test_today_cache_exists_19h_tomorrow_updated(self):
-        """today 캐시 있고 19시 이후 tomorrow 갱신 성공"""
+        """
+        [Given] today 캐시 있음 + pollen 승인됨(_pending 없음) + 19시 이후
+        [When]  _get_pollen 호출
+        [Then]  today 캐시 반환 + tomorrow 캐시 갱신됨
+        """
         api = self._make_api()
         today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
 
-        # today 캐시 세팅 + pending 해제 (pending 상태면 캐시 무효화되므로)
-        api._approved_apis.add("pollen")
+        # _pending에서 제거 + _approved에만 있어야 캐시를 신뢰함
+        # (_pending에 있으면 소스코드가 캐시를 즉시 초기화한다)
         api._pending_apis.discard("pollen")
+        api._approved_apis.add("pollen")
+
         for k in ("pine", "oak", "grass"):
             api._pollen_cache[k]["today"] = "좋음"
             api._pollen_cache[k]["today_date"] = today_str
 
         api._fetch = AsyncMock(return_value=self._ok_response(today="2"))
-        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(hour=19, minute=0)
+        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(hour=19, minute=0, second=0, microsecond=0)
         result = await api._get_pollen(now, "1111051500", "서울")
 
-        assert result is not None
-        assert result.get("pine") == "좋음"  # today 캐시 반환
+        assert result is not None, "today 캐시 있을 때 None 반환됨"
+        assert result.get("pine") == "좋음", f"today 캐시 반환 실패: {result.get('pine')}"
         for k in ("pine", "oak", "grass"):
-            assert api._pollen_cache[k]["tomorrow"] is not None
+            assert api._pollen_cache[k]["tomorrow"] is not None, f"{k} tomorrow 캐시 갱신 안 됨"
             assert api._pollen_cache[k]["tomorrow_date"] == today_str
