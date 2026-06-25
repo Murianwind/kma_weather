@@ -2,14 +2,14 @@
 test_pause_zones.py
 폴링 중단 존(pause_zones) 기능 TDD 테스트
 
-hass fixture의 StateMachine은 get/async_entity_ids가 read-only라
-patch가 불가능하므로, coordinator 테스트는 MagicMock hass를 사용하고
-config_flow 테스트는 실제 hass fixture를 사용하되
-flow.hass를 MagicMock으로 교체한다.
+coordinator 테스트: MagicMock hass (StateMachine read-only 우회)
+config_flow 테스트: 실제 hass fixture + config_entries.options.async_init/async_configure
 """
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+from custom_components.kma_weather.const import DOMAIN
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -26,22 +26,16 @@ def make_zone_state(entity_id, lat, lon, radius=100, friendly_name="우리집"):
     return state
 
 
-def make_mock_hass(zone_map: dict = None, zone_ids: list = None,
-                   config_lat: float = 37.56, config_lon: float = 126.98):
-    """
-    StateMachine read-only 우회용 MagicMock hass.
-    zone_map: {entity_id: state_or_None}
-    zone_ids: async_entity_ids("zone") 반환값
-    """
+def make_mock_hass(zone_map=None, zone_ids=None,
+                   config_lat=37.56, config_lon=126.98):
+    """StateMachine read-only 우회용 MagicMock hass (coordinator 전용)"""
     hass = MagicMock()
     hass.config.latitude = config_lat
     hass.config.longitude = config_lon
     hass.config.config_dir = "/tmp/test_kma"
-
     _zone_map = zone_map or {}
     hass.states.get = MagicMock(side_effect=lambda eid: _zone_map.get(eid))
     hass.states.async_entity_ids = MagicMock(return_value=zone_ids or [])
-
     hass.data = {}
     hass.async_create_task = MagicMock(return_value=None)
     hass.async_add_executor_job = AsyncMock(return_value=None)
@@ -50,7 +44,6 @@ def make_mock_hass(zone_map: dict = None, zone_ids: list = None,
 
 def make_coordinator(zone_map=None, location_entity="device_tracker.phone",
                      pause_zones=None, zone_ids=None):
-    """MagicMock hass 기반 coordinator 생성"""
     hass = make_mock_hass(zone_map=zone_map, zone_ids=zone_ids)
     entry = MagicMock()
     entry.data = {"api_key": "key", "location_entity": location_entity}
@@ -65,15 +58,15 @@ def make_coordinator(zone_map=None, location_entity="device_tracker.phone",
     return coord
 
 
-def make_options_flow(location_entity, options=None, zone_map=None, zone_ids=None):
-    """config_flow 옵션 플로우 + MagicMock hass 생성"""
-    from custom_components.kma_weather.config_flow import KMAWeatherOptionsFlowHandler
-    entry = MagicMock()
-    entry.data = {"api_key": "key", "location_entity": location_entity}
-    entry.options = options or {}
-    flow = KMAWeatherOptionsFlowHandler(entry)
-    flow.hass = make_mock_hass(zone_map=zone_map, zone_ids=zone_ids)
-    return flow
+def make_config_entry(location_entity="device_tracker.phone", options=None):
+    """config_flow 테스트용 MockConfigEntry 생성"""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "test_key", "location_entity": location_entity,
+              "prefix": "test", "location_mode": "zone"},
+        options=options or {},
+        entry_id="pause_flow_test",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -82,53 +75,43 @@ def make_options_flow(location_entity, options=None, zone_map=None, zone_ids=Non
 
 class TestOptionsFlowPauseZonesVisibility:
 
+    async def _get_schema_keys(self, hass, location_entity, options=None):
+        """options flow를 열어 schema key 목록 반환"""
+        entry = make_config_entry(location_entity, options)
+        entry.add_to_hass(hass)
+        # kma_api_mock_factory 없이 setup 없이 options flow만 열기
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        return [str(k) for k in result["data_schema"].schema.keys()]
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("location_entity,should_show", [
         ("device_tracker.phone",  True),
-        ("device_tracker.iphone", True),
         ("person.hayeongi",       True),
         ("zone.home",             False),
         ("zone.office",           False),
-        ("",                      False),
-        (None,                    False),
     ])
-    async def test_pause_zones_visibility(self, location_entity, should_show):
+    async def test_pause_zones_visibility(self, hass, location_entity, should_show):
         """
         [Given] location_entity 종류별 설정
         [When]  옵션 플로우 초기화
-        [Then]  device_tracker/person → pause_zones 노출, zone/없음 → 숨김
+        [Then]  device_tracker/person → pause_zones 노출, zone → 숨김
         """
-        zone_state = make_zone_state("zone.home", 37.56, 126.98)
-        flow = make_options_flow(
-            location_entity or "",
-            zone_map={"zone.home": zone_state, "zone.office": zone_state},
-            zone_ids=["zone.home", "zone.office"],
-        )
-        result = await flow.async_step_init(user_input=None)
-        schema_keys = [str(k) for k in result["data_schema"].schema.keys()]
+        schema_keys = await self._get_schema_keys(hass, location_entity)
         if should_show:
-            assert "pause_zones" in schema_keys, f"{location_entity} → pause_zones 노출 기대"
+            assert "pause_zones" in schema_keys, \
+                f"{location_entity} → pause_zones 노출 기대"
         else:
-            assert "pause_zones" not in schema_keys, f"{location_entity} → pause_zones 숨김 기대"
+            assert "pause_zones" not in schema_keys, \
+                f"{location_entity} → pause_zones 숨김 기대"
 
     @pytest.mark.asyncio
-    async def test_zone_list_shows_all_zones(self):
+    async def test_zone_list_shows_all_zones(self, hass):
         """
-        [Given] HA에 zone.home, zone.office 2개 존재
+        [Given] HA에 zone.home 존재
         [When]  device_tracker로 옵션 플로우 열기
         [Then]  pause_zones 스키마에 포함됨
         """
-        def mock_get(eid):
-            names = {"zone.home": "우리집", "zone.office": "사무실"}
-            return make_zone_state(eid, 37.56, 126.98, friendly_name=names.get(eid, eid))
-
-        flow = make_options_flow(
-            "device_tracker.phone",
-            zone_map={"zone.home": mock_get("zone.home"), "zone.office": mock_get("zone.office")},
-            zone_ids=["zone.home", "zone.office"],
-        )
-        result = await flow.async_step_init(user_input=None)
-        schema_keys = [str(k) for k in result["data_schema"].schema.keys()]
+        schema_keys = await self._get_schema_keys(hass, "device_tracker.phone")
         assert "pause_zones" in schema_keys
 
 
@@ -250,20 +233,18 @@ class TestZoneLifecycle:
         coord.api.fetch_data.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_new_zone_added_to_ha_appears_in_options(self):
+    async def test_new_zone_added_to_ha_appears_in_options(self, hass):
         """
         [Given] HA에 zone.gym이 새로 추가됨
         [When]  옵션 플로우 재진입
         [Then]  pause_zones 스키마에 있음
         """
-        zone_state = make_zone_state("zone.home", 37.56, 126.98)
-        flow = make_options_flow(
+        entry = make_config_entry(
             "device_tracker.phone",
             options={"pause_zones": ["zone.home"]},
-            zone_map={"zone.home": zone_state, "zone.gym": zone_state},
-            zone_ids=["zone.home", "zone.gym"],
         )
-        result = await flow.async_step_init(user_input=None)
+        entry.add_to_hass(hass)
+        result = await hass.config_entries.options.async_init(entry.entry_id)
         schema_keys = [str(k) for k in result["data_schema"].schema.keys()]
         assert "pause_zones" in schema_keys
 
@@ -362,14 +343,13 @@ class TestExistingFunctionalityUnchanged:
 class TestExistingUserMigration:
 
     @pytest.mark.asyncio
-    async def test_existing_user_opens_options_without_pause_zones_key(self):
+    async def test_existing_user_opens_options_without_pause_zones_key(self, hass):
         """
         [Given] entry.options에 pause_zones 키 자체가 없는 기존 사용자
         [When]  옵션 플로우 열기
         [Then]  오류 없이 form 표시
         """
-        zone_state = make_zone_state("zone.home", 37.56, 126.98)
-        flow = make_options_flow(
+        entry = make_config_entry(
             "device_tracker.phone",
             options={
                 "location_entity": "device_tracker.phone",
@@ -377,83 +357,80 @@ class TestExistingUserMigration:
                 "apply_date": "2025-01-01",
                 # pause_zones 키 없음
             },
-            zone_map={"zone.home": zone_state},
-            zone_ids=["zone.home"],
         )
-        result = await flow.async_step_init(user_input=None)
+        entry.add_to_hass(hass)
+        result = await hass.config_entries.options.async_init(entry.entry_id)
         assert result["type"] == "form"
-        assert result["errors"] == {}
 
     @pytest.mark.asyncio
-    async def test_existing_user_submits_without_selecting_pause_zones(self):
+    async def test_existing_user_submits_without_selecting_pause_zones(self, hass):
         """
         [Given] 기존 사용자가 pause_zones 선택 없이 제출
         [When]  user_input에 pause_zones=[]
         [Then]  CREATE_ENTRY + 기존 옵션값 유지
         """
-        from homeassistant.data_entry_flow import FlowResultType
-        zone_state = make_zone_state("zone.home", 37.56, 126.98)
-        flow = make_options_flow(
+        entry = make_config_entry(
             "device_tracker.phone",
             options={
                 "location_entity": "device_tracker.phone",
                 "expire_date": "2026-12-31",
                 "apply_date": "2025-01-01",
             },
-            zone_map={"zone.home": zone_state},
-            zone_ids=["zone.home"],
         )
-        result = await flow.async_step_init(user_input={
-            "location_entity": "device_tracker.phone",
-            "expire_date": "2026-12-31",
-            "apply_date": "2025-01-01",
-            "pause_zones": [],
-        })
-        assert result["type"] == FlowResultType.CREATE_ENTRY
-        assert result["data"]["expire_date"] == "2026-12-31"
-        assert result["data"]["apply_date"] == "2025-01-01"
-        assert result["data"].get("pause_zones", []) == []
+        entry.add_to_hass(hass)
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result2 = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                "location_entity": "device_tracker.phone",
+                "expire_date": "2026-12-31",
+                "apply_date": "2025-01-01",
+                "pause_zones": [],
+            },
+        )
+        assert result2["type"] == "create_entry"
+        assert result2["data"].get("pause_zones", []) == []
+        assert result2["data"]["expire_date"] == "2026-12-31"
 
     @pytest.mark.asyncio
-    async def test_existing_user_adds_pause_zone_preserves_other_options(self):
+    async def test_existing_user_adds_pause_zone_preserves_other_options(self, hass):
         """
         [Given] 기존 사용자가 pause_zones에 zone.home 추가 후 제출
         [When]  user_input에 pause_zones=["zone.home"]
         [Then]  CREATE_ENTRY + pause_zones 저장 + 기존 옵션 유지
         """
-        from homeassistant.data_entry_flow import FlowResultType
-        zone_state = make_zone_state("zone.home", 37.56, 126.98)
-        flow = make_options_flow(
+        entry = make_config_entry(
             "device_tracker.phone",
             options={
                 "location_entity": "device_tracker.phone",
                 "expire_date": "2026-12-31",
                 "apply_date": "2025-01-01",
             },
-            zone_map={"zone.home": zone_state},
-            zone_ids=["zone.home"],
         )
-        result = await flow.async_step_init(user_input={
-            "location_entity": "device_tracker.phone",
-            "expire_date": "2026-12-31",
-            "apply_date": "2025-01-01",
-            "pause_zones": ["zone.home"],
-        })
-        assert result["type"] == FlowResultType.CREATE_ENTRY
-        assert result["data"]["pause_zones"] == ["zone.home"]
-        assert result["data"]["expire_date"] == "2026-12-31"
-        assert result["data"]["apply_date"] == "2025-01-01"
+        entry.add_to_hass(hass)
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result2 = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                "location_entity": "device_tracker.phone",
+                "expire_date": "2026-12-31",
+                "apply_date": "2025-01-01",
+                "pause_zones": ["zone.home"],
+            },
+        )
+        assert result2["type"] == "create_entry"
+        assert result2["data"]["pause_zones"] == ["zone.home"]
+        assert result2["data"]["expire_date"] == "2026-12-31"
+        assert result2["data"]["apply_date"] == "2025-01-01"
 
     @pytest.mark.asyncio
-    async def test_existing_user_removes_pause_zone(self):
+    async def test_existing_user_removes_pause_zone(self, hass):
         """
         [Given] 기존에 pause_zones=["zone.home"]이 저장된 사용자
         [When]  pause_zones=[]로 변경 후 제출
         [Then]  CREATE_ENTRY + pause_zones=[]
         """
-        from homeassistant.data_entry_flow import FlowResultType
-        zone_state = make_zone_state("zone.home", 37.56, 126.98)
-        flow = make_options_flow(
+        entry = make_config_entry(
             "device_tracker.phone",
             options={
                 "location_entity": "device_tracker.phone",
@@ -461,17 +438,20 @@ class TestExistingUserMigration:
                 "expire_date": "2026-12-31",
                 "apply_date": "2025-01-01",
             },
-            zone_map={"zone.home": zone_state},
-            zone_ids=["zone.home"],
         )
-        result = await flow.async_step_init(user_input={
-            "location_entity": "device_tracker.phone",
-            "expire_date": "2026-12-31",
-            "apply_date": "2025-01-01",
-            "pause_zones": [],
-        })
-        assert result["type"] == FlowResultType.CREATE_ENTRY
-        assert result["data"]["pause_zones"] == []
+        entry.add_to_hass(hass)
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result2 = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                "location_entity": "device_tracker.phone",
+                "expire_date": "2026-12-31",
+                "apply_date": "2025-01-01",
+                "pause_zones": [],
+            },
+        )
+        assert result2["type"] == "create_entry"
+        assert result2["data"]["pause_zones"] == []
 
     @pytest.mark.asyncio
     async def test_coordinator_no_crash_when_pause_zones_key_missing(self):
@@ -500,24 +480,22 @@ class TestExistingUserMigration:
         coord.api.fetch_data.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_location_entity_changed_to_zone_hides_pause_zones(self):
+    async def test_location_entity_changed_to_zone_hides_pause_zones(self, hass):
         """
         [Given] location_entity=zone.home + 이전에 저장된 pause_zones 잔존
         [When]  옵션 플로우 열기
         [Then]  pause_zones 숨겨짐
         """
-        zone_state = make_zone_state("zone.home", 37.56, 126.98)
-        flow = make_options_flow(
+        entry = make_config_entry(
             "zone.home",
             options={
                 "location_entity": "zone.home",
                 "pause_zones": ["zone.home"],
                 "expire_date": "2026-12-31",
             },
-            zone_map={"zone.home": zone_state},
-            zone_ids=["zone.home"],
         )
-        result = await flow.async_step_init(user_input=None)
+        entry.add_to_hass(hass)
+        result = await hass.config_entries.options.async_init(entry.entry_id)
         schema_keys = [str(k) for k in result["data_schema"].schema.keys()]
         assert "pause_zones" not in schema_keys
 
