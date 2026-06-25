@@ -399,6 +399,13 @@ class TestExistingUserMigration:
         [When]  user_input에 pause_zones=["zone.home"]
         [Then]  CREATE_ENTRY + pause_zones 저장 + 기존 옵션 유지
         """
+        # pause_zones selector가 실제 HA에 등록된 zone만 허용하므로 먼저 등록
+        hass.states.async_set(
+            "zone.home", "0",
+            {"latitude": 37.56, "longitude": 126.98, "radius": 100,
+             "friendly_name": "우리집"},
+        )
+
         entry = make_config_entry(
             "device_tracker.phone",
             options={
@@ -430,6 +437,13 @@ class TestExistingUserMigration:
         [When]  pause_zones=[]로 변경 후 제출
         [Then]  CREATE_ENTRY + pause_zones=[]
         """
+        # options flow 스키마 생성 시 zone 목록 조회하므로 등록 필요
+        hass.states.async_set(
+            "zone.home", "0",
+            {"latitude": 37.56, "longitude": 126.98, "radius": 100,
+             "friendly_name": "우리집"},
+        )
+
         entry = make_config_entry(
             "device_tracker.phone",
             options={
