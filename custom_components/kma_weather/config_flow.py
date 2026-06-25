@@ -15,6 +15,9 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# pause_zones 옵션을 노출할 location_entity 도메인
+_MOBILE_ENTITY_DOMAINS = ("device_tracker", "person")
+
 # 공공데이터포털 API 에러 코드 → 사용자 메시지
 _API_ERROR_MESSAGES = {
     "01": "어플리케이션 에러가 발생했습니다. 잠시 후 다시 시도해주세요.",
@@ -25,6 +28,15 @@ _API_ERROR_MESSAGES = {
     "31": "만료된 API 키입니다. 공공데이터포털에서 키를 갱신해주세요.",
     "32": "트래픽이 초과되었습니다. 잠시 후 다시 시도해주세요.",
 }
+
+
+def _is_mobile_entity(entity_id: str | None) -> bool:
+    """location_entity가 device_tracker 또는 person 도메인인지 확인한다."""
+    if not entity_id:
+        return False
+    domain = entity_id.split(".")[0]
+    return domain in _MOBILE_ENTITY_DOMAINS
+
 
 async def _validate_api_key(hass, api_key: str) -> str | None:
     """
@@ -90,7 +102,7 @@ async def _validate_api_key(hass, api_key: str) -> str | None:
         # URL 내의 serviceKey 파라미터 마스킹
         if "serviceKey=" in err_msg:
             err_msg = re.sub(r"serviceKey=[^&'\" ]*", "serviceKey=********", err_msg)
-            
+
         # 입력받은 인코딩된 키와 내부적으로 풀린 키 모두 확인
         for k in (api_key, decoded_key):
             if k and len(k) > 5 and k in err_msg:
@@ -159,31 +171,62 @@ class KMAWeatherOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        # ── location_entity 판단: 모바일 기기(device_tracker/person)만 pause_zones 노출 ──
+        location_entity = (
+            self._config_entry.options.get(CONF_LOCATION_ENTITY)
+            or self._config_entry.data.get(CONF_LOCATION_ENTITY, "")
+        )
+        show_pause_zones = _is_mobile_entity(location_entity)
+
+        # ── HA에 등록된 zone 엔티티 목록 수집 ─────────────────────────────────
+        zone_options = []
+        if show_pause_zones:
+            for entity_id in self.hass.states.async_entity_ids("zone"):
+                state = self.hass.states.get(entity_id)
+                if state:
+                    label = state.attributes.get("friendly_name") or entity_id
+                    zone_options.append(
+                        selector.SelectOptionDict(value=entity_id, label=label)
+                    )
+
+        # ── 스키마 구성 ────────────────────────────────────────────────────
+        schema_dict = {
+            vol.Optional(
+                CONF_LOCATION_ENTITY,
+                default=location_entity,
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["zone", "device_tracker"])
+            ),
+            vol.Optional(
+                CONF_APPLY_DATE,
+                default=self._config_entry.options.get(
+                    CONF_APPLY_DATE,
+                    self._config_entry.data.get(CONF_APPLY_DATE, "")
+                ),
+            ): cv.string,
+            vol.Optional(
+                CONF_EXPIRE_DATE,
+                default=self._config_entry.options.get(
+                    CONF_EXPIRE_DATE,
+                    self._config_entry.data.get(CONF_EXPIRE_DATE, "")
+                ),
+            ): cv.string,
+        }
+
+        # pause_zones: 모바일 기기만 노출
+        if show_pause_zones:
+            schema_dict[vol.Optional(
+                "pause_zones",
+                default=self._config_entry.options.get("pause_zones", []),
+            )] = selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=zone_options,
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            )
+
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({
-                vol.Optional(
-                    CONF_LOCATION_ENTITY,
-                    default=self._config_entry.options.get(
-                        CONF_LOCATION_ENTITY,
-                        self._config_entry.data.get(CONF_LOCATION_ENTITY, "")
-                    ),
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=["zone", "device_tracker"])
-                ),
-                vol.Optional(
-                    CONF_APPLY_DATE,
-                    default=self._config_entry.options.get(
-                        CONF_APPLY_DATE,
-                        self._config_entry.data.get(CONF_APPLY_DATE, "")
-                    ),
-                ): cv.string,
-                vol.Optional(
-                    CONF_EXPIRE_DATE,
-                    default=self._config_entry.options.get(
-                        CONF_EXPIRE_DATE,
-                        self._config_entry.data.get(CONF_EXPIRE_DATE, "")
-                    ),
-                ): cv.string,
-            }),
+            data_schema=vol.Schema(schema_dict),
         )
