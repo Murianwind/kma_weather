@@ -22,9 +22,16 @@ _LOGGER = logging.getLogger(__name__)
 _SF_TS = None
 _SF_EPH = None
 
+# ── pause_zones: 모바일 기기 도메인 ─────────────────────────────────────────
+_MOBILE_ENTITY_DOMAINS = ("device_tracker", "person")
+
+def _is_mobile_entity(entity_id: str | None) -> bool:
+    """location_entity가 device_tracker 또는 person 도메인인지 확인한다."""
+    if not entity_id:
+        return False
+    return entity_id.split(".")[0] in _MOBILE_ENTITY_DOMAINS
+
 # ── 중기예보 구역코드 테이블 (area.json) ────────────────────────────────────
-# 모듈 레벨에서 동기 로드 → HA 시작 시 1회만 실행되며 파일 크기가 작아 실질 영향 미미.
-# 엄격한 비동기 환경 대비: _load_area_data()로 분리하여 첫 coordinator 업데이트 시 실행.
 _AREA: dict = {}
 _TEMP_ID_COORDS: dict[str, tuple[float, float]] = {}
 _EXCLUDE_FROM_NEAREST: frozenset[str] = frozenset()
@@ -40,11 +47,9 @@ def _load_area_data() -> None:
     _LAND_CODE_MAP = [tuple(x) for x in _AREA["land"]]
     _LAND_CODE_MAP_SORTED = sorted(_LAND_CODE_MAP, key=lambda x: len(x[0]), reverse=True)
     _WARN_AREA = json.loads((pathlib.Path(__file__).parent / "warn_area.json").read_text(encoding="utf-8"))
-# prefix 길이 내림차순으로 미리 정렬 → _load_area_data()에서 갱신됨
-_LAND_CODE_MAP_SORTED: list[tuple[str, str]] = []
 
-# ── 특보구역코드 테이블 (warn_area.json) ─────────────────────────────────────
-_WARN_AREA: list[list] = []  # _load_area_data()에서 로드됨
+_LAND_CODE_MAP_SORTED: list[tuple[str, str]] = []
+_WARN_AREA: list[list] = []
 
 
 def _land_code(temp_id: str) -> str | None:
@@ -79,7 +84,6 @@ def _calc_warn_area_code(lat: float, lon: float) -> str | None:
 
 class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
-        # update_interval=None: 자동 주기 업데이트 비활성화, 매시 15분 스케줄로 대체
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=None)
         self.entry = entry
         self.api = KMAWeatherAPI(
@@ -94,7 +98,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._unsub_timer = None
         self._update_lock = asyncio.Lock()
 
-        # ── 위치 기반 구역코드 통합 캐시 (2km 이내 이동 시 재사용) ──────────
         self._cached_area_lat: float | None = None
         self._cached_area_lon: float | None = None
         self._cached_nx: int | None = None
@@ -103,65 +106,50 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._cached_reg_id_land: str | None = None
         self._cached_warn_area_code: str | None = None
 
-        # ── 천문 시각 캐시 (날짜/좌표 변경 시 재계산) ───────────────────────
         self._sun_cache_date: date | None = None
         self._sun_cache_lat: float | None = None
         self._sun_cache_lon: float | None = None
         self._sun_times: dict = {}
 
-                # skyfield: 고정밀 천문 계산 (월출/월몰 포함)
         self._sf_eph = None
         self._sf_ts  = None
         if _SKYFIELD_OK:
             import os as _os, tempfile as _tf
             _sf_dir   = hass.config.config_dir + "/.skyfield"
-            
-            # 환경변수 또는 테스트용 캐시 경로 fallback
             _fallback = _os.environ.get(
                 "SKYFIELD_BSP_DIR",
                 _os.path.join(_tf.gettempdir(), "skyfield_test_cache"),
             )
             if _os.path.exists(_fallback + "/de440s.bsp"):
                 _sf_dir = _fallback
-
-            # 메인 이벤트 루프 블로킹 방지를 위해 파일 로드를 백그라운드 태스크로 위임합니다.
-            # 전역 캐시를 사용하므로 여러 기기가 있어도 시스템 리소스 소모는 1회로 제한됩니다.
             hass.async_create_task(self._async_init_skyfield(_sf_dir))
-
 
         target_entity = entry.data.get(CONF_LOCATION_ENTITY, "default_location")
         safe_key = target_entity.replace(".", "_") if target_entity else entry.entry_id
         self._store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_daily_temp")
         self._store_loaded = False
 
-        # ── API 호출 카운터 ──────────────────────────────────────────────────
         self._api_call_counts: dict[str, int] = {
             "단기예보": 0, "중기예보": 0,
             "에어코리아_측정소": 0, "에어코리아_대기": 0,
             "기상특보": 0, "꽃가루": 0,
         }
-        self._api_call_date: str | None = None   # "YYYYMMDD" 형식
-        # API 호출 카운터는 모든 기기 합산 → 공통 Store 키 사용
+        self._api_call_date: str | None = None
         self._api_call_store = Store(hass, version=1, key=f"{DOMAIN}_global_api_calls")
         self._api_call_store_loaded = False
 
-        # ── 꽃가루 지역코드 룩업 (JSON, 읍면동 단위) ─────────────────────────
-        # pollen_area_map.json: [{"c":"1111051500","n":"서울 종로구 청운효자동","la":37.58,"lo":126.97},...]
         self._pollen_area_data: list[dict] | None = None
         self._pollen_cached_area_no: str | None = None
         self._pollen_cached_area_name: str = ""
         self._pollen_cached_lat: float | None = None
         self._pollen_cached_lon: float | None = None
 
-        # 승인된 API 목록 저장 (재시작/재로드 후 복구)
         self._approved_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_approved_apis")
         self._approved_store_loaded = False
 
-        # api 객체에 카운터 콜백 주입 (api는 이미 위에서 생성됨)
         self._inject_counter()
 
     async def _async_init_skyfield(self, sf_dir: str) -> None:
-        """de440s.bsp 파일을 비동기로 다운로드 후 skyfield 초기화"""
         import asyncio
         try:
             loop = asyncio.get_event_loop()
@@ -170,16 +158,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("skyfield 비동기 초기화 실패: %s", e)
 
     def _sync_init_skyfield(self, sf_dir: str) -> None:
-        """동기 컨텍스트에서 skyfield 로드 (executor에서 실행)"""
         global _SF_TS, _SF_EPH
         if not _SKYFIELD_OK:
             return
-        # 이미 로드된 캐시가 있으면 즉시 재사용
         if _SF_TS is not None and _SF_EPH is not None:
             self._sf_ts = _SF_TS
             self._sf_eph = _SF_EPH
             return
-
         try:
             import os as _os
             _os.makedirs(sf_dir, exist_ok=True)
@@ -193,15 +178,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         except Exception as e:
             _LOGGER.warning("skyfield 백그라운드 초기화 실패: %s", e)
 
-    # ── 위치 → 모든 구역코드 결정 (2km 캐시 통합) ───────────────────────────
     def _resolve_area_codes(self, lat: float, lon: float) -> tuple:
-        """
-        현재 좌표로 단기/중기/특보 구역코드를 한 번에 결정한다.
-        이전 좌표에서 2km 이내 이동이면 캐시를 재사용한다.
-
-        Returns:
-            (nx, ny, reg_id_temp, reg_id_land, warn_area_code)
-        """
         is_moved = False
         if (self._cached_area_lat is not None
                 and haversine(self._cached_area_lat, self._cached_area_lon, lat, lon) > 2.0):
@@ -220,17 +197,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         self._cached_area_lat = lat
         self._cached_area_lon = lon
-        # 위치 변경 시 꽃가루 관련 캐시 전체 무효화
         self._pollen_cached_lat = None
         self._pollen_cached_lon = None
-        # pollen today/tomorrow 캐시도 무효화 → 새 위치 데이터 호출
         for kind in ("pine", "oak", "grass"):
             self.api._pollen_cache[kind] = {
                 "today": None, "tomorrow": None,
                 "today_date": None, "tomorrow_date": None,
             }
-        # 위치 변경 시 오늘 오전/오후 날씨 캐시 무효화.
-        # 기상청 단기예보는 11시 발표(11:00 base_time)부터 오늘 오전(09시) 데이터가 사라지므로, 11시 이후엔 무효화하지 않음.
         if datetime.now(self.api.tz).hour < 11:
             self._wf_am_today = None
         self._wf_pm_today = None
@@ -246,11 +219,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         )
         return nx, ny, reg_id_temp, reg_id_land, warn_area_code
 
-    # ── API 카운터 초기화/콜백 주입 ─────────────────────────────────────────
-    # ── 공유 카운터 접근 헬퍼 ────────────────────────────────────────────────
     @property
     def _shared_counts(self) -> dict[str, int]:
-        """hass.data에 저장된 전체 기기 공유 카운터를 반환한다."""
         return self.hass.data.setdefault(f"{DOMAIN}_api_call_counts", {
             "단기예보": 0, "중기예보": 0,
             "에어코리아_측정소": 0, "에어코리아_대기": 0,
@@ -259,16 +229,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         })
 
     def _inject_counter(self, reason: str = "자동 업데이트") -> None:
-        """
-        api 객체에 카운터 콜백을 주입한다. coordinator 생성 후 반드시 호출.
-
-        Args:
-            reason: 호출 이유 레이블 (자동 업데이트 / 업데이트 액션 / 다시 읽어오기 / 액션)
-        """
         def _increment(key: str) -> None:
             now_date = datetime.now(self.api.tz).strftime("%Y%m%d")
             shared = self._shared_counts
-            # 자정 넘어가면 전체 초기화
             if shared.get("date") and shared["date"] != now_date:
                 for k in list(shared.keys()):
                     if k not in ("date", "last_reason"):
@@ -276,20 +239,16 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("API 호출 카운터 자정 초기화: %s → %s", shared["date"], now_date)
                 self.hass.async_create_task(self._save_api_calls())
             shared["date"] = now_date
-            shared["last_reason"] = reason  # 마지막 호출 이유 갱신
+            shared["last_reason"] = reason
             if key in shared:
                 shared[key] += 1
-            # 인스턴스 카운터도 동기화 (저장/복구용)
             self._api_call_date = now_date
             if key in self._api_call_counts:
                 self._api_call_counts[key] = shared[key]
-            # 센서 즉시 갱신 (HA 이벤트 루프에서 예약)
             self.hass.async_create_task(self._notify_api_counter_listeners())
         self.api._call_counter_ref = _increment
 
-    # ── API 카운터 저장소 ────────────────────────────────────────────────────
     async def _restore_api_calls(self) -> None:
-        """재시작 후 오늘 날짜의 카운터를 복구한다 (공유 카운터에 반영)."""
         if self._api_call_store_loaded:
             return
         try:
@@ -299,8 +258,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 today = datetime.now(tz).strftime("%Y%m%d")
                 if stored.get("date") == today:
                     shared = self._shared_counts
-                    # 공유 카운터가 아직 초기화 안 된 경우에만 복구
-                    # (이미 다른 coordinator가 복구했으면 덮어쓰지 않음)
                     if shared.get("date") != today:
                         for key in self._api_call_counts:
                             val = int(stored.get(key, 0))
@@ -314,7 +271,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._api_call_store_loaded = True
 
     async def _save_api_calls(self) -> None:
-        """현재 카운터를 저장한다."""
         try:
             await self._api_call_store.async_save({
                 "date": self._api_call_date or datetime.now(self.api.tz).strftime("%Y%m%d"),
@@ -324,25 +280,19 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("API 호출 카운터 저장 실패: %s", e)
 
     def api_call_total(self) -> int:
-        """오늘 총 API 호출 횟수를 반환한다 (전체 기기 합산)."""
         shared = self._shared_counts
         return sum(v for k, v in shared.items() if k not in ("date", "last_reason"))
 
     async def _notify_api_counter_listeners(self) -> None:
-        """api_calls_today 센서를 즉시 갱신하도록 HA에 알린다. (모든 기기 동시 갱신)"""
         try:
-            # 자신의 리스너 갱신
             self.async_update_listeners()
-            # 다른 기기의 coordinator 리스너도 함께 갱신
             for entry_id, coordinator in self.hass.data.get(DOMAIN, {}).items():
                 if coordinator is not self and hasattr(coordinator, "async_update_listeners"):
                     coordinator.async_update_listeners()
         except Exception:
             pass
 
-    # ── 저장소 복구/저장 ────────────────────────────────────────────────────
     def _load_pollen_area_map(self) -> None:
-        """pollen_area_map.json을 로드한다."""
         try:
             json_path = pathlib.Path(__file__).parent / "pollen_area_map.json"
             with open(json_path, encoding="utf-8") as f:
@@ -353,11 +303,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             self._pollen_area_data = None
 
     async def find_pollen_area(self, lat: float, lon: float) -> tuple[str, str]:
-        """
-        위경도로 가장 가까운 읍면동의 (areaNo, 지역명)을 반환한다.
-        좌표가 이전과 같으면 캐시를 반환한다.
-        위치 변경 감지는 _calc_area_codes에서 처리 후 캐시 무효화.
-        """
         if (self._pollen_cached_lat == lat
                 and self._pollen_cached_lon == lon
                 and self._pollen_cached_area_no):
@@ -390,15 +335,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         return "", ""
 
     async def async_setup(self) -> None:
-        """매시 15분 자동 업데이트 스케줄 등록."""
         from homeassistant.helpers.event import async_track_time_change
 
         async def _scheduled_update(now):
-            # 기기별로 고유한 지연 시간(0~30초)을 부여하여 429(Too Many Requests) 에러를 방지합니다.
-            # 실제 HA 운영 환경(API가 활성화된 상태)에서만 지연 시간을 적용합니다.
-            # 테스트 환경(pytest)에서는 지연 없이 즉시 실행하여 전체 테스트 속도를 유지합니다.
             import sys
-            if "pytest" not in sys.modules:  # 운영 환경에서만 실행
+            if "pytest" not in sys.modules:
                 delay = 10 + (zlib.adler32(str(self.entry.entry_id).encode()) % 21)
                 if delay > 0:
                     _LOGGER.debug("[%s] 동시 호출 방지를 위해 %d초 후 업데이트를 시작합니다.", self.entry.data.get(CONF_PREFIX, "kma"), delay)
@@ -410,13 +351,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         )
 
     def async_teardown(self) -> None:
-        """스케줄 해제."""
         if self._unsub_timer:
             self._unsub_timer()
             self._unsub_timer = None
 
     async def _restore_approved_apis(self) -> None:
-        """재시작/재로드 후 승인된 API 목록을 복구한다."""
         if self._approved_store_loaded:
             return
         try:
@@ -431,7 +370,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._approved_store_loaded = True
 
     async def _save_approved_apis(self) -> None:
-        """승인된 API 목록을 저장한다."""
         try:
             await self._approved_store.async_save({
                 "approved": list(self.api._approved_apis)
@@ -468,7 +406,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 "wf_pm": self._wf_pm_today,
             })
 
-    # ── 일별 기온 누적 ──────────────────────────────────────────────────────
     def _update_daily_temperatures(self, forecast_map: dict) -> bool:
         now = datetime.now(self.api.tz)
         today_str, today_date = now.strftime("%Y%m%d"), now.date()
@@ -476,7 +413,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         if self._daily_date != today_date:
             self._daily_date, self._daily_max_temp, self._daily_min_temp = today_date, None, None
-            # 자정 이후에도 첫 업데이트 전까지 이전 값을 유지하기 위해 오전/오후 날씨 초기화 제거
             changed = True
 
         temps = [float(s["TMP"]) for s in forecast_map.get(today_str, {}).values() if s.get("TMP")]
@@ -488,7 +424,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 self._daily_max_temp, changed = n_max, True
         return changed
 
-    # ── forecast 동기화 ─────────────────────────────────────────────────────
     def _sync_today_forecast(self, weather: dict) -> None:
         today_t_max = self._daily_max_temp
         today_t_min = self._daily_min_temp
@@ -500,8 +435,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         wf_am_tomorrow = weather.get("wf_am_tomorrow")
         wf_pm_tomorrow = weather.get("wf_pm_tomorrow")
 
-        # forecast_daily의 condition은 이미 api_kma에서 wf_pm(계산된 대표날씨)으로 설정되어 옴
-        # 이를 current_condition으로 덮어쓰지 않음으로써 하루 전체의 요약 정보를 유지함
         for entry in weather.get("forecast_daily", []):
             idx = entry.get("_day_index")
             if idx == 0:
@@ -530,19 +463,44 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         async with self._update_lock:
             try:
-                # area.json/warn_area.json이 아직 로드 안 됐으면 executor에서 로드
                 if not _TEMP_ID_COORDS:
                     await self.hass.async_add_executor_job(_load_area_data)
                 await self._restore_approved_apis()
                 await self._restore_daily_temps()
                 await self._restore_api_calls()
 
-                # 업데이트 이유를 카운터에 반영 (기본: 자동 업데이트)
                 self._inject_counter(getattr(self, "_update_reason", "자동 업데이트"))
-                self._update_reason = "자동 업데이트"  # 다음 업데이트를 위해 초기화
+                self._update_reason = "자동 업데이트"
+
                 curr_lat, curr_lon = self._resolve_location()
                 if curr_lat is None:
                     return self._cached_data or {"weather": {}, "air": {}}
+
+                # ── pause_zones: 지정 존 안에 있으면 폴링 중단 ─────────────
+                # device_tracker/person 기기에만 적용
+                # zone.* 기기는 항상 존 안에 있으므로 무시
+                _location_entity = self.entry.data.get(CONF_LOCATION_ENTITY, "")
+                if _is_mobile_entity(_location_entity):
+                    _pause_zones = self.entry.options.get("pause_zones", [])
+                    for _zone_id in _pause_zones:
+                        _zone_state = self.hass.states.get(_zone_id)
+                        if not _zone_state:
+                            _LOGGER.debug("pause_zones: '%s' 엔티티 없음 → 스킵", _zone_id)
+                            continue
+                        try:
+                            _z_lat = float(_zone_state.attributes["latitude"])
+                            _z_lon = float(_zone_state.attributes["longitude"])
+                            _z_rad = float(_zone_state.attributes.get("radius", 100)) / 1000  # m → km
+                        except (KeyError, TypeError, ValueError):
+                            _LOGGER.debug("pause_zones: '%s' 속성 오류 → 스킵", _zone_id)
+                            continue
+                        _dist = haversine(curr_lat, curr_lon, _z_lat, _z_lon)
+                        if _dist <= _z_rad:
+                            _LOGGER.debug(
+                                "pause_zones: '%s' 반경 %.0fm 안 (%.0fm 거리) → 폴링 중단",
+                                _zone_id, _z_rad * 1000, _dist * 1000,
+                            )
+                            return self._cached_data or {"weather": {}, "air": {}}
 
                 # 기기 이동 여부 확인 (기존 테스트와의 호환성을 위해 외부에서 판단)
                 is_moved = (
@@ -550,7 +508,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     haversine(self._cached_area_lat, self._cached_area_lon, curr_lat, curr_lon) > 2.0
                 )
 
-                # coordinator가 모든 구역코드를 결정해서 api에 전달
                 nx, ny, reg_id_temp, reg_id_land, warn_area_code = self._resolve_area_codes(
                     curr_lat, curr_lon
                 )
@@ -573,17 +530,14 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if short_unsub or mid_unsub:
                     which = "단기예보" if short_unsub else "중기예보"
                     _LOGGER.warning("핵심 API 미신청/중지 감지 [%s] → 캐시 초기화 및 업데이트 중단", which)
-                    # 캐시 초기화 → 관련 센서 unavailable 전환
                     self.api._cache_forecast_map = {}
                     self.api._cache_mid_ta = {}
                     self.api._cache_mid_land = {}
                     self.api._cache_mid_tm_fc_dt = None
                     self._daily_date = self._daily_max_temp = self._daily_min_temp = None
                     self._wf_am_today = self._wf_pm_today = None
-                    # 공유 카운터에 상태 기록 → api_calls_today 센서 속성에 표시
                     shared = self._shared_counts
                     shared["api_중지"] = which
-                    # 빈 데이터로 갱신 → 관련 센서 unavailable
                     empty = {"weather": {}, "air": self._cached_data.get("air", {}) if self._cached_data else {}, "pollen": self._cached_data.get("pollen") if self._cached_data else None}
                     self._cached_data = empty
                     self.async_update_listeners()
@@ -591,31 +545,26 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
                 weather = new_data.setdefault("weather", {})
 
-                # 업데이트 전 날짜 변경 여부 확인
                 current_today = datetime.now(self.api.tz).date()
                 is_new_day = (self._daily_date != current_today)
 
                 if "raw_forecast" in new_data:
                     temp_changed = self._update_daily_temperatures(new_data["raw_forecast"])
-                    
-                    # 오전/오후 날씨 요약 갱신 로직 (사용자 요구사항 반영)
+
                     reason = getattr(self, "_update_reason", "자동 업데이트")
                     is_scheduled = (reason == "자동 업데이트")
-                    
-                    # 업데이트 수행 조건: 주기적 업데이트 OR 기기 이동 OR 날짜 변경 OR 초기 설정(None)
+
                     should_update_summary = is_scheduled or is_moved or is_new_day or (self._wf_pm_today is None)
-                    
+
                     api_am = weather.get("wf_am_today")
                     api_pm = weather.get("wf_pm_today")
                     summary_changed = False
 
                     if should_update_summary:
                         now_hour = datetime.now(self.api.tz).hour
-                        # 오전(12시 이전): 오전/오후 모두 업데이트
                         if now_hour < 12:
                             if api_am: self._wf_am_today, summary_changed = api_am, True
                             if api_pm: self._wf_pm_today, summary_changed = api_pm, True
-                        # 오후(12시 이후): 오후만 업데이트 (단, 오전이 None이면 초기화를 위해 업데이트)
                         else:
                             if api_pm: self._wf_pm_today, summary_changed = api_pm, True
                             if self._wf_am_today is None and api_am:
@@ -637,32 +586,23 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     "debug_warn_area_code": warn_area_code,
                 })
 
-                # current_condition은 _merge_all에서 단기예보 슬롯 기반으로 계산됨
-                # wf_am/pm_today는 오늘 날씨 요약용으로만 사용하고 현재 날씨를 덮어쓰지 않음
-
                 self._sync_today_forecast(weather)
 
-                # ── 현재 상태값이 '-'/None이면 이전 캐시 값으로 보완 ──────────
-                # 기상청 발표 직후 일부 시각 슬롯이 '-'로 내려오는 경우 방어
                 _REALTIME_KEYS = (
                     "TMP", "REH", "WSD", "VEC", "VEC_KOR", "POP", "apparent_temp"
                 )
                 if self._cached_data:
                     prev_weather = self._cached_data.get("weather", {})
                     for _key in _REALTIME_KEYS:
-                        # 키가 실제로 존재하고 값이 '-'/None인 경우에만 보완
-                        # 키 자체가 없는 경우(누락 데이터)는 보완하지 않음
                         if _key in weather and weather[_key] in (None, "-", ""):
                             prev_val = prev_weather.get(_key)
                             if prev_val not in (None, "-", ""):
                                 weather[_key] = prev_val
 
-                # ── 천문 시각 주입 ──────────────────────────────────────────
                 sun_times = self._calc_sun_times(curr_lat, curr_lon,
                                                  datetime.now(self.api.tz))
                 weather.update(sun_times)
 
-                # ── 천문 관측 조건 평가 ────────────────────────────────────
                 obs_cond, obs_attrs = self._eval_observation(
                     weather, datetime.now(self.api.tz), curr_lat, curr_lon
                 )
@@ -670,9 +610,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 weather["observation_attrs"]     = obs_attrs
 
                 self._cached_data = new_data
-                # 승인 API 목록 변경 시 저장 (await로 확실히 저장)
                 await self._save_approved_apis()
-                # 카운터 저장 (매 업데이트마다 영속화)
                 await self._save_api_calls()
                 return new_data
 
@@ -682,17 +620,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
     # ── 천문 시각 계산 ──────────────────────────────────────────────────────
     def _calc_sun_times(self, lat: float, lon: float, now: datetime) -> dict:
-        """
-        skyfield를 사용해 현재 시각 이후의 다음 천문 이벤트를 계산한다.
-        skyfield 미준비 시 빈 dict를 반환한다.
-
-        반환값 키:
-          dawn, sunrise, sunset, dusk  — 태양 (오늘/내일 HH:MM)
-          astro_dawn, astro_dusk       — 천문 박명 (오늘/내일 HH:MM)
-          moonrise, moonset            — 월출/월몰 (오늘/내일 HH:MM)
-          moon_phase                   — 달 위상 이름
-          moon_illumination            — 달 조명율 (정수 %)
-        """
         today = now.date()
 
         if self._sf_eph is None or self._sf_ts is None:
@@ -714,7 +641,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     datetime(dd.year, dd.month, dd.day, 23, 59, tzinfo=tz))
                 return t0, t1
 
-            # ── 일출/일몰 ──────────────────────────────────────────────────
             f_ss = _almanac.sunrise_sunset(self._sf_eph, sf_loc)
             for offset in (0, 1, 2):
                 t0, t1 = _ts_range(today + timedelta(days=offset))
@@ -728,15 +654,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if "sunrise" in result and "sunset" in result:
                     break
 
-            # ── 새벽/황혼/천문박명 (dark_twilight_day) ────────────────────
-            # 0=Night, 1=Astronomical, 2=Nautical, 3=Civil, 4=Day
-            # (3→4)=dawn, (4→3)=dusk, (0→1)=astro_dawn, (1→0)=astro_dusk
             _TW_MAP = {(2,3):"dawn", (3,2):"dusk", (0,1):"astro_dawn", (1,0):"astro_dusk"}
             f_tw = _almanac.dark_twilight_day(self._sf_eph, sf_loc)
             for offset in (0, 1, 2):
                 t0, t1 = _ts_range(today + timedelta(days=offset))
                 times, events = _almanac.find_discrete(t0, t1, f_tw)
-                # t0 시각의 실제 상태를 초기값으로 사용 (prev_e=None이면 첫 이벤트 skip됨)
                 prev_e = int(f_tw(t0))
                 for t, cur_e in zip(times, events):
                     local_t = t.astimezone(tz)
@@ -748,14 +670,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 if all(k in result for k in ("dawn", "dusk", "astro_dawn", "astro_dusk")):
                     break
 
-            # ── 달 위상/조명율 ─────────────────────────────────────────────
             t_now = self._sf_ts.from_datetime(now)
             phase_deg = _almanac.moon_phase(self._sf_eph, t_now).degrees
             result["moon_phase"]        = self._moon_phase_name(phase_deg)
             result["moon_illumination"] = round(
                 _almanac.fraction_illuminated(self._sf_eph, "moon", t_now) * 100)
 
-            # ── 월출/월몰 (달이 없는 날 있으므로 3일 탐색) ────────────────
             f_rs = _almanac.risings_and_settings(
                 self._sf_eph, self._sf_eph["Moon"], sf_loc)
             next_rise = next_set = None
@@ -787,7 +707,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
     @staticmethod
     def _moon_phase_name(deg: float) -> str:
-        """skyfield moon_phase 반환값(0~360°) 기준 8단계 위상 이름"""
         d = deg % 360
         if   d <  22.5: return "삭"
         elif d <  67.5: return "초승달"
@@ -799,12 +718,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         elif d < 337.5: return "그믐달"
         return "삭"
 
-    # 관측 조건 등급 순서 (낮을수록 나쁨)
     _OBS_ORDER = ["관측불가", "불량", "보통", "우수", "최우수"]
 
     @staticmethod
     def _obs_min(cond_a: str, cond_b: str) -> str:
-        """두 조건 중 더 나쁜 것을 반환한다."""
         order = KMAWeatherUpdateCoordinator._OBS_ORDER
         a_idx = order.index(cond_a) if cond_a in order else 0
         b_idx = order.index(cond_b) if cond_b in order else 0
@@ -813,24 +730,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
     def _eval_observation(
         self, weather: dict, now: "datetime", lat: float, lon: float
     ) -> "tuple[str, dict]":
-        """
-        관측 조건을 평가한다.
-
-        평가 항목별 등급:
-          주야간 - 주간: 관측불가
-          날씨   - rainy/pouring/snowy/snowy-rainy/cloudy: 관측불가
-                   partlycloudy: 불량
-                   맑음: 최우수
-          달 조명율 - 삭(0%) 또는 달 없음: 최우수
-                      ≤25%: 우수, ≤50%: 보통, ≤75%: 불량, >75%: 관측불가
-          달 고도  - 7° 미만(달 없음): 최우수
-                     (조명율 등급에 반영됨)
-          풍속     - <1.5: 우수, 1.5~3.0: 최우수, 3.0~5.0: 보통,
-                     5.0~8.0: 불량, ≥8.0: 관측불가, 없음: 영향 없음
-
-        최종 등급: 모든 항목 중 가장 나쁜 것
-        판단사유: 최종 등급과 동일한 항목 전부
-        """
         condition_eng = weather.get("current_condition", "")
         wsd           = weather.get("WSD")
         moon_phase    = weather.get("moon_phase", "")
@@ -843,7 +742,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             illum_int = None
         illum_str = f"{illum_int}%" if illum_int is not None else "-"
 
-        # ── skyfield: 태양/달 고도 계산 ─────────────────────────────────────
         moon_alt_str = "-"
         sun_is_up    = True
         moon_up      = False
@@ -878,7 +776,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             moon_alt_str = f"{moon_alt_deg:.1f}°"
             moon_up = moon_alt_deg > 7.0
 
-            # 은하수 중심부 (궁수자리 A*) 고도 계산
             from skyfield.api import Star as _Star
             _mw_center = _Star(ra_hours=(17 + 45/60 + 40.04/3600),
                                dec_degrees=-(29 + 0/60 + 28.1/3600))
@@ -893,16 +790,13 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         day_night = "주간" if sun_is_up else "야간"
 
-        # ── 각 항목별 등급 계산 ──────────────────────────────────────────────
-        _order = KMAWeatherUpdateCoordinator._OBS_ORDER  # MagicMock 오염 방지
+        _order = KMAWeatherUpdateCoordinator._OBS_ORDER
 
-        # 주야간
         if sun_is_up:
             cond_daytime = "관측불가"
         else:
             cond_daytime = "최우수"
 
-        # 날씨
         if condition_eng in {"rainy", "pouring", "snowy", "snowy-rainy", "cloudy"}:
             cond_weather = "관측불가"
         elif condition_eng == "partlycloudy":
@@ -910,7 +804,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         else:
             cond_weather = "최우수"
 
-        # 달 조명율 (달 고도 포함)
         if not moon_up or illum_int == 0:
             cond_moon = "최우수"
         elif illum_int is None:
@@ -924,10 +817,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         else:
             cond_moon = "관측불가"
 
-        # 풍속
         wsd_val = _safe_float(wsd)
         if wsd_val is None:
-            cond_wind = None  # 영향 없음
+            cond_wind = None
         elif wsd_val < 1.5:
             cond_wind = "우수"
         elif wsd_val < 3.0:
@@ -939,7 +831,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         else:
             cond_wind = "관측불가"
 
-        # ── 최종 등급: 모든 항목 중 가장 나쁜 것 ────────────────────────────
         all_conds = {
             "주야간":    cond_daytime,
             "날씨":      cond_weather,
@@ -951,22 +842,16 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         final_cond = min(all_conds.values(), key=lambda c: _order.index(c))
         final_idx  = _order.index(final_cond)
 
-        # ── 판단사유: 최종 등급과 동일한 항목 전부 ───────────────────────────
         reasons = [name for name, cond in all_conds.items()
                    if _order.index(cond) == final_idx]
 
-        # 주간이면 다른 사유 불필요 (주야간만)
         if cond_daytime == "관측불가" and sun_is_up:
             reasons = ["주야간"]
-        # 최우수이면 모든 조건이 좋음 → 사유 없음
         elif final_cond == "최우수":
             reasons = []
 
         obs_reason = ", ".join(reasons) if reasons else "-"
 
-        # ── 은하수 가시성 판단 ────────────────────────────────────────────────
-        # 최우수/우수 등급이고 은하수 고도 20° 이상이면 은하수 관측 가능
-        # 30° 이상이면 최적 조건
         mw_visible = False
         mw_suffix = ""
         if final_cond in ("최우수", "우수") and not sun_is_up:
@@ -992,22 +877,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         return display_cond, attrs
 
-
     # ── 날짜 지정 천문 계산 (HA 서비스용) ──────────────────────────────────
     async def calc_astronomical_for_date(
         self, lat: float, lon: float, target_date, eval_dt: "datetime | None" = None
     ) -> dict:
-        """
-        특정 날짜·좌표의 천문 이벤트를 계산해 dict로 반환한다.
-
-        입력된 좌표의 단기예보를 조회하여 관측 조건 평가에 날씨 상태를 반영한다.
-        단기예보 API가 미신청이거나 호출 실패 시 달 조명율+달 고도+태양고도만으로 평가한다.
-
-        Args:
-            lat, lon    : 위경도
-            target_date : 조회 날짜
-            eval_dt     : 관측 조건 평가 기준 시각 (None이면 target_date 정오)
-        """
         if self._sf_eph is None or self._sf_ts is None:
             return {"error": "skyfield 라이브러리가 준비되지 않았습니다"}
         try:
@@ -1023,7 +896,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             t1 = self._sf_ts.from_datetime(
                 datetime(target_date.year, target_date.month, target_date.day, 23, 59, tzinfo=tz))
 
-            # 일출/일몰
             f_ss = _almanac.sunrise_sunset(self._sf_eph, sf_loc)
             sunrise = sunset = None
             for t, e in zip(*_almanac.find_discrete(t0, t1, f_ss)):
@@ -1035,7 +907,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             result["sunrise"] = sunrise
             result["sunset"] = sunset
 
-            # 박명 (새벽/황혼/천문박명)
             _TW_MAP = {(2, 3): "dawn", (3, 2): "dusk", (0, 1): "astro_dawn", (1, 0): "astro_dusk"}
             f_tw = _almanac.dark_twilight_day(self._sf_eph, sf_loc)
             prev_e = int(f_tw(t0))
@@ -1046,7 +917,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     result[key] = _hm(local_t)
                 prev_e = int(cur_e)
 
-            # 달 위상/조명율 (정오 기준)
             t_noon = self._sf_ts.from_datetime(
                 datetime(target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=tz))
             phase_deg = _almanac.moon_phase(self._sf_eph, t_noon).degrees
@@ -1054,7 +924,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             result["moon_phase"] = KMAWeatherUpdateCoordinator._moon_phase_name(phase_deg)
             result["moon_illumination"] = illum
 
-            # 월출/월몰
             f_rs = _almanac.risings_and_settings(self._sf_eph, self._sf_eph["Moon"], sf_loc)
             moonrise = moonset = None
             for t, e in zip(*_almanac.find_discrete(t0, t1, f_rs)):
@@ -1066,15 +935,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             result["moonrise"] = moonrise
             result["moonset"] = moonset
 
-            # ── 단기예보 조회 (입력 위치 기준) ───────────────────────────────
-            # weather_source: 관측 조건 평가에 날씨가 반영됐는지 여부를 나타냄
-            #   "날씨+천문": 단기예보 조회 성공 → 날씨 상태 반영
-            #   "천문만":    단기예보 미승인 또는 조회 실패 → 달 조명율+달 고도+태양고도만
             weather_for_obs: dict = {
                 "moon_illumination": illum,
                 "moon_phase": result.get("moon_phase", ""),
             }
-            weather_source = "천문만"   # 기본값: 날씨 미반영
+            weather_source = "천문만"
             weather_kor: str = "API 조회 불가"
 
             if "short" in self.api._approved_apis:
@@ -1119,8 +984,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                                 weather_for_obs["current_condition_kor"] = kor
                                 weather_source = "날씨+천문"
                                 weather_kor = kor
-                            # WSD는 3시간 간격으로만 제공되므로
-                            # best_t 슬롯에 없으면 같은 날 다른 슬롯에서 탐색
                             wsd_val = slot.get("WSD")
                             if wsd_val is None:
                                 for t_key in sorted(day_data.keys()):
@@ -1136,15 +999,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                             )
                 except Exception as e:
                     _LOGGER.warning("천문 액션 단기예보 조회 실패 (날씨 무시): %s", e)
-
             else:
                 _LOGGER.debug("단기예보 API 미승인 → 달 조명율+달 고도+태양고도만으로 관측 조건 평가")
 
-            # ── 관측 조건 평가 ────────────────────────────────────────────────
             obs_dt = eval_dt or datetime(
                 target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=tz)
             obs_cond, obs_attrs = self._eval_observation(weather_for_obs, obs_dt, lat, lon)
-            # 은하수 중심부 고도 계산 (액션용)
             try:
                 from skyfield.api import Star as _Star
                 _mw_center = _Star(ra_hours=(17 + 45/60 + 40.04/3600),
@@ -1178,7 +1038,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     lat, lon = float(lat_attr), float(lon_attr)
                     if is_korean_coord_loose(lat, lon):
-                        self._last_lat, self._last_lon = lat, lon  # ← 성공 시 캐시 갱신
+                        self._last_lat, self._last_lon = lat, lon
                         return lat, lon
                 except Exception:
                     pass
