@@ -52,6 +52,7 @@ def make_coordinator(zone_map=None, location_entity="device_tracker.phone",
     coord = KMAWeatherUpdateCoordinator(hass, entry)
     coord._store_loaded = True
     coord._cached_data = {"weather": {"TMP": 20}, "air": {}}
+    coord._update_reason = "자동 업데이트"  # pause_zones 체크 활성화
     coord.api.fetch_data = AsyncMock(return_value={
         "weather": {"TMP": 25}, "air": {}, "pollen": None, "raw_forecast": {}
     })
