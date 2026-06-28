@@ -147,6 +147,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._approved_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_approved_apis")
         self._approved_store_loaded = False
 
+        # 첫 업데이트(재시작)는 pause_zones를 무시하고 항상 데이터를 가져옴
+        self._update_reason = "재시작"
+
         self._inject_counter()
 
     async def _async_init_skyfield(self, sf_dir: str) -> None:
@@ -469,7 +472,10 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 await self._restore_daily_temps()
                 await self._restore_api_calls()
 
-                self._inject_counter(getattr(self, "_update_reason", "자동 업데이트"))
+                # pause_zones 판단 전에 현재 이유를 먼저 저장
+                _reason = getattr(self, "_update_reason", "자동 업데이트")
+
+                self._inject_counter(_reason)
                 self._update_reason = "자동 업데이트"
 
                 curr_lat, curr_lon = self._resolve_location()
@@ -477,10 +483,11 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     return self._cached_data or {"weather": {}, "air": {}}
 
                 # ── pause_zones: 지정 존 안에 있으면 폴링 중단 ─────────────
-                # device_tracker/person 기기에만 적용
-                # zone.* 기기는 항상 존 안에 있으므로 무시
+                # 자동 업데이트일 때만 적용
+                # 재시작/수동 업데이트는 존 안에 있어도 항상 폴링 허용
+                # device_tracker/person 기기에만 적용 (zone.* 기기는 무시)
                 _location_entity = self.entry.data.get(CONF_LOCATION_ENTITY, "")
-                if _is_mobile_entity(_location_entity):
+                if _reason == "자동 업데이트" and _is_mobile_entity(_location_entity):
                     _pause_zones = self.entry.options.get("pause_zones", [])
                     for _zone_id in _pause_zones:
                         _zone_state = self.hass.states.get(_zone_id)
