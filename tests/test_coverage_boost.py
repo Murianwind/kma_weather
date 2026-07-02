@@ -343,7 +343,10 @@ class TestPollenAdditionalCoverage:
         [Then]  today 캐시 반환 + tomorrow 캐시 초기화됨
         """
         api = self._make_api()
-        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        # pine/oak 시즌(4~6월) 내로 날짜 고정 — datetime.now() 사용 시
+        # 시즌 밖(예: 7월 이후) 실행되면 pine이 비시즌 처리되어 테스트가 깨짐
+        now = datetime(2026, 4, 25, 19, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        today_str = now.strftime("%Y%m%d")
 
         # _pending에서 제거 + _approved에만 있어야 캐시를 신뢰함
         api._pending_apis.discard("pollen")
@@ -361,7 +364,6 @@ class TestPollenAdditionalCoverage:
                     "body": {"items": {"item": []}}}}
 
         api._fetch = mock_fetch
-        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(hour=19, minute=0, second=0, microsecond=0)
         result = await api._get_pollen(now, "1111051500", "서울")
 
         assert result is not None, "today 캐시 있을 때 None 반환됨"
@@ -379,7 +381,10 @@ class TestPollenAdditionalCoverage:
         [Then]  today 캐시 반환 + tomorrow 캐시 갱신됨
         """
         api = self._make_api()
-        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        # pine/oak 시즌(4~6월) 내로 날짜 고정 — datetime.now() 사용 시
+        # 시즌 밖(예: 7월 이후) 실행되면 pine이 비시즌 처리되어 테스트가 깨짐
+        now = datetime(2026, 4, 25, 19, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        today_str = now.strftime("%Y%m%d")
 
         # _pending에서 제거 + _approved에만 있어야 캐시를 신뢰함
         # (_pending에 있으면 소스코드가 캐시를 즉시 초기화한다)
@@ -391,7 +396,6 @@ class TestPollenAdditionalCoverage:
             api._pollen_cache[k]["today_date"] = today_str
 
         api._fetch = AsyncMock(return_value=self._ok_response(today="2"))
-        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(hour=19, minute=0, second=0, microsecond=0)
         result = await api._get_pollen(now, "1111051500", "서울")
 
         assert result is not None, "today 캐시 있을 때 None 반환됨"
