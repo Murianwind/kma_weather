@@ -265,11 +265,12 @@ class TestPrecipAmountSensorExposure:
         sensor = self._make_sensor({"weather": {"precip_amount": 4.0}, "air": {}})
         assert sensor.native_value == 4.0
 
-    def test_extra_state_attributes_contains_hourly_dict(self):
+    def test_extra_state_attributes_returns_hours_as_flat_keys(self):
         """
         [Given] coordinator.data에 hourly_precipitation_mm 딕셔너리 존재
         [When]  extra_state_attributes 프로퍼티 접근
-        [Then]  hourly_precipitation_mm 키로 그대로 노출됨
+        [Then]  "hourly_precipitation_mm" 키로 감싸지 않고
+                "15시", "16시" 등이 바로 최상위 속성 키로 노출됨
         """
         hourly = {"15시": 1.0, "16시": 0.0}
         sensor = self._make_sensor({
@@ -277,7 +278,8 @@ class TestPrecipAmountSensorExposure:
             "air": {},
         })
         attrs = sensor.extra_state_attributes
-        assert attrs == {"hourly_precipitation_mm": hourly}
+        assert attrs == {"15시": 1.0, "16시": 0.0}
+        assert "hourly_precipitation_mm" not in attrs
 
     def test_extra_state_attributes_none_when_hourly_missing(self):
         """
