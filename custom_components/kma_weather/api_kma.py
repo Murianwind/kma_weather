@@ -838,11 +838,16 @@ class KMAWeatherAPI:
         tm_fc_dt = self._cache_mid_tm_fc_dt if self._cache_mid_tm_fc_dt else new_tm_fc_dt
 
         today_str, curr_h = now.strftime("%Y%m%d"), f"{now.hour:02d}00"
+        _best_slot_dt = None  # 상태값(precip_amount)이 참조한 실제 슬롯 시각 → 속성 시작점 기준
         if today_str in forecast_map:
             times = sorted(forecast_map[today_str].keys())
             best_t = next((t for t in times if t >= curr_h), times[-1] if times else None)
             if best_t:
                 weather_data.update(forecast_map[today_str][best_t])
+                _best_slot_dt = datetime(
+                    int(today_str[:4]), int(today_str[4:6]), int(today_str[6:]),
+                    int(best_t[:2]), int(best_t[2:]), tzinfo=ZoneInfo("Asia/Seoul"),
+                )
         else:
             past_dates = sorted(d for d in forecast_map if d < today_str)
             if past_dates:
@@ -1063,11 +1068,23 @@ class KMAWeatherAPI:
         weather_data["precip_amount"] = _parse_precip(_raw_now, _no_precip_now)
 
         # ── 다음 24시간 시간대별 강수량 (현재 예상 강수량 센서의 속성용) ──────
-        # hourly_forecast는 이미 현재 이후 시각만 정렬되어 있으므로 앞 24개만 사용
+        # wall-clock(now) 기준이 아니라, 상태값(precip_amount)이 실제로 참조한
+        # _best_slot_dt 바로 다음 슬롯부터 이어지도록 계산한다.
+        # (그렇지 않으면 발표 직후처럼 현재 시각 슬롯이 아직 없어 다음 슬롯을
+        #  상태값으로 쓰는 상황에서, 속성이 현재 시각 기준으로 시작되어
+        #  상태값과 속성의 시작 시점이 어긋나는 문제가 생긴다.)
+        _anchor_dt = _best_slot_dt if _best_slot_dt is not None else now
+        if _anchor_dt.tzinfo is None:
+            _anchor_dt = _anchor_dt.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+
         hourly_precip: dict[str, float] = {}
-        for entry in hourly_forecast[:24]:
+        for entry in hourly_forecast:
             entry_dt = datetime.fromisoformat(entry["datetime"])
+            if entry_dt <= _anchor_dt:
+                continue
             hourly_precip[f"{entry_dt.hour:02d}시"] = entry["native_precipitation"]
+            if len(hourly_precip) >= 24:
+                break
         weather_data["hourly_precipitation_mm"] = hourly_precip
 
         weather_data.update({
