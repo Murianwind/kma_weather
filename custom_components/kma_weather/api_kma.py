@@ -852,6 +852,13 @@ class KMAWeatherAPI:
                     )
 
         _PTY_LABEL = {"1": "비", "2": "비/눈", "3": "눈", "4": "소나기"}
+
+        def _parse_precip(val, no_val):
+            if not val or val in (no_val, "-"): return 0.0
+            if "미만" in str(val): return 0.5
+            digits = "".join(c for c in str(val) if c.isdigit() or c == ".")
+            return float(digits) if digits else 0.0
+
         now_str = now.strftime("%Y%m%d")
         now_time_str = f"{now.hour:02d}00"
         today = now.date()
@@ -992,12 +999,6 @@ class KMAWeatherAPI:
 
         _KST = ZoneInfo("Asia/Seoul")
 
-        def _parse_precip(val, no_val):
-            if not val or val in (no_val, "-"): return 0.0
-            if "미만" in str(val): return 0.5
-            digits = "".join(c for c in str(val) if c.isdigit() or c == ".")
-            return float(digits) if digits else 0.0
-
         hourly_forecast = []
         for d_str in sorted(forecast_map.keys()):
             for t_str in sorted(forecast_map[d_str].keys()):
@@ -1049,6 +1050,21 @@ class KMAWeatherAPI:
         weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast, "forecast_hourly": hourly_forecast})
 
         kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
+
+        # ── 현재 예상 강수량 ─────────────────────────────────────────────────
+        # PTY=3(눈)이면 적설량(SNO), 그 외엔 강수량(PCP) 사용
+        _pty_now = str(weather_data.get("PTY", "0"))
+        _raw_now = weather_data.get("SNO") if _pty_now == "3" else weather_data.get("PCP")
+        _no_precip_now = "적설없음" if _pty_now == "3" else "강수없음"
+        weather_data["precip_amount"] = _parse_precip(_raw_now, _no_precip_now)
+
+        # ── 다음 24시간 시간대별 강수량 (현재 예상 강수량 센서의 속성용) ──────
+        # hourly_forecast는 이미 현재 이후 시각만 정렬되어 있으므로 앞 24개만 사용
+        hourly_precip: dict[str, float] = {}
+        for entry in hourly_forecast[:24]:
+            entry_dt = datetime.fromisoformat(entry["datetime"])
+            hourly_precip[f"{entry_dt.hour:02d}시"] = entry["native_precipitation"]
+        weather_data["hourly_precipitation_mm"] = hourly_precip
 
         weather_data.update({
             "current_condition_kor": kor_now,
