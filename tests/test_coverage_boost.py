@@ -335,6 +335,58 @@ class TestPollenAdditionalCoverage:
         assert result.get("announcement") == "데이터없음"
 
     @pytest.mark.asyncio
+    async def test_never_approved_yet_and_rc99_still_marks_approved(self):
+        """
+        [Given] 꽃가루 API가 한 번도 승인된 적 없음(_pending 상태, _approved 비어있음)
+                + 신청은 유효하지만 해당 지역에 데이터가 없어 resultCode=99 응답
+        [When]  _get_pollen 최초 호출
+        [Then]  "미신청"이 아니라 "구독은 유효함"으로 판단하여
+                _approved_apis에 pollen이 추가됨 (센서가 생성될 수 있게 됨)
+                _pending_apis에서는 제거됨
+                반환값은 시즌 항목 unknown, 비시즌 항목 좋음으로 정상 처리됨
+        """
+        api = KMAWeatherAPI(MagicMock(), "test_key")
+        api.hass = None
+        # 승인 이력이 전혀 없는 최초 상태를 재현 (approved 비어있고 pending에만 존재)
+        assert "pollen" not in api._approved_apis
+        assert "pollen" in api._pending_apis
+
+        api._fetch = AsyncMock(return_value=self._99_response())
+        now = datetime(2026, 5, 1, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))  # oak/pine 시즌
+
+        result = await api._get_pollen(now, "1111051500", "서울")
+
+        assert "pollen" in api._approved_apis, \
+            "resultCode=99여도 미신청이 아니므로 승인 처리되어야 함 (센서 생성 사각지대 방지)"
+        assert "pollen" not in api._pending_apis
+        assert result is not None
+        assert result.get("oak") is None
+        assert result.get("pine") is None
+        assert result.get("grass") == "좋음"
+        assert result.get("announcement") == "데이터없음"
+
+    @pytest.mark.asyncio
+    async def test_offseason_and_never_approved_still_calls_api_to_check(self):
+        """
+        [Given] 완전 비시즌(예: 1월)이지만 아직 한 번도 승인된 적 없음
+        [When]  _get_pollen 호출
+        [Then]  "비시즌이니 API 호출 없이 좋음 반환" 지름길은
+                _approved_apis에 pollen이 있을 때만 적용되므로,
+                아직 미승인 상태면 API를 호출해서 승인 여부를 확인하러 감
+        """
+        api = KMAWeatherAPI(MagicMock(), "test_key")
+        api.hass = None
+        assert "pollen" not in api._approved_apis
+
+        api._fetch = AsyncMock(return_value=self._99_response())
+        now = datetime(2026, 1, 15, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))  # 완전 비시즌
+
+        await api._get_pollen(now, "1111051500", "서울")
+
+        api._fetch.assert_called_once()
+        assert "pollen" in api._approved_apis
+
+    @pytest.mark.asyncio
     async def test_today_cache_exists_19h_tomorrow_g_none(self):
         """
         [Given] today 캐시 있음 + pollen 승인됨(_pending 없음) + 19시 이후
