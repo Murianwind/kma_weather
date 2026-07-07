@@ -573,6 +573,10 @@ class KMAWeatherAPI:
                                              "today_date": None, "tomorrow_date": None}
                 return None
             if check_code == "99":
+                # 미신청 코드는 아니므로 구독 자체는 유효하다고 판단.
+                # 승인 처리를 안 하면 이 지역은 영원히 _pending 상태에 머물러
+                # 센서 자체가 생성되지 않는 사각지대가 발생하므로 여기서도 승인 처리한다.
+                self._mark_approved("pollen")
                 grades = {k: (None if in_season[k] else "좋음") for k in _POLLEN_KINDS}
                 season_known = [g for k, g in grades.items() if in_season[k] and g is not None]
                 worst = None
