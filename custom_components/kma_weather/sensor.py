@@ -1,429 +1,289 @@
-import logging
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
-from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, EntityCategory
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.core import callback
-from datetime import date
-from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
+"""
+test_precip_amount.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"현재 예상 강수량" 센서(precip_amount) 검증
 
-_LOGGER = logging.getLogger(__name__)
+검증 대상:
+  - api_kma.py::_merge_all() 의 precip_amount 계산
+  - api_kma.py::_merge_all() 의 hourly_precipitation_mm 계산
+  - sensor.py::KMACustomSensor 의 precip_amount 노출(state/attributes)
+"""
+import pytest
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from unittest.mock import MagicMock
 
-# [이름, 단위, 아이콘, device_class, entity_id접미, entity_category]
-SENSOR_TYPES = {
-    "TMP":                ["현재온도",        UnitOfTemperature.CELSIUS,          "mdi:thermometer",             SensorDeviceClass.TEMPERATURE, "temperature",          None],
-    "REH":                ["현재습도",        PERCENTAGE,                          "mdi:water-percent",           SensorDeviceClass.HUMIDITY,    "humidity",             None],
-    "WSD":                ["현재풍속",        UnitOfSpeed.METERS_PER_SECOND,       "mdi:weather-windy",           SensorDeviceClass.WIND_SPEED,  "wind_speed",           None],
-    "VEC_KOR":            ["현재풍향",        None,                                "mdi:compass",                 None,                          "wind_direction",       None],
-    "POP":                ["강수확률",        PERCENTAGE,                          "mdi:umbrella-outline",        None,                          "precipitation_prob",   None],
-    "apparent_temp":      ["체감온도",        UnitOfTemperature.CELSIUS,          "mdi:thermometer-lines",       SensorDeviceClass.TEMPERATURE, "apparent_temperature", None],
-    "rain_start_time":    ["강수시작시간",     None,                                "mdi:clock-outline",           None,                          "rain_start",           None],
-    "current_condition_kor": ["현재날씨",    None,                                "mdi:weather-cloudy",          None,                          "condition",            None],
-    "pm10Value":          ["미세먼지 농도",   "µg/m³",                             "mdi:blur",                    SensorDeviceClass.PM10,        "pm10",                 None],
-    "pm10Grade":          ["미세먼지 등급",   None,                                "mdi:check-circle-outline",    None,                          "pm10_grade",           None],
-    "pm25Value":          ["초미세먼지 농도", "µg/m³",                             "mdi:blur-linear",             SensorDeviceClass.PM25,        "pm25",                 None],
-    "pm25Grade":          ["초미세먼지 등급", None,                                "mdi:check-circle-outline",    None,                          "pm25_grade",           None],
-    "address":            ["현재 위치",       None,                                "mdi:map-marker",              None,                          "location",             EntityCategory.DIAGNOSTIC],
-    "last_updated":       ["업데이트 시간",   None,                                "mdi:update",                  SensorDeviceClass.TIMESTAMP,   "last_updated",         EntityCategory.DIAGNOSTIC],
-    "api_expire":         ["API 잔여일수",    "일",                                "mdi:key-alert",               None,                          "api_expire",           EntityCategory.DIAGNOSTIC],
-    "TMX_today":          ["오늘최고온도",    UnitOfTemperature.CELSIUS,          "mdi:thermometer-chevron-up",  SensorDeviceClass.TEMPERATURE, "today_temp_max",       None],
-    "TMN_today":          ["오늘최저온도",    UnitOfTemperature.CELSIUS,          "mdi:thermometer-chevron-down",SensorDeviceClass.TEMPERATURE, "today_temp_min",       None],
-    "wf_am_today":        ["오늘오전날씨",    None,                                "mdi:weather-partly-cloudy",   None,                          "today_condition_am",   None],
-    "wf_pm_today":        ["오늘오후날씨",    None,                                "mdi:weather-cloudy",          None,                          "today_condition_pm",   None],
-    "TMX_tomorrow":       ["내일최고온도",    UnitOfTemperature.CELSIUS,          "mdi:thermometer-chevron-up",  SensorDeviceClass.TEMPERATURE, "tomorrow_temp_max",    None],
-    "TMN_tomorrow":       ["내일최저온도",    UnitOfTemperature.CELSIUS,          "mdi:thermometer-chevron-down",SensorDeviceClass.TEMPERATURE, "tomorrow_temp_min",    None],
-    "wf_am_tomorrow":     ["내일오전날씨",    None,                                "mdi:weather-partly-cloudy",   None,                          "tomorrow_condition_am",None],
-    "wf_pm_tomorrow":     ["내일오후날씨",    None,                                "mdi:weather-cloudy",          None,                          "tomorrow_condition_pm",None],
-    "warning":            ["기상특보",        None,                                "mdi:alert-outline",           None,                          "warning",              None],
-    "dawn":               ["다음 새벽",         None,   "mdi:weather-moonset",             None,  "dawn",               None],
-    "sunrise":            ["다음 일출",          None,   "mdi:weather-sunset-up",           None,  "sunrise",            None],
-    "sunset":             ["다음 일몰",          None,   "mdi:weather-sunset-down",         None,  "sunset",             None],
-    "dusk":               ["다음 황혼",          None,   "mdi:weather-sunset",              None,  "dusk",               None],
-    "astro_dawn":         ["다음 천문관측 종료",  None,   "mdi:telescope",                   None,  "astro_dawn",         None],
-    "astro_dusk":         ["다음 천문관측 시작",  None,   "mdi:telescope",                   None,  "astro_dusk",         None],
-    "moon_phase":         ["달 위상",            None,   "mdi:moon-waning-gibbous",         None,  "moon_phase",         None],
-    "moon_illumination":  ["달 조명율",          PERCENTAGE, "mdi:brightness-percent",      None,  "moon_illumination",  None],
-    "moonrise":           ["다음 월출",          None,   "mdi:weather-moonset-up",          None,  "moonrise",           None],
-    "moonset":            ["다음 월몰",          None,   "mdi:weather-moonset-down",        None,  "moonset",            None],
-    "observation_condition": ["천문 관측 조건",  None,   "mdi:telescope",                   None,  "observation_condition", None],
-    "pollen":             ["꽃가루 농도",      None,                                "mdi:flower-pollen-outline",   None,                          "pollen",               None],
-    "api_calls_today":    ["오늘 API 호출 수", "회",                                "mdi:counter",                 None,                          "api_calls_today",      EntityCategory.DIAGNOSTIC],
-}
+from custom_components.kma_weather.api_kma import KMAWeatherAPI
 
-# ── API별 센서 그룹 ───────────────────────────────────────────────────────────
-# None: API 신청 여부와 무관하게 항상 등록
-# 키 문자열: 해당 API가 승인됐을 때만 등록
-SENSOR_API_GROUPS: dict[str | None, list[str]] = {
-    None: [
-        "api_expire", "last_updated", "address", "api_calls_today",
-        "dawn", "sunrise", "sunset", "dusk",
-        "astro_dawn", "astro_dusk",
-        "moon_phase", "moon_illumination", "moonrise", "moonset",
-        "observation_condition",
-    ],
-    "short": [
-        "TMP", "REH", "WSD", "VEC_KOR", "POP", "apparent_temp",
-        "rain_start_time", "current_condition_kor",
-        "TMX_today", "TMN_today", "wf_am_today", "wf_pm_today",
-        "TMX_tomorrow", "TMN_tomorrow", "wf_am_tomorrow", "wf_pm_tomorrow",
-    ],
-    "air": [
-        "pm10Value", "pm10Grade", "pm25Value", "pm25Grade",
-    ],
-    "warning": [
-        "warning",
-    ],
-    "pollen": [
-        "pollen",
-    ],
-}
+TZ = ZoneInfo("Asia/Seoul")
 
 
-def _eligible_sensor_types(coordinator) -> list[str]:
-    """현재 승인된 API 기준으로 등록해야 할 센서 타입 목록을 반환한다."""
-    approved = coordinator.api._approved_apis
-    types: list[str] = list(SENSOR_API_GROUPS.get(None, []))
-    for api_key, sensor_types in SENSOR_API_GROUPS.items():
-        if api_key is not None and api_key in approved:
-            types.extend(sensor_types)
-    return types
+def make_api():
+    return KMAWeatherAPI(MagicMock(), "TEST_KEY")
 
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    """센서 엔티티 등록 (승인된 API 기준 동적 등록)"""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    prefix = entry.options.get(CONF_PREFIX, entry.data.get(CONF_PREFIX, "kma"))
-
-    if not hasattr(coordinator, "_registered_sensor_types"):
-        coordinator._registered_sensor_types = set()
-
-    def _make_sensors(types: list[str]) -> list:
-        return [
-            KMACustomSensor(coordinator, st, prefix, entry)
-            for st in types
-            if st not in coordinator._registered_sensor_types and st in SENSOR_TYPES
-        ]
-
-    initial_types = _eligible_sensor_types(coordinator)
-    initial_entities = _make_sensors(initial_types)
-    for e in initial_entities:
-        coordinator._registered_sensor_types.add(e._type)
-    async_add_entities(initial_entities)
-
-    @callback
-    def _check_new_sensors():
-        eligible = _eligible_sensor_types(coordinator)
-        new_types = [t for t in eligible if t not in coordinator._registered_sensor_types]
-        if not new_types:
-            return
-        new_entities = _make_sensors(new_types)
-        for e in new_entities:
-            coordinator._registered_sensor_types.add(e._type)
-        if new_entities:
-            _LOGGER.info("새 API 승인 감지: 센서 %d개 추가 (%s)", len(new_entities),
-                         ", ".join(e._type for e in new_entities))
-            async_add_entities(new_entities)
-
-    entry.async_on_unload(coordinator.async_add_listener(_check_new_sensors))
+def make_short_res(base_date, hourly_pcp: dict[int, str], pty_by_hour: dict[int, str] | None = None, days=2):
+    """
+    hourly_pcp: {시(0~23): PCP 원본 문자열} — 지정 안 한 시각은 '강수없음'
+    pty_by_hour: {시: PTY 코드 문자열} — 지정 안 하면 '0'(없음)
+    """
+    pty_by_hour = pty_by_hour or {}
+    items = []
+    for d in range(days):
+        day = base_date + timedelta(days=d)
+        d_str = day.strftime("%Y%m%d")
+        for h in range(24):
+            t_str = f"{h:02d}00"
+            items.append({"fcstDate": d_str, "fcstTime": t_str, "category": "TMP", "fcstValue": "20"})
+            items.append({"fcstDate": d_str, "fcstTime": t_str, "category": "SKY", "fcstValue": "1"})
+            pty = pty_by_hour.get(h, "0")
+            items.append({"fcstDate": d_str, "fcstTime": t_str, "category": "PTY", "fcstValue": pty})
+            pcp = hourly_pcp.get(h, "강수없음")
+            if pty == "3":
+                items.append({"fcstDate": d_str, "fcstTime": t_str, "category": "SNO", "fcstValue": pcp})
+            else:
+                items.append({"fcstDate": d_str, "fcstTime": t_str, "category": "PCP", "fcstValue": pcp})
+    return {"response": {"body": {"items": {"item": items}}}}
 
 
-class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
-    """기상청 커스텀 센서 클래스"""
-    _attr_has_entity_name = True
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. 현재 예상 강수량 (precip_amount) 계산
+# ─────────────────────────────────────────────────────────────────────────────
 
-    def __init__(self, coordinator, sensor_type, prefix, entry):
-        super().__init__(coordinator)
-        self._type = sensor_type
-        self._entry = entry
+class TestCurrentPrecipAmount:
+    """현재 시간대(정시 기준)의 예상 강수량이 올바르게 계산되는지 검증"""
 
-        details = SENSOR_TYPES[sensor_type]
-        self.entity_id = f"sensor.{prefix}_{details[4]}"
-        self._attr_name = details[0]
-        self._attr_native_unit_of_measurement = details[1]
-        self._attr_icon = details[2]
-        self._attr_device_class = details[3]
-        self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
-        self._attr_entity_category = details[5]
+    def test_returns_current_hour_precip_as_number(self):
+        """
+        [Given] 14시 슬롯의 PCP가 "5.0mm"인 단기예보 응답
+        [When]  14시 30분에 _merge_all 호출
+        [Then]  precip_amount가 5.0 (float)으로 반환됨
+        """
+        api = make_api()
+        now = datetime(2026, 7, 7, 14, 30, tzinfo=TZ)
+        short_res = make_short_res(now, {14: "5.0mm"})
 
-        if sensor_type == "api_calls_today":
-            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
-        elif details[1] is not None and sensor_type not in ("api_expire",):
-            self._attr_state_class = SensorStateClass.MEASUREMENT
+        result = api._merge_all(now, short_res, None, {})
 
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="Murianwind",
-            model="KMA Weather Service",
-        )
+        assert result["weather"]["precip_amount"] == 5.0
 
-    _MOON_PHASE_ICONS = {
-        "삭":       "mdi:moon-new",
-        "초승달":   "mdi:moon-waxing-crescent",
-        "상현달":   "mdi:moon-first-quarter",
-        "준상현달": "mdi:moon-waxing-gibbous",
-        "보름달":   "mdi:moon-full",
-        "준하현달": "mdi:moon-waning-gibbous",
-        "하현달":   "mdi:moon-last-quarter",
-        "그믐달":   "mdi:moon-waning-crescent",
-    }
+    def test_no_rain_returns_zero(self):
+        """
+        [Given] 현재 시간대 PCP가 "강수없음"
+        [When]  _merge_all 호출
+        [Then]  precip_amount는 0.0
+        """
+        api = make_api()
+        now = datetime(2026, 7, 7, 10, 0, tzinfo=TZ)
+        short_res = make_short_res(now, {})  # 전부 강수없음
 
-    _OBSERVATION_ICONS_BY_REASON = {
-        "강수":     "mdi:weather-rainy",
-        "흐림":     "mdi:weather-cloudy",
-        "주간":     "mdi:weather-sunny",
-        "":         None,
-        "분석불가": "mdi:help-circle-outline",
-    }
-    _OBSERVATION_ICONS_BY_CONDITION = {
-        "최우수":   "mdi:star-shooting",
-        "우수":     "mdi:star",
-        "보통":     "mdi:star-half-full",
-        "불량":     "mdi:moon-waning-gibbous",
-        "관측불가": "mdi:telescope",
-        "분석불가": "mdi:help-circle-outline",
-    }
+        result = api._merge_all(now, short_res, None, {})
 
-    _POLLEN_ICONS = {
-        "좋음":     "mdi:flower-pollen-outline",
-        "보통":     "mdi:flower-pollen",
-        "나쁨":     "mdi:face-mask",
-        "매우나쁨": "mdi:biohazard",
-    }
+        assert result["weather"]["precip_amount"] == 0.0
 
-    _WEATHER_COND_ICONS: dict[str, str] = {
-        "맑음":     "mdi:weather-sunny",
-        "구름많음": "mdi:weather-partly-cloudy",
-        "흐림":     "mdi:weather-cloudy",
-        "비":       "mdi:weather-rainy",
-        "비/눈":    "mdi:weather-snowy-rainy",
-        "눈":       "mdi:weather-snowy",
-        "소나기":   "mdi:weather-pouring",
-        "빗방울":   "mdi:weather-rainy",
-        "눈날림":   "mdi:weather-snowy",
-    }
-    _WEATHER_COND_TYPES = frozenset({
-        "current_condition_kor", "wf_am_today", "wf_pm_today",
-        "wf_am_tomorrow", "wf_pm_tomorrow",
-    })
+    def test_less_than_1mm_returns_half(self):
+        """
+        [Given] 현재 시간대 PCP가 "1mm 미만"
+        [When]  _merge_all 호출
+        [Then]  precip_amount는 관례상 0.5로 처리됨 (숫자로 명시 안 된 경우의 근사치)
+        """
+        api = make_api()
+        now = datetime(2026, 7, 7, 9, 0, tzinfo=TZ)
+        short_res = make_short_res(now, {9: "1mm 미만"})
 
-    @property
-    def icon(self) -> str:
-        if self.coordinator.data:
-            w = self.coordinator.data.get("weather", {})
-            # 날씨 상태값 기반 아이콘
-            if self._type in self._WEATHER_COND_TYPES:
-                val = w.get(self._type)
-                if val and val in self._WEATHER_COND_ICONS:
-                    return self._WEATHER_COND_ICONS[val]
-                return self._attr_icon
-            if self._type == "moon_phase":
-                phase = w.get("moon_phase")
-                if phase and phase in self._MOON_PHASE_ICONS:
-                    return self._MOON_PHASE_ICONS[phase]
+        result = api._merge_all(now, short_res, None, {})
 
-            elif self._type == "observation_condition":
-                attrs = w.get("observation_attrs", {})
-                weather_state = attrs.get("날씨", "")
-                day_night = attrs.get("주야간", "야간")
-                cond = w.get("observation_condition", "")
-                if day_night == "주간":
-                    return "mdi:weather-sunny"
-                if weather_state in ("rainy", "pouring", "snowy", "snowy-rainy", "cloudy", "강수", "흐림"):
-                    return self._OBSERVATION_ICONS_BY_REASON.get(
-                        "강수" if weather_state in ("rainy","pouring","snowy","snowy-rainy") else "흐림",
-                        self._attr_icon
-                    )
-                return self._OBSERVATION_ICONS_BY_CONDITION.get(cond, self._attr_icon)
+        assert result["weather"]["precip_amount"] == 0.5
 
-            elif self._type == "pollen":
-                pollen = self.coordinator.data.get("pollen")
-                if not pollen:
-                    return self._attr_icon
-                worst = pollen.get("worst")
-                if worst is None:
-                    return self._attr_icon
-                return self._POLLEN_ICONS.get(worst, self._attr_icon)
+    def test_snow_uses_sno_field_when_pty_is_snow(self):
+        """
+        [Given] 현재 시간대 PTY=3(눈) + SNO="3.0cm"
+        [When]  _merge_all 호출
+        [Then]  PCP 대신 SNO 값이 precip_amount로 사용됨
+        """
+        api = make_api()
+        now = datetime(2026, 1, 15, 8, 0, tzinfo=TZ)
+        short_res = make_short_res(now, {8: "3.0cm"}, pty_by_hour={8: "3"})
 
-        return self._attr_icon
+        result = api._merge_all(now, short_res, None, {})
 
-    @property
-    def available(self) -> bool:
-        """API 미신청/중지 시 unavailable 반환."""
-        if not super().available:
-            return False
-        if not self.coordinator.data:
-            return False
-        if self._type in ("api_expire", "api_calls_today"):
-            return True
+        assert result["weather"]["precip_amount"] == 3.0
 
-        # SENSOR_API_GROUPS에서 API별 센서 목록 파생 → 중복 정의 없음
-        for api_key, sensor_types in SENSOR_API_GROUPS.items():
-            if api_key is not None and self._type in sensor_types:
-                if api_key == "pollen":
-                    return self.coordinator.data.get("pollen") is not None
-                if api_key == "warning":
-                    w = self.coordinator.data.get("weather", {})
-                    return w.get("warning") is not None
-                return api_key in self.coordinator.api._approved_apis
+    def test_hour_rounds_down_ignoring_minutes(self):
+        """
+        [Given] 14시 슬롯 PCP="2.0mm", 15시 슬롯 PCP="9.0mm"
+        [When]  14시 59분(정시 기준 14시)에 _merge_all 호출
+        [Then]  precip_amount는 다음 시각(15시)이 아니라 현재 시각(14시) 값
+        """
+        api = make_api()
+        now = datetime(2026, 7, 7, 14, 59, tzinfo=TZ)
+        short_res = make_short_res(now, {14: "2.0mm", 15: "9.0mm"})
 
-        return True
+        result = api._merge_all(now, short_res, None, {})
 
-    async def async_added_to_hass(self) -> None:
-        """HA 재시작 후 이전 상태 복원."""
-        await super().async_added_to_hass()
-        if self.coordinator.data:
-            return  # 이미 데이터 있으면 복원 불필요
-        last_state = await self.async_get_last_state()
-        if last_state and last_state.state not in ("unknown", "unavailable"):
-            self._attr_native_value = last_state.state
+        assert result["weather"]["precip_amount"] == 2.0
 
-    @property
-    def native_value(self):
-        if self._type == "api_expire":
-            exp = self._entry.options.get(CONF_EXPIRE_DATE) or self._entry.data.get(CONF_EXPIRE_DATE)
-            try:
-                return (date.fromisoformat(exp) - date.today()).days
-            except (ValueError, TypeError):
-                return None
 
-        if self._type == "api_calls_today":
-            return self.coordinator.api_call_total()
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. 시간대별 강수량 속성 (hourly_precipitation_mm)
+# ─────────────────────────────────────────────────────────────────────────────
 
-        if not self.coordinator.data:
-            return None
+class TestHourlyPrecipitationAttribute:
+    """precip_amount 센서의 속성으로 들어갈 다음 24시간 시간대별 강수량 검증"""
 
-        w = self.coordinator.data.get("weather", {})
-        a = self.coordinator.data.get("air", {})
+    def test_contains_exactly_24_hours(self):
+        """
+        [Given] 이틀치 단기예보 데이터
+        [When]  _merge_all 호출
+        [Then]  hourly_precipitation_mm에 정확히 24개 시간대가 담김
+        """
+        api = make_api()
+        now = datetime(2026, 7, 7, 14, 30, tzinfo=TZ)
+        short_res = make_short_res(now, {})
 
-        if self._type == "pollen":
-            pollen = self.coordinator.data.get("pollen")
-            if pollen is None:
-                # 미신청/만료 → unavailable
-                return None
-            worst = pollen.get("worst")
-            if worst is None:
-                # 데이터 없음 (rc=99 등) → unknown
-                return None
-            return worst
+        result = api._merge_all(now, short_res, None, {})
 
-        if self._type == "TMN_today":
-            val = self.coordinator._daily_min_temp
-        elif self._type == "TMX_today":
-            val = self.coordinator._daily_max_temp
-        else:
-            val = w.get(self._type) if self._type in w else a.get(self._type)
+        assert len(result["weather"]["hourly_precipitation_mm"]) == 24
 
-        if val in [None, "-", ""]:
-            return None
+    def test_starts_from_next_hour_not_current(self):
+        """
+        [Given] 14시 30분 현재 시각
+        [When]  _merge_all 호출
+        [Then]  hourly_precipitation_mm의 첫 항목은 "15시"부터 시작 (현재 시간대는 제외)
+        """
+        api = make_api()
+        now = datetime(2026, 7, 7, 14, 30, tzinfo=TZ)
+        short_res = make_short_res(now, {})
 
-        unit = self._attr_native_unit_of_measurement
-        if unit is not None:
-            try:
-                f_val = float(val)
-                return int(f_val) if f_val == int(f_val) else f_val
-            except (ValueError, TypeError):
-                return None
+        result = api._merge_all(now, short_res, None, {})
 
-        return val
+        keys = list(result["weather"]["hourly_precipitation_mm"].keys())
+        assert keys[0] == "15시"
 
-    @property
-    def extra_state_attributes(self):
-        # ── API 호출 카운터 센서: coordinator.data 유무와 무관하게 항상 반환 ────
-        if self._type == "api_calls_today":
-            # 전체 기기 합산 공유 카운터 사용
-            counts = self.coordinator._shared_counts
-            attrs = {
-                "단기예보":        counts.get("단기예보", 0),
-                "중기예보":        counts.get("중기예보", 0),
-                "에어코리아_측정소": counts.get("에어코리아_측정소", 0),
-                "에어코리아_대기":  counts.get("에어코리아_대기", 0),
-                "기상특보":        counts.get("기상특보", 0),
-                "꽃가루":          counts.get("꽃가루", 0),
-                "집계일":          counts.get("date") or "-",
-                "마지막_호출_이유": counts.get("last_reason") or "-",
-            }
-            api_중지 = counts.get("api_중지")
-            if api_중지:
-                attrs["API_중지_감지"] = f"{api_중지} 미신청 또는 중지됨"
-            return attrs
+    def test_no_duplicate_hour_keys_across_midnight(self):
+        """
+        [Given] 다음 24시간이 자정을 넘어 다음날로 이어지는 상황
+        [When]  _merge_all 호출
+        [Then]  "00시"~"23시" 키가 중복 없이 정확히 한 번씩만 존재
+        """
+        api = make_api()
+        now = datetime(2026, 7, 7, 14, 30, tzinfo=TZ)
+        short_res = make_short_res(now, {})
 
-        if not self.coordinator.data:
-            return None
+        result = api._merge_all(now, short_res, None, {})
 
-        w = self.coordinator.data.get("weather", {})
-        a = self.coordinator.data.get("air", {})
+        keys = list(result["weather"]["hourly_precipitation_mm"].keys())
+        assert len(keys) == len(set(keys)), "시간대 키 중복 발생"
 
-        # ── location 센서 (address) ──────────────────────────────────────────
-        if self._type == "address":
-            attrs: dict = {}
+    def test_hour_key_format_is_zero_padded(self):
+        """
+        [Given] 임의의 단기예보 데이터
+        [When]  _merge_all 호출
+        [Then]  시간 키는 "00시"~"09시"처럼 두 자리로 0-padding 됨
+        """
+        api = make_api()
+        now = datetime(2026, 7, 7, 22, 0, tzinfo=TZ)
+        short_res = make_short_res(now, {})
 
-            # 단기예보 API 승인 시에만 격자 좌표 표시
-            approved = self.coordinator.api._approved_apis
-            if "short" in approved:
-                nx = w.get("debug_nx")
-                ny = w.get("debug_ny")
-                if nx is not None:
-                    attrs["short_term_nx"] = nx
-                if ny is not None:
-                    attrs["short_term_ny"] = ny
-                # coordinator 캐시에서 중기예보 구역코드 읽기
-                reg_temp = getattr(self.coordinator, "_cached_reg_id_temp", None)
-                reg_land = getattr(self.coordinator, "_cached_reg_id_land", None)
-                if reg_temp:
-                    attrs["reg_id_temp"] = reg_temp
-                if reg_land:
-                    attrs["reg_id_land"] = reg_land
+        result = api._merge_all(now, short_res, None, {})
 
-            # 에어코리아 API 승인 시에만 측정소명 표시
-            if "air" in approved:
-                station = a.get("station")
-                if station:
-                    attrs["air_korea_station"] = station
+        keys = list(result["weather"]["hourly_precipitation_mm"].keys())
+        assert "00시" in keys
+        assert "0시" not in keys
 
-            # 좌표는 항상 표시 (천문 계산에도 필요, API 무관)
-            lat = w.get("debug_lat")
-            lon = w.get("debug_lon")
-            if lat is not None:
-                attrs["latitude"] = lat
-            if lon is not None:
-                attrs["longitude"] = lon
+    def test_values_match_source_pcp_per_hour(self):
+        """
+        [Given] 15시=1.0mm, 16시=강수없음, 17시=3.0mm로 지정한 단기예보
+        [When]  14시 정각에 _merge_all 호출
+        [Then]  hourly_precipitation_mm의 각 시각 값이 지정한 PCP와 일치
+        """
+        api = make_api()
+        now = datetime(2026, 7, 7, 14, 0, tzinfo=TZ)
+        short_res = make_short_res(now, {15: "1.0mm", 16: "강수없음", 17: "3.0mm"})
 
-            # 기상특보 API 승인 시에만 특보구역코드 표시
-            if "warning" in approved:
-                warn_code = w.get("debug_warn_area_code")
-                if warn_code:
-                    attrs["warn_area_code"] = warn_code
+        result = api._merge_all(now, short_res, None, {})
+        hourly = result["weather"]["hourly_precipitation_mm"]
 
-            # 꽃가루 API 승인 시에만 꽃가루 조회 지역 표시
-            if "pollen" in approved:
-                pollen = self.coordinator.data.get("pollen") or {}
-                area_name = pollen.get("area_name")
-                area_no   = pollen.get("area_no")
-                if area_name:
-                    loc = f"{area_name}({area_no})" if area_no else area_name
-                    attrs["pollen_location"] = loc
+        assert hourly["15시"] == 1.0
+        assert hourly["16시"] == 0.0
+        assert hourly["17시"] == 3.0
 
-            return attrs if attrs else None
+    def test_updates_correctly_on_next_hourly_refresh(self):
+        """
+        [Given] 14시 30분 기준 계산 결과와 15시 30분 기준 계산 결과
+        [When]  각각 _merge_all 호출 (매시 자동 업데이트를 흉내)
+        [Then]  시간이 지나면 현재값(precip_amount)과 속성 시작 시각이
+                한 시간씩 앞으로 이동함 (업데이트가 정상적으로 반영됨)
+        """
+        api = make_api()
 
-        # ── 꽃가루 센서 ──────────────────────────────────────────────────────
-        if self._type == "pollen":
-            pollen = self.coordinator.data.get("pollen")
-            if pollen is None:
-                return None  # 미신청/만료
-            def _disp(v):
-                return v if v is not None else "알 수 없음"
-            attrs = {
-                "소나무":    _disp(pollen.get("pine")),
-                "참나무":    _disp(pollen.get("oak")),
-                "잡초류":    _disp(pollen.get("grass")),
-                "발표 시각": pollen.get("announcement", "-"),
-            }
-            return attrs
+        now_1 = datetime(2026, 7, 7, 14, 30, tzinfo=TZ)
+        short_res_1 = make_short_res(now_1, {14: "1.0mm", 15: "2.0mm"})
+        result_1 = api._merge_all(now_1, short_res_1, None, {})
 
-        # ── 관측 조건 센서 ───────────────────────────────────────────────────
-        if self._type == "observation_condition":
-            return w.get("observation_attrs") or {}
+        now_2 = datetime(2026, 7, 7, 15, 30, tzinfo=TZ)
+        short_res_2 = make_short_res(now_2, {14: "1.0mm", 15: "2.0mm"})
+        result_2 = api._merge_all(now_2, short_res_2, None, {})
 
-        return None
+        # 1시간 경과 후 현재값이 14시→15시 값으로 갱신됨
+        assert result_1["weather"]["precip_amount"] == 1.0
+        assert result_2["weather"]["precip_amount"] == 2.0
+
+        # 속성의 시작 시각도 한 시간 앞으로 이동
+        keys_1 = list(result_1["weather"]["hourly_precipitation_mm"].keys())
+        keys_2 = list(result_2["weather"]["hourly_precipitation_mm"].keys())
+        assert keys_1[0] == "15시"
+        assert keys_2[0] == "16시"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. sensor.py: precip_amount 센서 state / attributes 노출
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPrecipAmountSensorExposure:
+    """KMACustomSensor가 precip_amount를 state/attributes로 올바르게 노출하는지 검증"""
+
+    def _make_sensor(self, coordinator_data):
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = coordinator_data
+        entry = MagicMock()
+        entry.entry_id = "test_entry"
+        sensor = KMACustomSensor.__new__(KMACustomSensor)
+        sensor.coordinator = coordinator
+        sensor._type = "precip_amount"
+        sensor._entry = entry
+        sensor._attr_native_unit_of_measurement = "mm"
+        return sensor
+
+    def test_native_value_returns_precip_amount(self):
+        """
+        [Given] coordinator.data에 weather.precip_amount = 4.0
+        [When]  native_value 프로퍼티 접근
+        [Then]  4.0 반환
+        """
+        sensor = self._make_sensor({"weather": {"precip_amount": 4.0}, "air": {}})
+        assert sensor.native_value == 4.0
+
+    def test_extra_state_attributes_contains_hourly_dict(self):
+        """
+        [Given] coordinator.data에 hourly_precipitation_mm 딕셔너리 존재
+        [When]  extra_state_attributes 프로퍼티 접근
+        [Then]  hourly_precipitation_mm 키로 그대로 노출됨
+        """
+        hourly = {"15시": 1.0, "16시": 0.0}
+        sensor = self._make_sensor({
+            "weather": {"precip_amount": 1.0, "hourly_precipitation_mm": hourly},
+            "air": {},
+        })
+        attrs = sensor.extra_state_attributes
+        assert attrs == {"hourly_precipitation_mm": hourly}
+
+    def test_extra_state_attributes_none_when_hourly_missing(self):
+        """
+        [Given] hourly_precipitation_mm 키 자체가 없는 상황(예: 데이터 수신 실패 캐시)
+        [When]  extra_state_attributes 프로퍼티 접근
+        [Then]  None 반환 (크래시 없이 안전하게 처리)
+        """
+        sensor = self._make_sensor({"weather": {"precip_amount": 0.0}, "air": {}})
+        assert sensor.extra_state_attributes is None
