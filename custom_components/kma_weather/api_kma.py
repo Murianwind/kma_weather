@@ -900,43 +900,20 @@ class KMAWeatherAPI:
 
         twice_daily, daily_forecast = [], []
 
-        def _day_metrics(day_slots: dict, time_keys: list[str]) -> dict:
-            """
-            주어진 시간대(time_keys)에 해당하는 슬롯들을 모아
-            일간/오전·오후 예보에 쓸 대표 강수확률·강수량·풍속·습도를 계산한다.
-            데이터가 전혀 없으면 각 항목 None.
-            """
-            pops, precips, winds, hums = [], [], [], []
-            for t in time_keys:
-                slot = day_slots.get(t)
-                if not slot:
-                    continue
-                pop = _safe_float(slot.get("POP"))
-                if pop is not None:
-                    pops.append(pop)
-                wsd = _safe_float(slot.get("WSD"))
-                if wsd is not None:
-                    winds.append(wsd)
-                reh = _safe_float(slot.get("REH"))
-                if reh is not None:
-                    hums.append(reh)
-                pty_str = str(slot.get("PTY", "0"))
-                raw_val = slot.get("SNO", "적설없음") if pty_str == "3" else slot.get("PCP", "강수없음")
-                no_precip = "적설없음" if pty_str == "3" else "강수없음"
-                precips.append(_parse_precip(raw_val, no_precip))
+        def _max_pop(day_slots: dict, time_keys: list[str]) -> float | None:
+            """주어진 시간대(time_keys) 슬롯들 중 강수확률(POP) 최댓값. 데이터 없으면 None."""
+            pops = [
+                _safe_float(day_slots[t].get("POP"))
+                for t in time_keys if t in day_slots and day_slots[t].get("POP") is not None
+            ]
+            pops = [p for p in pops if p is not None]
+            return max(pops) if pops else None
 
-            return {
-                "precipitation_probability": int(max(pops)) if pops else None,
-                "native_precipitation": round(sum(precips), 1) if precips else None,
-                "native_wind_speed": round(sum(winds) / len(winds), 1) if winds else None,
-                "humidity": int(sum(hums) / len(hums)) if hums else None,
-            }
 
         for i in range(10):
             target_date = now + timedelta(days=i)
             d_str = target_date.strftime("%Y%m%d")
-            t_max = t_min = wf_am = wf_pm = None
-            day_metrics = am_metrics = pm_metrics = None
+            t_max = t_min = wf_am = wf_pm = pop_am = pop_pm = None
 
             if i <= 3:
                 if d_str in forecast_map:
@@ -947,12 +924,6 @@ class KMAWeatherAPI:
                     valid_temps = [t for t in short_temps if t is not None]
                     t_max = max(valid_temps) if valid_temps else None
                     t_min = min(valid_temps) if valid_temps else None
-
-                    _day_slots = forecast_map[d_str]
-                    _all_keys = list(_day_slots.keys())
-                    day_metrics = _day_metrics(_day_slots, _all_keys)
-                    am_metrics = _day_metrics(_day_slots, [t for t in _all_keys if int(t[:2]) < 12])
-                    pm_metrics = _day_metrics(_day_slots, [t for t in _all_keys if int(t[:2]) >= 12])
 
                     if i == 0:
                         today_slots = forecast_map[d_str]
@@ -972,23 +943,38 @@ class KMAWeatherAPI:
                             am_range = [t for t in all_times if h_now <= int(t[:2]) < 12]
                             wf_am = get_range_freq(am_range, "1100")
                         else:
+                            am_range = []
                             wf_am = get_range_freq([], "1100")
 
                         pm_start = max(12, h_now)
                         pm_range = [t for t in all_times if pm_start <= int(t[:2]) < 24]
                         wf_pm = get_range_freq(pm_range, "2300")
+
+                        # 강수확률도 날씨상태와 동일한 시간 범위 사용 (범위 없으면 fallback 슬롯)
+                        pop_am = _max_pop(today_slots, am_range or ["1100"])
+                        pop_pm = _max_pop(today_slots, pm_range or ["2300"])
                     elif i == 1:
                         if "1200" in forecast_map[d_str]:
-                            wf_noon = self._get_sky_kor(forecast_map[d_str]["1200"].get("SKY"), forecast_map[d_str]["1200"].get("PTY"))
+                            noon_slot = forecast_map[d_str]["1200"]
+                            wf_noon = self._get_sky_kor(noon_slot.get("SKY"), noon_slot.get("PTY"))
                             wf_am = wf_pm = wf_noon
+                            pop_noon = _safe_float(noon_slot.get("POP"))
+                            pop_am = pop_pm = pop_noon
                         else:
                             wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
+                            pop_am = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(6, 12)])
+                            pop_pm = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(12, 18)])
                     else:
                         wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
+                        pop_am = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(6, 12)])
+                        pop_pm = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(12, 18)])
+                else:
+                    pop_am = pop_pm = None
 
                 _LOGGER.debug("단기예보 i=%d date=%s t_max=%s t_min=%s", i, d_str, t_max, t_min)
 
             else:
+                pop_am = pop_pm = None
                 mid_day_idx = (target_date.date() - tm_fc_dt.date()).days
                 if mid_ta and f"taMax{mid_day_idx}" in mid_ta:
                     t_max = _safe_float(mid_ta.get(f"taMax{mid_day_idx}"))
@@ -1000,6 +986,9 @@ class KMAWeatherAPI:
                         wf_pm = self._translate_mid_condition_kor(
                             mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}")
                         )
+                        # 중기예보도 강수확률(rnSt{n}Am/Pm) 필드를 API가 실제로 제공함
+                        pop_am = _safe_float(mid_land.get(f"rnSt{mid_day_idx}Am"))
+                        pop_pm = _safe_float(mid_land.get(f"rnSt{mid_day_idx}Pm"))
                 elif i <= 5 and d_str in forecast_map:
                     short_temps = [
                         _safe_float(v.get("TMP"))
@@ -1009,11 +998,8 @@ class KMAWeatherAPI:
                     t_max = max(valid_temps) if valid_temps else None
                     t_min = min(valid_temps) if valid_temps else None
                     wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
-                    _day_slots = forecast_map[d_str]
-                    _all_keys = list(_day_slots.keys())
-                    day_metrics = _day_metrics(_day_slots, _all_keys)
-                    am_metrics = _day_metrics(_day_slots, [t for t in _all_keys if int(t[:2]) < 12])
-                    pm_metrics = _day_metrics(_day_slots, [t for t in _all_keys if int(t[:2]) >= 12])
+                    pop_am = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(6, 12)])
+                    pop_pm = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(12, 18)])
 
             if i == 0:
                 weather_data["wf_am_today"] = wf_am
@@ -1029,7 +1015,6 @@ class KMAWeatherAPI:
             for is_am in [True, False]:
                 if i == 0 and is_am and now.hour >= 12:
                     continue
-                _m = (am_metrics if is_am else pm_metrics) or {}
                 twice_daily.append({
                     "datetime": target_date.replace(
                         hour=9 if is_am else 21, minute=0, second=0, microsecond=0
@@ -1038,14 +1023,11 @@ class KMAWeatherAPI:
                     "native_temperature": t_max,
                     "native_templow": t_min,
                     "condition": self.kor_to_condition(wf_am if is_am else wf_pm),
-                    "precipitation_probability": _m.get("precipitation_probability"),
-                    "native_precipitation": _m.get("native_precipitation"),
-                    "native_wind_speed": _m.get("native_wind_speed"),
-                    "humidity": _m.get("humidity"),
+                    "precipitation_probability": int(pop_am) if is_am and pop_am is not None
+                        else (int(pop_pm) if not is_am and pop_pm is not None else None),
                     "_day_index": i,
                 })
 
-            _dm = day_metrics or {}
             daily_forecast.append({
                 "datetime": target_date.replace(
                     hour=12, minute=0, second=0, microsecond=0
@@ -1053,10 +1035,7 @@ class KMAWeatherAPI:
                 "native_temperature": t_max,
                 "native_templow": t_min,
                 "condition": self.kor_to_condition(wf_pm),
-                "precipitation_probability": _dm.get("precipitation_probability"),
-                "native_precipitation": _dm.get("native_precipitation"),
-                "native_wind_speed": _dm.get("native_wind_speed"),
-                "humidity": _dm.get("humidity"),
+                "precipitation_probability": int(pop_pm) if pop_pm is not None else None,
                 "_day_index": i,
             })
 
