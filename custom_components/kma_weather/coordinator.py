@@ -147,6 +147,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._approved_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_approved_apis")
         self._approved_store_loaded = False
 
+        self._station_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_station_cache")
+        self._station_store_loaded = False
+
         # 첫 업데이트(재시작)는 pause_zones를 무시하고 항상 데이터를 가져옴
         self._update_reason = "재시작"
 
@@ -409,6 +412,42 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 "wf_pm": self._wf_pm_today,
             })
 
+    async def _restore_station_cache(self):
+        """
+        재시작 시 에어코리아 측정소 캐시를 복구한다.
+        날짜와 무관하게(위치가 안 바뀌었으면 측정소도 그대로이므로) 항상 복구를 시도한다.
+        이게 없으면 재시작마다 getNearbyMsrstnList API를 다시 호출하게 되어
+        '에어코리아_측정소' 호출 카운터가 실제 위치 이동 없이도 계속 쌓이는 문제가 있었다.
+        """
+        if self._station_store_loaded:
+            return
+        try:
+            stored = await self._station_store.async_load()
+            if stored and stored.get("station"):
+                self.api._cached_station = stored.get("station")
+                self.api._cached_station_lat = stored.get("lat")
+                self.api._cached_station_lon = stored.get("lon")
+                _LOGGER.debug(
+                    "에어코리아 측정소 캐시 복구: %s (%.4f, %.4f)",
+                    self.api._cached_station,
+                    self.api._cached_station_lat or 0.0,
+                    self.api._cached_station_lon or 0.0,
+                )
+        except Exception as e:
+            _LOGGER.debug("측정소 캐시 복구 실패 (무시): %s", e)
+        self._station_store_loaded = True
+
+    async def _save_station_cache(self):
+        if self.api._cached_station:
+            try:
+                await self._station_store.async_save({
+                    "station": self.api._cached_station,
+                    "lat": self.api._cached_station_lat,
+                    "lon": self.api._cached_station_lon,
+                })
+            except Exception as e:
+                _LOGGER.debug("측정소 캐시 저장 실패 (무시): %s", e)
+
     def _update_daily_temperatures(self, forecast_map: dict) -> bool:
         now = datetime.now(self.api.tz)
         today_str, today_date = now.strftime("%Y%m%d"), now.date()
@@ -471,6 +510,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 await self._restore_approved_apis()
                 await self._restore_daily_temps()
                 await self._restore_api_calls()
+                await self._restore_station_cache()
 
                 # pause_zones 판단 전에 현재 이유를 먼저 저장
                 _reason = getattr(self, "_update_reason", "자동 업데이트")
@@ -619,6 +659,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 self._cached_data = new_data
                 await self._save_approved_apis()
                 await self._save_api_calls()
+                await self._save_station_cache()
                 return new_data
 
             except Exception as exc:
