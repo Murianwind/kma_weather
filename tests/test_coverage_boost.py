@@ -457,3 +457,172 @@ class TestPollenAdditionalCoverage:
         for k in ("pine", "oak"):
             assert api._pollen_cache[k]["tomorrow"] is not None, f"{k} tomorrow 캐시 갱신 안 됨"
             assert api._pollen_cache[k]["tomorrow_date"] == today_str
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 에어코리아 측정소 캐시 영속화 검증
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestStationCachePersistence:
+    """
+    재시작 시 에어코리아 측정소 캐시가 유지되는지 검증.
+
+    배경: _cached_station이 저장소(Store) 영속화 없이 API 인스턴스
+    메모리에만 있어서, HA 재시작마다 getNearbyMsrstnList API를 다시
+    호출하게 되어 '에어코리아_측정소' 호출 카운터가 실제 위치 이동 없이도
+    계속 쌓이던 문제를 수정.
+    """
+
+    def _make_coordinator(self, hass):
+        from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
+        entry = MagicMock()
+        entry.data = {"api_key": "key", "location_entity": ""}
+        entry.options = {}
+        entry.entry_id = "station_cache_test"
+        return KMAWeatherUpdateCoordinator(hass, entry)
+
+    @pytest.mark.asyncio
+    async def test_restore_station_cache_from_store(self, hass):
+        """
+        [Given] 저장소에 이전에 저장된 측정소 정보가 있음
+        [When]  _restore_station_cache 호출
+        [Then]  api._cached_station과 위경도가 저장소 값으로 복구됨
+        """
+        coord = self._make_coordinator(hass)
+        coord._station_store.async_load = AsyncMock(return_value={
+            "station": "서석동", "lat": 35.145, "lon": 126.918,
+        })
+
+        await coord._restore_station_cache()
+
+        assert coord.api._cached_station == "서석동"
+        assert coord.api._cached_station_lat == 35.145
+        assert coord.api._cached_station_lon == 126.918
+
+    @pytest.mark.asyncio
+    async def test_restore_station_cache_no_stored_data(self, hass):
+        """
+        [Given] 저장소에 아무것도 없음(최초 설치 등)
+        [When]  _restore_station_cache 호출
+        [Then]  크래시 없이 api._cached_station은 None으로 유지됨
+        """
+        coord = self._make_coordinator(hass)
+        coord._station_store.async_load = AsyncMock(return_value=None)
+
+        await coord._restore_station_cache()
+
+        assert coord.api._cached_station is None
+
+    @pytest.mark.asyncio
+    async def test_restore_station_cache_only_runs_once(self, hass):
+        """
+        [Given] _restore_station_cache를 두 번 연달아 호출
+        [When]  두 번째 호출
+        [Then]  저장소 조회(async_load)는 처음 한 번만 일어남
+        """
+        coord = self._make_coordinator(hass)
+        coord._station_store.async_load = AsyncMock(return_value={
+            "station": "서석동", "lat": 35.145, "lon": 126.918,
+        })
+
+        await coord._restore_station_cache()
+        await coord._restore_station_cache()
+
+        coord._station_store.async_load.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_save_station_cache_writes_current_values(self, hass):
+        """
+        [Given] api._cached_station에 값이 설정되어 있음
+        [When]  _save_station_cache 호출
+        [Then]  저장소에 station/lat/lon이 그대로 기록됨
+        """
+        coord = self._make_coordinator(hass)
+        coord.api._cached_station = "구월동"
+        coord.api._cached_station_lat = 37.447
+        coord.api._cached_station_lon = 126.731
+
+        saved = {}
+        coord._station_store.async_save = AsyncMock(side_effect=lambda d: saved.update(d))
+
+        await coord._save_station_cache()
+
+        assert saved == {"station": "구월동", "lat": 37.447, "lon": 126.731}
+
+    @pytest.mark.asyncio
+    async def test_save_station_cache_skips_when_no_station(self, hass):
+        """
+        [Given] api._cached_station이 아직 None(측정소 조회 전)
+        [When]  _save_station_cache 호출
+        [Then]  저장소 쓰기(async_save)가 호출되지 않음
+        """
+        coord = self._make_coordinator(hass)
+        coord.api._cached_station = None
+        coord._station_store.async_save = AsyncMock()
+
+        await coord._save_station_cache()
+
+        coord._station_store.async_save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_restart_does_not_trigger_new_station_search_when_location_unchanged(self, hass):
+        """
+        [Given] 재시작 후 저장소에서 측정소 캐시가 복구된 상태
+                (위치는 이전과 동일, 2km 이상 이동 없음)
+        [When]  _get_air_quality 호출
+        [Then]  getNearbyMsrstnList(측정소 검색) API는 호출되지 않고
+                기존 캐시된 측정소로 바로 대기질 조회만 수행됨
+        """
+        coord = self._make_coordinator(hass)
+        coord._station_store.async_load = AsyncMock(return_value={
+            "station": "서석동", "lat": 35.145, "lon": 126.918,
+        })
+        await coord._restore_station_cache()
+
+        station_search_called = {"n": 0}
+
+        async def mock_fetch(url, params, **kwargs):
+            if "MsrstnInfoInqireSvc" in url:
+                station_search_called["n"] += 1
+                return {"response": {"body": {"items": []}}}
+            return {"response": {"body": {"items": [
+                {"pm10Value": "30", "pm25Value": "15"}
+            ]}}}
+
+        coord.api._fetch = mock_fetch
+        # 재시작 후 첫 위치가 캐시된 위치와 거의 동일(2km 이내)
+        await coord.api._get_air_quality(35.145, 126.918)
+
+        assert station_search_called["n"] == 0, \
+            "재시작 후 위치가 안 바뀌었는데도 측정소를 재검색함"
+
+    @pytest.mark.asyncio
+    async def test_location_moved_over_2km_still_triggers_research(self, hass):
+        """
+        [Given] 캐시된 측정소 위치에서 2km 이상 떨어진 곳으로 이동
+        [When]  _get_air_quality 호출
+        [Then]  캐시가 무효화되고 측정소를 다시 검색함
+                (이 동작 자체는 정상이며 영속화 수정과 무관하게 유지되어야 함)
+        """
+        coord = self._make_coordinator(hass)
+        coord._station_store.async_load = AsyncMock(return_value={
+            "station": "서석동", "lat": 35.145, "lon": 126.918,
+        })
+        await coord._restore_station_cache()
+
+        station_search_called = {"n": 0}
+
+        async def mock_fetch(url, params, **kwargs):
+            if "MsrstnInfoInqireSvc" in url:
+                station_search_called["n"] += 1
+                return {"response": {"body": {"items": [{"stationName": "신도시동"}]}}}
+            return {"response": {"body": {"items": [
+                {"pm10Value": "30", "pm25Value": "15"}
+            ]}}}
+
+        coord.api._fetch = mock_fetch
+        # 약 30km 이상 떨어진 위치로 이동
+        await coord.api._get_air_quality(35.40, 127.20)
+
+        assert station_search_called["n"] == 1, \
+            "2km 이상 이동했는데도 측정소 재검색이 일어나지 않음"
