@@ -582,6 +582,10 @@ class KMAWeatherAPI:
                                              "today_date": None, "tomorrow_date": None}
                 return None
             if check_code == "99":
+                # 미신청 코드는 아니므로 구독 자체는 유효하다고 판단.
+                # 승인 처리를 안 하면 이 지역은 영원히 _pending 상태에 머물러
+                # 센서 자체가 생성되지 않는 사각지대가 발생하므로 여기서도 승인 처리한다.
+                self._mark_approved("pollen")
                 grades = {k: (None if in_season[k] else "좋음") for k in _POLLEN_KINDS}
                 season_known = [g for k, g in grades.items() if in_season[k] and g is not None]
                 worst = None
@@ -843,11 +847,16 @@ class KMAWeatherAPI:
         tm_fc_dt = self._cache_mid_tm_fc_dt if self._cache_mid_tm_fc_dt else new_tm_fc_dt
 
         today_str, curr_h = now.strftime("%Y%m%d"), f"{now.hour:02d}00"
+        _best_slot_dt = None  # 상태값(precip_amount)이 참조한 실제 슬롯 시각 → 속성 시작점 기준
         if today_str in forecast_map:
             times = sorted(forecast_map[today_str].keys())
             best_t = next((t for t in times if t >= curr_h), times[-1] if times else None)
             if best_t:
                 weather_data.update(forecast_map[today_str][best_t])
+                _best_slot_dt = datetime(
+                    int(today_str[:4]), int(today_str[4:6]), int(today_str[6:]),
+                    int(best_t[:2]), int(best_t[2:]), tzinfo=ZoneInfo("Asia/Seoul"),
+                )
         else:
             past_dates = sorted(d for d in forecast_map if d < today_str)
             if past_dates:
@@ -861,6 +870,13 @@ class KMAWeatherAPI:
                     )
 
         _PTY_LABEL = {"1": "비", "2": "비/눈", "3": "눈", "4": "소나기"}
+
+        def _parse_precip(val, no_val):
+            if not val or val in (no_val, "-"): return 0.0
+            if "미만" in str(val): return 0.5
+            digits = "".join(c for c in str(val) if c.isdigit() or c == ".")
+            return float(digits) if digits else 0.0
+
         now_str = now.strftime("%Y%m%d")
         now_time_str = f"{now.hour:02d}00"
         today = now.date()
@@ -893,10 +909,20 @@ class KMAWeatherAPI:
 
         twice_daily, daily_forecast = [], []
 
+        def _max_pop(day_slots: dict, time_keys: list[str]) -> float | None:
+            """주어진 시간대(time_keys) 슬롯들 중 강수확률(POP) 최댓값. 데이터 없으면 None."""
+            pops = [
+                _safe_float(day_slots[t].get("POP"))
+                for t in time_keys if t in day_slots and day_slots[t].get("POP") is not None
+            ]
+            pops = [p for p in pops if p is not None]
+            return max(pops) if pops else None
+
+
         for i in range(10):
             target_date = now + timedelta(days=i)
             d_str = target_date.strftime("%Y%m%d")
-            t_max = t_min = wf_am = wf_pm = None
+            t_max = t_min = wf_am = wf_pm = pop_am = pop_pm = None
 
             if i <= 3:
                 if d_str in forecast_map:
@@ -926,23 +952,38 @@ class KMAWeatherAPI:
                             am_range = [t for t in all_times if h_now <= int(t[:2]) < 12]
                             wf_am = get_range_freq(am_range, "1100")
                         else:
+                            am_range = []
                             wf_am = get_range_freq([], "1100")
 
                         pm_start = max(12, h_now)
                         pm_range = [t for t in all_times if pm_start <= int(t[:2]) < 24]
                         wf_pm = get_range_freq(pm_range, "2300")
+
+                        # 강수확률도 날씨상태와 동일한 시간 범위 사용 (범위 없으면 fallback 슬롯)
+                        pop_am = _max_pop(today_slots, am_range or ["1100"])
+                        pop_pm = _max_pop(today_slots, pm_range or ["2300"])
                     elif i == 1:
                         if "1200" in forecast_map[d_str]:
-                            wf_noon = self._get_sky_kor(forecast_map[d_str]["1200"].get("SKY"), forecast_map[d_str]["1200"].get("PTY"))
+                            noon_slot = forecast_map[d_str]["1200"]
+                            wf_noon = self._get_sky_kor(noon_slot.get("SKY"), noon_slot.get("PTY"))
                             wf_am = wf_pm = wf_noon
+                            pop_noon = _safe_float(noon_slot.get("POP"))
+                            pop_am = pop_pm = pop_noon
                         else:
                             wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
+                            pop_am = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(6, 12)])
+                            pop_pm = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(12, 18)])
                     else:
                         wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
+                        pop_am = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(6, 12)])
+                        pop_pm = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(12, 18)])
+                else:
+                    pop_am = pop_pm = None
 
                 _LOGGER.debug("단기예보 i=%d date=%s t_max=%s t_min=%s", i, d_str, t_max, t_min)
 
             else:
+                pop_am = pop_pm = None
                 mid_day_idx = (target_date.date() - tm_fc_dt.date()).days
                 if mid_ta and f"taMax{mid_day_idx}" in mid_ta:
                     t_max = _safe_float(mid_ta.get(f"taMax{mid_day_idx}"))
@@ -954,6 +995,9 @@ class KMAWeatherAPI:
                         wf_pm = self._translate_mid_condition_kor(
                             mid_land.get(f"wf{mid_day_idx}Pm") or mid_land.get(f"wf{mid_day_idx}")
                         )
+                        # 중기예보도 강수확률(rnSt{n}Am/Pm) 필드를 API가 실제로 제공함
+                        pop_am = _safe_float(mid_land.get(f"rnSt{mid_day_idx}Am"))
+                        pop_pm = _safe_float(mid_land.get(f"rnSt{mid_day_idx}Pm"))
                 elif i <= 5 and d_str in forecast_map:
                     short_temps = [
                         _safe_float(v.get("TMP"))
@@ -963,6 +1007,8 @@ class KMAWeatherAPI:
                     t_max = max(valid_temps) if valid_temps else None
                     t_min = min(valid_temps) if valid_temps else None
                     wf_am, wf_pm = self._get_short_ampm(forecast_map[d_str])
+                    pop_am = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(6, 12)])
+                    pop_pm = _max_pop(forecast_map[d_str], [f"{h:02d}00" for h in range(12, 18)])
 
             if i == 0:
                 weather_data["wf_am_today"] = wf_am
@@ -986,6 +1032,8 @@ class KMAWeatherAPI:
                     "native_temperature": t_max,
                     "native_templow": t_min,
                     "condition": self.kor_to_condition(wf_am if is_am else wf_pm),
+                    "precipitation_probability": int(pop_am) if is_am and pop_am is not None
+                        else (int(pop_pm) if not is_am and pop_pm is not None else None),
                     "_day_index": i,
                 })
 
@@ -996,16 +1044,11 @@ class KMAWeatherAPI:
                 "native_temperature": t_max,
                 "native_templow": t_min,
                 "condition": self.kor_to_condition(wf_pm),
+                "precipitation_probability": int(pop_pm) if pop_pm is not None else None,
                 "_day_index": i,
             })
 
         _KST = ZoneInfo("Asia/Seoul")
-
-        def _parse_precip(val, no_val):
-            if not val or val in (no_val, "-"): return 0.0
-            if "미만" in str(val): return 0.5
-            digits = "".join(c for c in str(val) if c.isdigit() or c == ".")
-            return float(digits) if digits else 0.0
 
         hourly_forecast = []
         for d_str in sorted(forecast_map.keys()):
@@ -1058,6 +1101,33 @@ class KMAWeatherAPI:
         weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast, "forecast_hourly": hourly_forecast})
 
         kor_now = self._get_sky_kor(weather_data.get("SKY"), weather_data.get("PTY"))
+
+        # ── 현재 예상 강수량 ─────────────────────────────────────────────────
+        # PTY=3(눈)이면 적설량(SNO), 그 외엔 강수량(PCP) 사용
+        _pty_now = str(weather_data.get("PTY", "0"))
+        _raw_now = weather_data.get("SNO") if _pty_now == "3" else weather_data.get("PCP")
+        _no_precip_now = "적설없음" if _pty_now == "3" else "강수없음"
+        weather_data["precip_amount"] = _parse_precip(_raw_now, _no_precip_now)
+
+        # ── 다음 24시간 시간대별 강수량 (현재 예상 강수량 센서의 속성용) ──────
+        # wall-clock(now) 기준이 아니라, 상태값(precip_amount)이 실제로 참조한
+        # _best_slot_dt 바로 다음 슬롯부터 이어지도록 계산한다.
+        # (그렇지 않으면 발표 직후처럼 현재 시각 슬롯이 아직 없어 다음 슬롯을
+        #  상태값으로 쓰는 상황에서, 속성이 현재 시각 기준으로 시작되어
+        #  상태값과 속성의 시작 시점이 어긋나는 문제가 생긴다.)
+        _anchor_dt = _best_slot_dt if _best_slot_dt is not None else now
+        if _anchor_dt.tzinfo is None:
+            _anchor_dt = _anchor_dt.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+
+        hourly_precip: dict[str, float] = {}
+        for entry in hourly_forecast:
+            entry_dt = datetime.fromisoformat(entry["datetime"])
+            if entry_dt <= _anchor_dt:
+                continue
+            hourly_precip[f"{entry_dt.hour:02d}시"] = entry["native_precipitation"]
+            if len(hourly_precip) >= 24:
+                break
+        weather_data["hourly_precipitation_mm"] = hourly_precip
 
         weather_data.update({
             "current_condition_kor": kor_now,
