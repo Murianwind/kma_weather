@@ -508,9 +508,7 @@ class KMAWeatherAPI:
 
             active = [
                 item for item in latest.values()
-                # 1=발표, 3=연장, 6=정정, 7=변경발표 → 전부 "지금 유효한 특보"임
-                # 2=해제, 8=변경해제는 제외
-                if str(item.get("command", "")) in ("1", "3", "6", "7")
+                if str(item.get("command", "")) in ("1", "3")
                 and str(item.get("cancel", "1")) == "0"
                 and str(item.get("endTime", "1")) == "0"
             ]
@@ -521,14 +519,7 @@ class KMAWeatherAPI:
             for item in active:
                 pair = _WARN_TYPE_MAP.get(str(item.get("warnVar", "")))
                 if pair:
-                    # warnStress: 0=주의보, 1=경보, 2=중대경보
-                    stress = str(item.get("warnStress", "0"))
-                    if stress == "2" and len(pair) > 2:
-                        name = pair[2]
-                    elif stress == "1":
-                        name = pair[1]
-                    else:
-                        name = pair[0]
+                    name = pair[1] if str(item.get("warnStress", "0")) == "1" else pair[0]
                     if name not in seen:
                         seen.add(name)
                         warn_names.append(name)
@@ -727,10 +718,13 @@ class KMAWeatherAPI:
         """
         기상청 공식 체감온도 계산.
 
-        - 기온 ≤ 10°C + 풍속 ≥ 4.8km/h : Wind Chill (바람냉각지수)
-        - 기온 ≥ 25°C + 습도 ≥ 40%     : Heat Index (Rothfusz 전체식)
-          기상청 폭염 관련 체감온도 산출 방식 적용
-          간략식 대비 고온·고습 구간에서 2~4°C 높게 산출됨
+        - 기온 ≤ 10°C + 풍속 ≥ 4.8km/h : 겨울철 체감온도(Wind Chill)
+        - 기온 ≥ 25°C + 습도 데이터 있음 : 여름철 체감온도
+          2022.6.2.부터 적용된 기상청 공식(Steadman 1979 한국형 변형식).
+          습구온도(Tw)는 Stull(2011) 추정식으로 계산.
+          (예전에 쓰던 미국 NWS Rothfusz Heat Index는 기상청이 실제
+          쓰는 공식이 아니었고, 고온 구간에서 실제보다 크게 높게
+          나오는 문제가 있어 이 공식으로 교체함)
         - 그 외                          : 기온 그대로 반환
         """
         t, rh, v = _safe_float(temp), _safe_float(reh), _safe_float(wsd)
@@ -738,7 +732,7 @@ class KMAWeatherAPI:
             return temp
         v_kmh = v * 3.6 if v is not None else 0
 
-        # 체감온도(Wind Chill): 10°C 이하 + 풍속 4.8km/h 이상
+        # 겨울철 체감온도(Wind Chill): 10°C 이하 + 풍속 4.8km/h 이상
         if t <= 10 and v_kmh >= 4.8:
             return round(
                 13.12 + 0.6215 * t
@@ -747,21 +741,19 @@ class KMAWeatherAPI:
                 1,
             )
 
-        # 열지수(Heat Index): 25°C 이상 + 습도 40% 이상
-        # Rothfusz 전체식 (기상청 폭염 체감온도 산출 방식)
-        if t >= 25 and rh is not None and rh >= 40:
-            hi = (
-                -8.78469475556
-                + 1.61139411   * t
-                + 2.3385248    * rh
-                - 0.14611605   * t  * rh
-                - 0.01230809   * t  * t
-                - 0.01642482   * rh * rh
-                + 0.00221173   * t  * t  * rh
-                + 0.00072546   * t  * rh * rh
-                - 0.00000358   * t  * t  * rh * rh
+        # 여름철 체감온도: 25°C 이상 + 습도 데이터 있음
+        # 기상청 공식(2022.6.2.~), Stull 습구온도 추정식 사용
+        if t >= 25 and rh is not None:
+            rh_c = max(0.0, min(100.0, rh))  # 추정식이 0~100% 범위를 전제로 함
+            tw = (
+                t * math.atan(0.151977 * (rh_c + 8.313659) ** 0.5)
+                + math.atan(t + rh_c)
+                - math.atan(rh_c - 1.67633)
+                + 0.00391838 * (rh_c ** 1.5) * math.atan(0.023101 * rh_c)
+                - 4.686035
             )
-            return round(hi, 1)
+            at = -0.2442 + 0.55399 * tw + 0.45535 * t - 0.0022 * tw * tw + 0.00278 * tw * t + 3.0
+            return round(at, 1)
 
         return t
 
