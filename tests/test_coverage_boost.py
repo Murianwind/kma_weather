@@ -626,3 +626,86 @@ class TestStationCachePersistence:
 
         assert station_search_called["n"] == 1, \
             "2km 이상 이동했는데도 측정소 재검색이 일어나지 않음"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 여름철 체감온도 공식 정정 검증 (기상청 2022.6.2. 공식)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestSummerApparentTempKMAFormula:
+    """
+    이전에 미국 NWS Rothfusz Heat Index를 잘못 적용해서
+    실제 기상청 발표값보다 크게 높게(예: 30도인데 37.7도) 나오던 문제 수정.
+    기상청이 2022.6.2.부터 실제로 쓰는 공식(Steadman 1979 한국형 변형식,
+    Stull 습구온도 추정식 기반)으로 교체 후 검증.
+    """
+
+    def _api(self):
+        return KMAWeatherAPI(MagicMock(), "key")
+
+    def test_matches_kma_published_value_within_tolerance(self):
+        """
+        [Given] 2026-07-13 11시 기상청 날씨누리 실제 발표값
+                (기온 29.7°C, 체감 30.8°C)
+        [When]  습도 65~70% 범위로 _calculate_apparent_temp 호출
+        [Then]  기상청 발표 체감온도(30.8°C)와 0.5°C 이내로 일치해야 함
+        """
+        api = self._api()
+        result = api._calculate_apparent_temp(29.7, 68, 2.0)
+        assert abs(result - 30.8) < 0.5, \
+            f"기상청 실제 발표값(30.8)과 너무 차이남: {result}"
+
+    def test_does_not_overestimate_like_old_rothfusz_formula(self):
+        """
+        [Given] 기온 30°C, 습도 65%
+        [When]  _calculate_apparent_temp 호출
+        [Then]  기존 잘못된 Rothfusz 공식이 냈던 37~38°C대가 아니라
+                실제 기상청 공식대로 31°C 안팎으로 나와야 함
+        """
+        api = self._api()
+        result = api._calculate_apparent_temp(30.0, 65, 2.0)
+        assert result < 33.0, f"Rothfusz 방식으로 과대산출됨: {result}"
+        assert result > 28.0
+
+    def test_low_humidity_summer_apparent_temp_close_to_actual(self):
+        """
+        [Given] 기온 30°C, 습도 30%(건조)
+        [When]  _calculate_apparent_temp 호출
+        [Then]  건조하면 체감온도가 실제 기온보다 낮거나 비슷해야 함
+                (Rothfusz 간이식과 달리 저습도에서 실제기온보다 내려갈 수 있음)
+        """
+        api = self._api()
+        result = api._calculate_apparent_temp(30.0, 30, 1.0)
+        assert result <= 30.5
+
+    def test_higher_humidity_gives_higher_apparent_temp(self):
+        """
+        [Given] 같은 기온에서 습도만 다르게(50% vs 80%)
+        [When]  각각 _calculate_apparent_temp 호출
+        [Then]  습도가 높을수록 체감온도도 높아야 함(단조증가)
+        """
+        api = self._api()
+        low_rh = api._calculate_apparent_temp(30.0, 50, 2.0)
+        high_rh = api._calculate_apparent_temp(30.0, 80, 2.0)
+        assert high_rh > low_rh
+
+    def test_summer_formula_applies_without_humidity_threshold(self):
+        """
+        [Given] 기온 25°C, 습도 20%(예전 공식은 40% 미만이면 여름철 공식 자체를 안 씀)
+        [When]  _calculate_apparent_temp 호출
+        [Then]  습도 40% 문턱 없이도 여름철 공식이 적용됨
+                (기온 그대로 반환하는 게 아니라 계산값이 나와야 함)
+        """
+        api = self._api()
+        result = api._calculate_apparent_temp(25.0, 20, 1.0)
+        assert result != 25.0
+
+    def test_winter_wind_chill_unaffected_by_summer_formula_change(self):
+        """
+        [Given] 겨울철 조건(기온 5도 이하, 강풍)
+        [When]  _calculate_apparent_temp 호출
+        [Then]  기존 Wind Chill 공식 그대로 유지되어야 함(여름철 공식 교체와 무관)
+        """
+        api = self._api()
+        result = api._calculate_apparent_temp(5, 60, 20 / 3.6)
+        assert result < 5.0  # 강풍이면 체감온도가 실제기온보다 낮아야 함
