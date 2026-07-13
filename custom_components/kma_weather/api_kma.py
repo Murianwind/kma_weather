@@ -508,7 +508,9 @@ class KMAWeatherAPI:
 
             active = [
                 item for item in latest.values()
-                if str(item.get("command", "")) in ("1", "3")
+                # 1=발표, 3=연장, 6=정정, 7=변경발표 → 전부 "지금 유효한 특보"임
+                # 2=해제, 8=변경해제는 제외
+                if str(item.get("command", "")) in ("1", "3", "6", "7")
                 and str(item.get("cancel", "1")) == "0"
                 and str(item.get("endTime", "1")) == "0"
             ]
@@ -519,7 +521,14 @@ class KMAWeatherAPI:
             for item in active:
                 pair = _WARN_TYPE_MAP.get(str(item.get("warnVar", "")))
                 if pair:
-                    name = pair[1] if str(item.get("warnStress", "0")) == "1" else pair[0]
+                    # warnStress: 0=주의보, 1=경보, 2=중대경보
+                    stress = str(item.get("warnStress", "0"))
+                    if stress == "2" and len(pair) > 2:
+                        name = pair[2]
+                    elif stress == "1":
+                        name = pair[1]
+                    else:
+                        name = pair[0]
                     if name not in seen:
                         seen.add(name)
                         warn_names.append(name)
