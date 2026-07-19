@@ -552,7 +552,7 @@ class KMAWeatherAPI:
                         api_result[wv] = pair[0]
 
             # ── 2·3단계: 페이지로 검증하고, API에 없는 미해제 특보를 병합 ──
-            area_name = self._get_warn_area_display_name(warn_area_code)
+            area_name = await self._get_warn_area_display_name(warn_area_code)
             if area_name:
                 try:
                     page_result = await self._fetch_page_warnings_for_area(area_name)
@@ -575,11 +575,19 @@ class KMAWeatherAPI:
             _LOGGER.error("기상특보 조회 오류: %s", self._mask_key(e))
             return None
 
-    def _get_warn_area_display_name(self, warn_area_code: str) -> str | None:
-        """특보구역코드(L코드)를 weather.go.kr 표시명으로 변환한다."""
+    async def _get_warn_area_display_name(self, warn_area_code: str) -> str | None:
+        """
+        특보구역코드(L코드)를 weather.go.kr 표시명으로 변환한다.
+        JSON 파일 읽기는 블로킹 호출이라, 이벤트 루프를 막지 않도록
+        hass.async_add_executor_job으로 감싸서 실행한다.
+        (hass가 없는 테스트 환경 등에서는 동기 로드로 폴백한다.)
+        """
         if not _WARN_AREA_NAMES:
             try:
-                _load_warn_area_names()
+                if self.hass is not None:
+                    await self.hass.async_add_executor_job(_load_warn_area_names)
+                else:
+                    _load_warn_area_names()
             except Exception as e:
                 _LOGGER.debug("특보구역명 매핑 로드 실패: %s", e)
                 return None
