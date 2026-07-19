@@ -746,23 +746,25 @@ class TestWarningPageMerge:
 
     # ── 1단계: 코드→지역명 매핑 ──────────────────────────────────────
 
-    def test_area_code_maps_to_correct_display_name(self):
+    @pytest.mark.asyncio
+    async def test_area_code_maps_to_correct_display_name(self):
         """
         [Given] CSV 기준 L1091320 = "제주시북부"
         [When]  _get_warn_area_display_name 호출
         [Then]  "제주시북부" 반환
         """
         api = self._api()
-        assert api._get_warn_area_display_name("L1091320") == "제주시북부"
+        assert await api._get_warn_area_display_name("L1091320") == "제주시북부"
 
-    def test_unknown_area_code_returns_none(self):
+    @pytest.mark.asyncio
+    async def test_unknown_area_code_returns_none(self):
         """
         [Given] 매핑에 없는 코드
         [When]  _get_warn_area_display_name 호출
         [Then]  None 반환 (크래시 없음)
         """
         api = self._api()
-        assert api._get_warn_area_display_name("L9999999") is None
+        assert await api._get_warn_area_display_name("L9999999") is None
 
     # ── 2단계: 페이지 검증(API와 일치하는 경우) ──────────────────────
 
@@ -1049,3 +1051,85 @@ class TestWarningPageFailureNotification:
             await api._fetch_page_warnings_for_area("제주시북부")  # 복구 후 재실패
 
         assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 이벤트 루프 블로킹 호출 방지 (warn_area_names.json 로딩)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestWarnAreaNamesNonBlockingLoad:
+    """
+    _load_warn_area_names()의 동기 파일 읽기(Path.read_text)가
+    이벤트 루프를 직접 막지 않고 hass.async_add_executor_job으로
+    위임되는지 검증한다.
+
+    배경: HA 로그에 "Detected blocking call to read_text ... inside
+    the event loop"가 발생했던 실제 버그. area.json/pollen_area_map.json
+    등 다른 리소스는 coordinator.py에서 이미 executor_job으로 로드하고
+    있었는데, 이 파일만 async 함수 안에서 동기 호출로 남아있었다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_loading_delegates_to_executor_job_when_hass_present(self):
+        """
+        [Given] hass 객체가 있는 정상적인 런타임 환경
+        [When]  _get_warn_area_display_name 호출(최초 1회, 캐시 비어있음)
+        [Then]  파일 로딩이 hass.async_add_executor_job을 통해 실행됨
+                (이벤트 루프를 직접 막는 동기 호출이 아님)
+        """
+        hass = MagicMock()
+        call_count = {"n": 0}
+
+        async def mock_executor(func, *args):
+            call_count["n"] += 1
+            return func(*args)
+        hass.async_add_executor_job = mock_executor
+
+        api = KMAWeatherAPI(MagicMock(), "key", hass=hass)
+        # 모듈 전역 캐시를 비워서 실제로 로드가 일어나도록 강제
+        import custom_components.kma_weather.api_kma as api_module
+        api_module._WARN_AREA_NAMES = {}
+
+        result = await api._get_warn_area_display_name("L1091320")
+
+        assert call_count["n"] == 1, "파일 로딩이 executor_job으로 위임되지 않음"
+        assert result == "제주시북부"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_sync_load_when_hass_is_none(self):
+        """
+        [Given] hass가 없는 환경(단위테스트 등)
+        [When]  _get_warn_area_display_name 호출
+        [Then]  크래시 없이 동기 폴백으로 정상 동작함
+        """
+        import custom_components.kma_weather.api_kma as api_module
+        api_module._WARN_AREA_NAMES = {}
+
+        api = KMAWeatherAPI(MagicMock(), "key", hass=None)
+        result = await api._get_warn_area_display_name("L1091320")
+
+        assert result == "제주시북부"
+
+    @pytest.mark.asyncio
+    async def test_does_not_reload_once_cached(self):
+        """
+        [Given] 이미 한 번 로드되어 전역 캐시가 채워진 상태
+        [When]  _get_warn_area_display_name을 다시 호출
+        [Then]  executor_job이 다시 호출되지 않음(캐시 재사용)
+        """
+        hass = MagicMock()
+        call_count = {"n": 0}
+
+        async def mock_executor(func, *args):
+            call_count["n"] += 1
+            return func(*args)
+        hass.async_add_executor_job = mock_executor
+
+        api = KMAWeatherAPI(MagicMock(), "key", hass=hass)
+        import custom_components.kma_weather.api_kma as api_module
+        api_module._WARN_AREA_NAMES = {}
+
+        await api._get_warn_area_display_name("L1091320")
+        await api._get_warn_area_display_name("L1130120")
+
+        assert call_count["n"] == 1, "캐시가 있는데도 다시 로드함"
