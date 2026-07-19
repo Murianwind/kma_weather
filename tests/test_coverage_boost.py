@@ -709,3 +709,343 @@ class TestSummerApparentTempKMAFormula:
         api = self._api()
         result = api._calculate_apparent_temp(5, 60, 20 / 3.6)
         assert result < 5.0  # 강풍이면 체감온도가 실제기온보다 낮아야 함
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 기상특보 3단계 검증: API 판단 → 페이지 검증 → 미해제 특보 병합
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestWarningPageMerge:
+    """
+    1) API(getPwnCd, 6일 조회 한도)로 특보현황을 파악하고
+    2) weather.go.kr 실시간 특보 현황 페이지로 그 판단을 검증하며
+    3) 페이지에는 있지만 API 6일 창에는 없는 미해제 특보를 병합해서 추가한다.
+
+    코드-지역명 매핑은 기상청_기상특보구역정보_20260601.csv 기준
+    (warn_area_names.json)을 사용한다.
+    """
+
+    def _api(self):
+        return KMAWeatherAPI(MagicMock(), "key")
+
+    def _page_html(self, rows: list[tuple[str, str, str]]) -> str:
+        """rows: (특보종류, 수준, 해당지역) 튜플 목록으로 표 HTML 생성"""
+        trs = "".join(
+            f"<tr><td>{t}</td><td>{lvl}</td><td>{region}</td></tr>"
+            for t, lvl, region in rows
+        )
+        return f"<table>{trs}</table>"
+
+    def _mock_session_get(self, api, html: str):
+        class MockResp:
+            status = 200
+            async def text(self): return html
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+        api.session.get = lambda *a, **kw: MockResp()
+
+    # ── 1단계: 코드→지역명 매핑 ──────────────────────────────────────
+
+    def test_area_code_maps_to_correct_display_name(self):
+        """
+        [Given] CSV 기준 L1091320 = "제주시북부"
+        [When]  _get_warn_area_display_name 호출
+        [Then]  "제주시북부" 반환
+        """
+        api = self._api()
+        assert api._get_warn_area_display_name("L1091320") == "제주시북부"
+
+    def test_unknown_area_code_returns_none(self):
+        """
+        [Given] 매핑에 없는 코드
+        [When]  _get_warn_area_display_name 호출
+        [Then]  None 반환 (크래시 없음)
+        """
+        api = self._api()
+        assert api._get_warn_area_display_name("L9999999") is None
+
+    # ── 2단계: 페이지 검증(API와 일치하는 경우) ──────────────────────
+
+    @pytest.mark.asyncio
+    async def test_api_and_page_agree_no_duplicate(self):
+        """
+        [Given] API가 폭염경보를 활성으로 판단했고, 페이지에도 동일하게 나타남
+        [When]  _get_warning 호출
+        [Then]  폭염경보가 중복 없이 한 번만 표시됨
+        """
+        api = self._api()
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "00"},
+                "body": {"items": {"item": [
+                    {"areaCode": "L1091320", "cancel": "0", "command": "1",
+                     "endTime": 0, "tmFc": 202607191000, "warnVar": 12, "warnStress": 1},
+                ]}}}
+        })
+        html = self._page_html([("폭염", "경보", "제주도(제주시북부)")])
+        self._mock_session_get(api, html)
+
+        result = await api._get_warning("L1091320")
+
+        assert result == "폭염경보"
+
+    # ── 3단계: 페이지에만 있는 미해제 특보 병합 ──────────────────────
+
+    @pytest.mark.asyncio
+    async def test_page_only_warning_gets_merged_in(self):
+        """
+        [Given] API 6일 창에는 열대야 관련 기록이 전혀 없지만
+                (6일보다 오래된 미해제 특보라 창 밖으로 밀려남)
+                페이지에는 "제주시북부" 열대야주의보가 여전히 나타남
+        [When]  _get_warning 호출
+        [Then]  API 결과에 열대야주의보가 병합되어 추가됨
+        """
+        api = self._api()
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "00"},
+                "body": {"items": {"item": []}}}  # API 6일 창엔 아무 기록도 없음
+        })
+        html = self._page_html([("열대야", "주의보", "제주도(제주시북부)")])
+        self._mock_session_get(api, html)
+
+        result = await api._get_warning("L1091320")
+
+        assert result == "열대야주의보"
+
+    @pytest.mark.asyncio
+    async def test_jeju_north_real_case_api_heatwave_page_adds_tropical_night(self):
+        """
+        [Given] 실제 사례 재현: API는 제주시북부 폭염경보(warnStress=1)만 찾고,
+                페이지에는 폭염경보(API와 일치) + 7/10 발효된 열대야주의보
+                (API 6일 창 밖이라 API엔 없음)가 함께 나타남
+        [When]  _get_warning 호출
+        [Then]  "폭염경보, 열대야주의보"로 둘 다 포함되어야 함
+        """
+        api = self._api()
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "00"},
+                "body": {"items": {"item": [
+                    {"areaCode": "L1091320", "areaName": "제주시북부", "cancel": "0",
+                     "command": "7", "endTime": 0, "tmFc": 202607191000,
+                     "warnVar": 12, "warnStress": 1, "startTime": 202607191100},
+                ]}}}
+        })
+        html = self._page_html([
+            ("폭염", "경보", "제주도(제주시북부)"),
+            ("열대야", "주의보", "제주도(제주시북부)"),
+            ("강풍", "주의보", "서울특별시(서울동북권)"),  # 다른 지역, 무관해야 함
+        ])
+        self._mock_session_get(api, html)
+
+        result = await api._get_warning("L1091320")
+
+        assert "폭염경보" in result
+        assert "열대야주의보" in result
+        assert "강풍" not in result
+
+    @pytest.mark.asyncio
+    async def test_preliminary_warning_level_is_excluded(self):
+        """
+        [Given] 페이지에 우리 지역의 "예비"(예비특보) 등급 행이 있음
+        [When]  _get_warning 호출
+        [Then]  예비특보는 정식 발효가 아니므로 병합 대상에서 제외됨
+        """
+        api = self._api()
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "00"},
+                "body": {"items": {"item": []}}}
+        })
+        html = self._page_html([("호우", "예비", "제주도(제주시북부)")])
+        self._mock_session_get(api, html)
+
+        result = await api._get_warning("L1091320")
+
+        assert result == "특보없음"
+
+    @pytest.mark.asyncio
+    async def test_other_region_on_page_does_not_leak_in(self):
+        """
+        [Given] 페이지에 우리 지역과 무관한 다른 지역 특보만 있음
+        [When]  _get_warning 호출
+        [Then]  "특보없음" (다른 지역 특보가 섞여 들어오면 안 됨)
+        """
+        api = self._api()
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "00"},
+                "body": {"items": {"item": []}}}
+        })
+        html = self._page_html([("강풍", "주의보", "서울특별시(서울동북권)")])
+        self._mock_session_get(api, html)
+
+        result = await api._get_warning("L1091320")
+
+        assert result == "특보없음"
+
+    @pytest.mark.asyncio
+    async def test_page_fetch_failure_falls_back_to_api_only(self):
+        """
+        [Given] 페이지 조회가 실패함(네트워크 오류)
+        [When]  _get_warning 호출
+        [Then]  크래시 없이 API 결과만으로 정상 반환
+        """
+        api = self._api()
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "00"},
+                "body": {"items": {"item": [
+                    {"areaCode": "L1091320", "cancel": "0", "command": "1",
+                     "endTime": 0, "tmFc": 202607191000, "warnVar": 12, "warnStress": 0},
+                ]}}}
+        })
+
+        def raise_error(*a, **kw):
+            raise Exception("network error")
+        api.session.get = raise_error
+
+        result = await api._get_warning("L1091320")
+
+        assert result == "폭염주의보"
+
+    @pytest.mark.asyncio
+    async def test_major_warning_level_from_page_recognized(self):
+        """
+        [Given] 페이지에 "중대경보" 등급으로 나타난 폭염 특보(API엔 없음)
+        [When]  _get_warning 호출
+        [Then]  "폭염중대경보"로 정확히 병합됨
+        """
+        api = self._api()
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "00"},
+                "body": {"items": {"item": []}}}
+        })
+        html = self._page_html([("폭염", "중대경보", "제주도(제주시북부)")])
+        self._mock_session_get(api, html)
+
+        result = await api._get_warning("L1091320")
+
+        assert result == "폭염중대경보"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 특보 보완 확인 페이지 실패 시 알림 동작 검증
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestWarningPageFailureNotification:
+    """
+    weather.go.kr 보완 확인 페이지 조회 실패 시:
+    - API(getPwnCd) 결과만으로도 정상적으로 특보 상태값이 출력되는지
+    - 반복 실패 시 로그가 도배되지 않고, 최초 1회만 WARNING이 남는지
+    - 복구 후 다시 실패하면 재알림되는지
+    를 검증한다.
+    """
+
+    def _api(self):
+        return KMAWeatherAPI(MagicMock(), "key")
+
+    @pytest.mark.asyncio
+    async def test_api_only_result_returned_when_page_fetch_raises(self):
+        """
+        [Given] 페이지 조회에서 예외가 발생함(네트워크 오류)
+        [When]  _get_warning 호출
+        [Then]  크래시 없이 API 결과(폭염주의보)만으로 정상 반환됨
+        """
+        api = self._api()
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "00"},
+                "body": {"items": {"item": [
+                    {"areaCode": "L1091320", "cancel": "0", "command": "1",
+                     "endTime": 0, "tmFc": 202607191000, "warnVar": 12, "warnStress": 0},
+                ]}}}
+        })
+        api.session.get = MagicMock(side_effect=Exception("network down"))
+
+        result = await api._get_warning("L1091320")
+
+        assert result == "폭염주의보"
+
+    @pytest.mark.asyncio
+    async def test_api_only_result_returned_when_page_returns_non_200(self):
+        """
+        [Given] 페이지가 200이 아닌 상태코드(예: 503)를 반환함
+        [When]  _get_warning 호출
+        [Then]  크래시 없이 API 결과만으로 정상 반환됨
+        """
+        api = self._api()
+        api._fetch = AsyncMock(return_value={
+            "response": {"header": {"resultCode": "00"},
+                "body": {"items": {"item": [
+                    {"areaCode": "L1091320", "cancel": "0", "command": "1",
+                     "endTime": 0, "tmFc": 202607191000, "warnVar": 13, "warnStress": 0},
+                ]}}}
+        })
+
+        class ErrorResp:
+            status = 503
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+        api.session.get = lambda *a, **kw: ErrorResp()
+
+        result = await api._get_warning("L1091320")
+
+        assert result == "열대야주의보"
+
+    @pytest.mark.asyncio
+    async def test_first_failure_logs_warning(self, caplog):
+        """
+        [Given] 페이지 조회 실패가 처음 발생함
+        [When]  _fetch_page_warnings_for_area 호출
+        [Then]  WARNING 레벨 로그가 남음
+        """
+        import logging
+        api = self._api()
+        api.session.get = MagicMock(side_effect=Exception("timeout"))
+
+        with caplog.at_level(logging.WARNING):
+            await api._fetch_page_warnings_for_area("제주시북부")
+
+        assert any("weather.go.kr" in r.message for r in caplog.records)
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_repeated_failure_does_not_spam_warning(self, caplog):
+        """
+        [Given] 페이지 조회가 연달아 두 번 실패함
+        [When]  _fetch_page_warnings_for_area를 두 번 호출
+        [Then]  WARNING은 첫 번째 호출에서만 남고, 두 번째는 안 남음
+                (매 폴링마다 반복 실패해도 로그가 도배되지 않도록)
+        """
+        import logging
+        api = self._api()
+        api.session.get = MagicMock(side_effect=Exception("timeout"))
+
+        with caplog.at_level(logging.WARNING):
+            await api._fetch_page_warnings_for_area("제주시북부")
+            caplog.clear()
+            await api._fetch_page_warnings_for_area("제주시북부")
+
+        assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_recovery_resets_notification_so_next_failure_warns_again(self, caplog):
+        """
+        [Given] 실패 → 성공(복구) → 다시 실패 순서로 진행
+        [When]  각 단계마다 _fetch_page_warnings_for_area 호출
+        [Then]  복구 이후의 실패에서는 다시 WARNING이 남음
+        """
+        import logging
+        api = self._api()
+
+        api.session.get = MagicMock(side_effect=Exception("timeout"))
+        await api._fetch_page_warnings_for_area("제주시북부")  # 1차 실패 → 알림 상태 True
+
+        class OkResp:
+            status = 200
+            async def text(self): return "<table></table>"
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+        api.session.get = lambda *a, **kw: OkResp()
+        await api._fetch_page_warnings_for_area("제주시북부")  # 복구 → 알림 상태 초기화
+
+        api.session.get = MagicMock(side_effect=Exception("timeout again"))
+        with caplog.at_level(logging.WARNING):
+            await api._fetch_page_warnings_for_area("제주시북부")  # 복구 후 재실패
+
+        assert any(r.levelname == "WARNING" for r in caplog.records)
