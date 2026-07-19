@@ -25,6 +25,28 @@ from .const import (
 _POLLEN_KINDS: tuple[str, ...] = tuple(_POLLEN_SEASONS.keys())
 _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
 
+# ── 특보 기본명(호우/폭염 등) → warnVar 역매핑 ─────────────────────────────
+# weather.go.kr 실시간 페이지의 "특보" 칸(예: "호우")을 warnVar 키로 되돌리는 데 사용
+_BASE_NAME_TO_WARNVAR: dict[str, str] = {}
+for _wv, _names in _WARN_TYPE_MAP.items():
+    for _n in _names:
+        for _suffix in ("중대경보", "경보", "주의보"):
+            if _n.endswith(_suffix):
+                _BASE_NAME_TO_WARNVAR[_n[: -len(_suffix)]] = _wv
+                break
+
+# ── 특보구역코드(L코드) → 표시명(예: "제주시북부") 매핑 ─────────────────────
+# weather.go.kr 실시간 페이지의 "해당지역" 칸과 대조하기 위해 사용.
+# 기상청_기상특보구역정보_20260601.csv 기준.
+_WARN_AREA_NAMES: dict[str, str] = {}
+
+
+def _load_warn_area_names() -> None:
+    global _WARN_AREA_NAMES
+    _WARN_AREA_NAMES = json.loads(
+        (Path(__file__).parent / "warn_area_names.json").read_text(encoding="utf-8")
+    )
+
 
 KOR_TO_CONDITION: dict[str, str] = {
     "맑음": "sunny",
@@ -59,6 +81,7 @@ class KMAWeatherAPI:
         self._cached_station: str | None = None
         self._cached_station_lat: float | None = None
         self._cached_station_lon: float | None = None
+        self._warn_page_fetch_failed_notified = False  # 페이지 실패 경고 중복 방지용
 
         self._nominatim_user_agent = self._build_nominatim_user_agent()
 
@@ -470,6 +493,7 @@ class KMAWeatherAPI:
         if not warn_area_code:
             return None
         try:
+            # ── 1단계: API로 특보현황 파악 ───────────────────────────────
             now = datetime.now(self.tz)
             from_tm = (now - timedelta(days=5)).strftime("%Y%m%d")
             to_tm = now.strftime("%Y%m%d")
@@ -496,8 +520,6 @@ class KMAWeatherAPI:
                     .get("items", {})
                     .get("item", [])
             )
-            if not items:
-                return "특보없음"
 
             latest: dict[str, dict] = {}
             for item in items:
@@ -514,30 +536,131 @@ class KMAWeatherAPI:
                 and str(item.get("cancel", "1")) == "0"
                 and str(item.get("endTime", "1")) == "0"
             ]
-            if not active:
-                return "특보없음"
 
-            warn_names, seen = [], set()
+            # warnVar별로 표시할 이름을 결정해 딕셔너리에 담는다 (병합의 기준)
+            api_result: dict[str, str] = {}  # warnVar -> 표시명
             for item in active:
-                pair = _WARN_TYPE_MAP.get(str(item.get("warnVar", "")))
+                wv = str(item.get("warnVar", ""))
+                pair = _WARN_TYPE_MAP.get(wv)
                 if pair:
-                    # warnStress: 0=주의보, 1=경보, 2=중대경보
                     stress = str(item.get("warnStress", "0"))
                     if stress == "2" and len(pair) > 2:
-                        name = pair[2]
+                        api_result[wv] = pair[2]
                     elif stress == "1":
-                        name = pair[1]
+                        api_result[wv] = pair[1]
                     else:
-                        name = pair[0]
-                    if name not in seen:
-                        seen.add(name)
-                        warn_names.append(name)
+                        api_result[wv] = pair[0]
 
-            return ", ".join(warn_names) if warn_names else "특보없음"
+            # ── 2·3단계: 페이지로 검증하고, API에 없는 미해제 특보를 병합 ──
+            area_name = self._get_warn_area_display_name(warn_area_code)
+            if area_name:
+                try:
+                    page_result = await self._fetch_page_warnings_for_area(area_name)
+                    for wv, name in page_result.items():
+                        if wv not in api_result:
+                            _LOGGER.info(
+                                "특보 보완: '%s'(%s)이 API 6일 조회에는 없지만 "
+                                "기상청 실시간 특보 현황 페이지에서 확인되어 추가합니다.",
+                                name, area_name,
+                            )
+                            api_result[wv] = name
+                except Exception as e:
+                    _LOGGER.debug("특보 페이지 보완 확인 실패 (무시): %s", self._mask_key(e))
+
+            if not api_result:
+                return "특보없음"
+            return ", ".join(api_result.values())
 
         except Exception as e:
             _LOGGER.error("기상특보 조회 오류: %s", self._mask_key(e))
             return None
+
+    def _get_warn_area_display_name(self, warn_area_code: str) -> str | None:
+        """특보구역코드(L코드)를 weather.go.kr 표시명으로 변환한다."""
+        if not _WARN_AREA_NAMES:
+            try:
+                _load_warn_area_names()
+            except Exception as e:
+                _LOGGER.debug("특보구역명 매핑 로드 실패: %s", e)
+                return None
+        return _WARN_AREA_NAMES.get(warn_area_code)
+
+    def _notify_warn_page_failure(self, reason: str) -> None:
+        """
+        특보 보완 확인용 페이지 조회 실패를 알린다. 매 폴링마다 반복 실패해도
+        로그가 도배되지 않도록, 이미 알린 상태면 WARNING 대신 DEBUG로만 남긴다.
+        """
+        if self._warn_page_fetch_failed_notified:
+            _LOGGER.debug("특보 현황 페이지 조회 계속 실패 중: %s", self._mask_key(reason))
+            return
+        self._warn_page_fetch_failed_notified = True
+        _LOGGER.warning(
+            "기상특보 보완 확인용 페이지(weather.go.kr) 조회에 실패했습니다: %s. "
+            "API(getPwnCd) 결과만으로 특보를 표시합니다. "
+            "(이 경고는 반복 실패 중 최초 1회만 표시되며, 페이지 조회가 다시 "
+            "성공하면 이후 실패 시 재알림됩니다.)",
+            self._mask_key(reason),
+        )
+
+    async def _fetch_page_warnings_for_area(self, area_name: str) -> dict[str, str]:
+        """
+        weather.go.kr의 실시간(날짜 제한 없는) 특보 현황 페이지를 파싱하여,
+        area_name에 해당하는 현재 활성 특보를 {warnVar: 표시명} 형태로 반환한다.
+        "예비"(예비특보) 등급 행은 아직 정식 발효된 특보가 아니므로 제외한다.
+
+        페이지 조회/파싱에 실패하면 빈 딕셔너리를 반환한다(API 결과는 그대로 유지됨).
+        실패는 매 폴링(1시간)마다 반복될 수 있어 로그 도배를 피하려고
+        "처음 실패했을 때 한 번만 경고"하고, 다시 성공하면 알림 상태를 초기화해서
+        다음에 또 실패하면 재차 경고할 수 있게 한다.
+        """
+        try:
+            async with self.session.get(
+                "https://www.weather.go.kr/w/wnuri-fct2021/weather/warning.do",
+                timeout=10,
+            ) as resp:
+                if resp.status != 200:
+                    self._notify_warn_page_failure(f"HTTP {resp.status}")
+                    return {}
+                html = await resp.text()
+        except Exception as e:
+            self._notify_warn_page_failure(str(e))
+            return {}
+
+        # 조회 성공 → 다음 실패 시 다시 경고할 수 있도록 알림 상태 초기화
+        self._warn_page_fetch_failed_notified = False
+
+        result: dict[str, str] = {}
+        # 표의 각 행(<tr>)에서 셀(<td>) 텍스트를 뽑는다.
+        # 페이지 마크업이 바뀌면 이 정규식도 함께 갱신해야 한다.
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL)
+        for row in rows:
+            cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
+            if len(cells) < 3:
+                continue
+            strip_tags = lambda s: re.sub(r"<[^>]+>", "", s).strip()
+            warn_type = strip_tags(cells[0])   # 예: "호우"
+            level = strip_tags(cells[1])       # 예: "주의보"/"경보"/"중대경보"/"예비"
+            region_cell = strip_tags(cells[2])
+
+            if level == "예비":
+                continue  # 예비특보는 아직 정식 발효가 아니므로 제외
+            if area_name not in region_cell:
+                continue
+
+            wv = _BASE_NAME_TO_WARNVAR.get(warn_type)
+            if not wv:
+                continue
+            pair = _WARN_TYPE_MAP.get(wv)
+            if not pair:
+                continue
+            if level == "중대경보" and len(pair) > 2:
+                result[wv] = pair[2]
+            elif level == "경보":
+                result[wv] = pair[1]
+            else:
+                result[wv] = pair[0]
+
+        return result
 
     async def _get_pollen(self, now: datetime, area_no: str, area_name: str) -> dict | None:
         month = now.month
