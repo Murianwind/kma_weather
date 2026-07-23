@@ -1277,6 +1277,12 @@ class KMAWeatherAPI:
             hourly_precip[f"{entry_dt.hour:02d}시"] = entry["native_precipitation"]
             if len(hourly_precip) >= 24:
                 break
+        if hourly_precip:
+            # 시각 키(00시~23시)만으로는 매시 회전해도 dict가 동일해질 수 있어
+            # (키 집합 동일 + 값 우연 일치 → HA가 상태 기록을 스킵),
+            # 매시 반드시 달라지는 기준 속성을 추가해 기록 누락을 방지한다.
+            _first_dt = _anchor_dt + timedelta(hours=1)
+            hourly_precip["예보 시작"] = _first_dt.strftime("%m-%d %H시")
         weather_data["hourly_precipitation_mm"] = hourly_precip
 
         weather_data.update({
