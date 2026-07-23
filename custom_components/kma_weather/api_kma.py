@@ -199,10 +199,15 @@ class KMAWeatherAPI:
                     url, params=params, headers=headers, timeout=timeout
                 ) as response:
                     if response.status in (429, 500, 502, 503, 504):
+                        _desc = "요청 한도 초과" if response.status == 429 else "일시적 서버 오류"
                         if attempt == 0:
-                            _LOGGER.warning("API %s 발생 (트래픽 초과). 10초 후 재시도합니다. (%s)", response.status, self._mask_key(url))
+                            _LOGGER.warning("API HTTP %s 발생 (%s). 10초 후 재시도합니다. (%s)", response.status, _desc, self._mask_key(url))
                             await asyncio.sleep(10.0)
                             continue
+                        _LOGGER.warning(
+                            "API HTTP %s 재시도 실패 (%s) → 이번 주기 데이터 생략, 캐시로 대체합니다. (%s)",
+                            response.status, _desc, self._mask_key(url),
+                        )
                         return {"_http_error": str(response.status)}
 
                     if response.status in (401, 403):
@@ -215,10 +220,17 @@ class KMAWeatherAPI:
                     response.raise_for_status()
                     text = await response.text()
                     try:
-                        return json.loads(text)
+                        parsed = json.loads(text)
                     except (json.JSONDecodeError, ValueError):
                         _LOGGER.error("API 응답 파싱 실패 (%s): 알 수 없는 형식", self._mask_key(url))
                         return None
+                    if not isinstance(parsed, dict):
+                        _LOGGER.error(
+                            "API 응답이 JSON 객체가 아닙니다 (%s): %s 수신 → 무시",
+                            self._mask_key(url), type(parsed).__name__,
+                        )
+                        return None
+                    return parsed
             except Exception as err:
                 is_retryable = any(code in str(err) for code in ("429", "500", "502", "503", "504"))
                 if attempt == 1 or not is_retryable:
@@ -231,8 +243,14 @@ class KMAWeatherAPI:
         if not data:
             return None
         if "_http_error" in data:
-            if data["_http_error"] == "429": return "429"
-            return "30"
+            err = data["_http_error"]
+            if err == "429":
+                return "429"
+            if err in ("401", "403", "404"):
+                # 인증 실패/미존재 서비스 → 실제 미신청·권한 문제로 취급
+                return "30"
+            # 500/502/503/504 등 일시적 서버 오류 → 미신청 판정에서 제외
+            return None
         return (
             data.get("response", {})
                 .get("header", {})
