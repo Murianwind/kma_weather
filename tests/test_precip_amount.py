@@ -135,7 +135,7 @@ class TestHourlyPrecipitationAttribute:
         """
         [Given] 이틀치 단기예보 데이터
         [When]  _merge_all 호출
-        [Then]  hourly_precipitation_mm에 정확히 24개 시간대가 담김
+        [Then]  hourly_precipitation_mm에 시간대 24개 + "예보 시작" 마커가 담김
         """
         api = make_api()
         now = datetime(2026, 7, 7, 14, 30, tzinfo=TZ)
@@ -143,7 +143,12 @@ class TestHourlyPrecipitationAttribute:
 
         result = api._merge_all(now, short_res, None, {})
 
-        assert len(result["weather"]["hourly_precipitation_mm"]) == 24
+        hp = result["weather"]["hourly_precipitation_mm"]
+        hour_keys = [k for k in hp if k != "예보 시작"]
+        assert len(hour_keys) == 24
+        # 매시 회전 시 dict 동등성으로 HA 상태 기록이 스킵되지 않도록
+        # 반드시 달라지는 "예보 시작" 마커가 포함되어야 한다
+        assert "예보 시작" in hp
 
     def test_starts_from_next_hour_not_current(self):
         """
