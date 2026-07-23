@@ -152,6 +152,13 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
         elif details[1] is not None and sensor_type not in ("api_expire",):
             self._attr_state_class = SensorStateClass.MEASUREMENT
 
+        if sensor_type == "precip_amount":
+            # 속성이 시각 키(00시~23시) 회전 윈도우라서, 상태값과 각 시간대 값이
+            # 모두 이전과 같으면 회전 후 dict도 동일해져(파이썬 dict 비교는 순서
+            # 무시) HA가 상태 기록을 스킵하고 속성 시간이 밀리지 않는 문제가 있음.
+            # force_update로 매 갱신마다 기록을 강제해 속성 회전을 보장한다.
+            self._attr_force_update = True
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
