@@ -1024,8 +1024,47 @@ class KMAWeatherAPI:
         def _parse_precip(val, no_val):
             if not val or val in (no_val, "-"): return 0.0
             if "미만" in str(val): return 0.5
-            digits = "".join(c for c in str(val) if c.isdigit() or c == ".")
-            return float(digits) if digits else 0.0
+            s = str(val)
+            if "~" in s:
+                # 기상청이 강수량이 불확실할 때 "30.0~50.0mm"처럼 범위로 주는 경우.
+                # 최소 이만큼은 온다는 보수적 기준으로 하한값을 대표값으로 사용한다.
+                lo_str, hi_str = s.split("~", 1)
+                lo = _safe_float("".join(c for c in lo_str if c.isdigit() or c == "."))
+                hi = _safe_float("".join(c for c in hi_str if c.isdigit() or c == "."))
+                if lo is not None:
+                    return lo
+                if hi is not None:
+                    return hi
+                _LOGGER.warning("강수량 범위 값 파싱 실패(API 데이터 이상): %r → 0 처리", val)
+                return 0.0
+            digits = "".join(c for c in s if c.isdigit() or c == ".")
+            parsed = _safe_float(digits)
+            if parsed is None and digits:
+                _LOGGER.warning("강수량 값 파싱 실패(API 데이터 이상): %r → 0 처리", val)
+            return parsed if parsed is not None else 0.0
+
+        def _fmt_num(n):
+            return str(int(n)) if n == int(n) else str(n)
+
+        def _precip_display(val, no_val):
+            """속성(hourly_precipitation_mm)에 표시할 값.
+            일반 수치는 기존처럼 숫자 그대로, "1mm 미만"은 "~1",
+            범위("30.0~50.0mm")는 "30~50"처럼 사람이 읽기 쉬운 형태로 반환한다."""
+            if not val or val in (no_val, "-"): return 0
+            s = str(val)
+            if "미만" in s: return "~1"
+            if "~" in s:
+                lo_str, hi_str = s.split("~", 1)
+                lo = _safe_float("".join(c for c in lo_str if c.isdigit() or c == "."))
+                hi = _safe_float("".join(c for c in hi_str if c.isdigit() or c == "."))
+                if lo is None and hi is None:
+                    return 0
+                lo_disp = _fmt_num(lo) if lo is not None else "?"
+                hi_disp = _fmt_num(hi) if hi is not None else "?"
+                return f"{lo_disp}~{hi_disp}"
+            digits = "".join(c for c in s if c.isdigit() or c == ".")
+            parsed = _safe_float(digits)
+            return parsed if parsed is not None else 0
 
         now_str = now.strftime("%Y%m%d")
         now_time_str = f"{now.hour:02d}00"
@@ -1246,6 +1285,8 @@ class KMAWeatherAPI:
                     "native_wind_speed": wsd,
                     "wind_bearing": int(vec) if vec is not None else None,
                     "humidity": int(reh) if reh is not None else None,
+                    "_raw_precip": raw_val,
+                    "_no_precip": no_precip,
                 })
 
         weather_data.update({"forecast_twice_daily": twice_daily, "forecast_daily": daily_forecast, "forecast_hourly": hourly_forecast})
@@ -1258,6 +1299,9 @@ class KMAWeatherAPI:
         _raw_now = weather_data.get("SNO") if _pty_now == "3" else weather_data.get("PCP")
         _no_precip_now = "적설없음" if _pty_now == "3" else "강수없음"
         weather_data["precip_amount"] = _parse_precip(_raw_now, _no_precip_now)
+        # 기상청 원본 표기("30.0~50.0mm", "1mm 미만" 등)를 그대로 보여줄 수 있도록
+        # 별도 속성으로 보존한다. 상태값은 통계/자동화 호환을 위해 숫자로 유지.
+        weather_data["precip_amount_display"] = str(_raw_now) if _raw_now else _no_precip_now
 
         # ── 다음 24시간 시간대별 강수량 (현재 예상 강수량 센서의 속성용) ──────
         # wall-clock(now) 기준이 아니라, 상태값(precip_amount)이 실제로 참조한
@@ -1269,12 +1313,21 @@ class KMAWeatherAPI:
         if _anchor_dt.tzinfo is None:
             _anchor_dt = _anchor_dt.replace(tzinfo=ZoneInfo("Asia/Seoul"))
 
-        hourly_precip: dict[str, float] = {}
+        hourly_precip: dict[str, float | str] = {}
+
+        # 현재 슬롯이 범위 값("30.0~50.0mm")이면, 상태값과 마찬가지로
+        # 현재 시각부터 속성에 포함시킨다. 범위가 아니면 기존처럼 다음 시각부터.
+        _anchor_is_range = bool(_raw_now) and "~" in str(_raw_now)
+        if _anchor_is_range:
+            hourly_precip[f"{_anchor_dt.hour:02d}시"] = _precip_display(_raw_now, _no_precip_now)
+
         for entry in hourly_forecast:
             entry_dt = datetime.fromisoformat(entry["datetime"])
             if entry_dt <= _anchor_dt:
                 continue
-            hourly_precip[f"{entry_dt.hour:02d}시"] = entry["native_precipitation"]
+            hourly_precip[f"{entry_dt.hour:02d}시"] = _precip_display(
+                entry.get("_raw_precip"), entry.get("_no_precip")
+            )
             if len(hourly_precip) >= 24:
                 break
         weather_data["hourly_precipitation_mm"] = hourly_precip
