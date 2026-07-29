@@ -729,12 +729,16 @@ class TestWarningPageMerge:
         return KMAWeatherAPI(MagicMock(), "key")
 
     def _page_html(self, rows: list[tuple[str, str, str]]) -> str:
-        """rows: (특보종류, 수준, 해당지역) 튜플 목록으로 표 HTML 생성"""
-        trs = "".join(
-            f"<tr><td>{t}</td><td>{lvl}</td><td>{region}</td></tr>"
-            for t, lvl, region in rows
-        )
-        return f"<table>{trs}</table>"
+        """rows: (특보종류, 수준, 해당지역) 튜플 목록으로 "특보 발효현황" 요약
+        블록 HTML을 생성한다. 실제 페이지에서 예비특보는 이 요약에 나타나지
+        않으므로, 수준이 "예비"인 행은 만들지 않는다(실제 동작 재현)."""
+        lines = []
+        for warn_type, level, region in rows:
+            if level == "예비":
+                continue
+            lines.append(f"o {warn_type}{level} : {region}")
+        content = "<br />".join(lines) if lines else "o 없음"
+        return f'<div>특보 발효현황<p class="tit">{content}</p></div>'
 
     def _mock_session_get(self, api, html: str):
         class MockResp:
