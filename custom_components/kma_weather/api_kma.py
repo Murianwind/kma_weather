@@ -35,6 +35,77 @@ for _wv, _names in _WARN_TYPE_MAP.items():
                 _BASE_NAME_TO_WARNVAR[_n[: -len(_suffix)]] = _wv
                 break
 
+# "폭염중대경보", "열대야주의보"처럼 등급까지 포함된 전체 이름 → (warnVar, 표시명).
+# weather.go.kr의 "특보 발효현황" 요약 텍스트("o 열대야주의보 : 지역...")를
+# 파싱할 때 사용한다 (그 텍스트는 표(등급 컬럼 분리)와 달리 이름에 등급이 붙어 있음).
+_FULL_NAME_TO_WV: dict[str, tuple[str, str]] = {}
+for _wv, _names in _WARN_TYPE_MAP.items():
+    for _n in _names:
+        _FULL_NAME_TO_WV[_n] = (_wv, _n)
+
+
+def _split_top_level(s: str, sep: str = ",") -> list[str]:
+    """괄호 안의 콤마는 무시하고, 최상위 레벨의 콤마로만 문자열을 나눈다."""
+    parts: list[str] = []
+    depth = 0
+    cur = ""
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == sep and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _area_in_region_cell(area_name: str, region_cell: str) -> bool:
+    """
+    기상청 특보 요약의 지역 표기("서울(서울서북권 제외), 경상북도(구미, 영천)"
+    같은 형식)에서 area_name이 포함되는지 판단한다.
+
+    단순 문자열 포함 검사로는 안 되는 이유: 시/도 전역이 해당될 때는
+    괄호 없이 시/도 이름만 적고 하위 지역명을 나열하지 않으며("서울" 단독),
+    일부만 제외할 때는 "(제외될 지역 제외)"로 표기한다. 둘 다 area_name
+    문자열이 그대로 텍스트에 나타나지 않으므로 별도 해석이 필요하다.
+    """
+    for segment in _split_top_level(region_cell, ","):
+        idx = segment.find("(")
+        if idx == -1:
+            # 괄호 없이 시/도 이름만 있으면 그 시/도 전역이 해당됨
+            city = segment.strip()
+            if area_name == city or area_name.startswith(city):
+                return True
+            continue
+
+        city = segment[:idx].strip()
+        inner = segment[idx + 1:]
+        if inner.endswith(")"):
+            inner = inner[:-1]
+        items = _split_top_level(inner, ",")
+        has_exclude = any("제외" in it for it in items)
+        cleaned = [it.replace("제외", "").strip() for it in items]
+
+        if has_exclude:
+            # "시/도(A, B 제외)" → A, B를 제외한 시/도 전역이 해당됨
+            excluded_hit = any(
+                c and (area_name == c or area_name in c or c in area_name)
+                for c in cleaned
+            )
+            if (area_name == city or area_name.startswith(city)) and not excluded_hit:
+                return True
+        else:
+            # "시/도(A, B)" → A, B에 해당하는 지역만 포함됨
+            if any(c and (area_name == c or area_name in c or c in area_name) for c in cleaned):
+                return True
+    return False
+
+
+
 # ── 특보구역코드(L코드) → 표시명(예: "제주시북부") 매핑 ─────────────────────
 # weather.go.kr 실시간 페이지의 "해당지역" 칸과 대조하기 위해 사용.
 # 기상청_기상특보구역정보_20260601.csv 기준.
@@ -630,9 +701,17 @@ class KMAWeatherAPI:
 
     async def _fetch_page_warnings_for_area(self, area_name: str) -> dict[str, str]:
         """
-        weather.go.kr의 실시간(날짜 제한 없는) 특보 현황 페이지를 파싱하여,
-        area_name에 해당하는 현재 활성 특보를 {warnVar: 표시명} 형태로 반환한다.
-        "예비"(예비특보) 등급 행은 아직 정식 발효된 특보가 아니므로 제외한다.
+        weather.go.kr에서 area_name에 해당하는 "현재 유효한" 특보를
+        {warnVar: 표시명} 형태로 반환한다.
+
+        주의: 이 페이지에는 성격이 다른 두 영역이 있다.
+        - "특보 상세내역 보기" 표(id="current-warnings")는 최근 며칠~2주 치
+          발표 이력을 시각/지역 컬럼과 함께 나열한 로그이며, "지금 유효함"을
+          뜻하지 않는다. 예전에는 이 표를 잘못 긁어와서, 오래된 이력이 최신
+          상태를 덮어쓰거나 아직 유효한 특보가 지역 매칭 실패로 누락되는
+          문제가 있었다.
+        - "특보 발효현황" 제목 아래 "특보 내용" 블록("o 열대야주의보 : 지역...")이
+          실제로 지금 유효한 특보만 정리한 요약이다. 이 함수는 이 블록만 파싱한다.
 
         페이지 조회/파싱에 실패하면 빈 딕셔너리를 반환한다(API 결과는 그대로 유지됨).
         실패는 매 폴링(1시간)마다 반복될 수 있어 로그 도배를 피하려고
@@ -656,35 +735,31 @@ class KMAWeatherAPI:
         self._warn_page_fetch_failed_notified = False
 
         result: dict[str, str] = {}
-        # 표의 각 행(<tr>)에서 셀(<td>) 텍스트를 뽑는다.
-        # 페이지 마크업이 바뀌면 이 정규식도 함께 갱신해야 한다.
-        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL)
-        for row in rows:
-            cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
-            if len(cells) < 3:
-                continue
-            strip_tags = lambda s: re.sub(r"<[^>]+>", "", s).strip()
-            warn_type = strip_tags(cells[0])   # 예: "호우"
-            level = strip_tags(cells[1])       # 예: "주의보"/"경보"/"중대경보"/"예비"
-            region_cell = strip_tags(cells[2])
 
-            if level == "예비":
-                continue  # 예비특보는 아직 정식 발효가 아니므로 제외
-            if area_name not in region_cell:
+        m = re.search(r"특보 발효현황.*?<p class=\"tit\">(.*?)</p>", html, re.DOTALL)
+        if not m:
+            _LOGGER.debug("특보 페이지에서 '특보 발효현황' 요약 블록을 찾지 못함 (마크업 변경 가능성)")
+            return result
+
+        # "o 열대야주의보 : 지역목록" 형태의 줄들이 <br />로 구분되어 있다.
+        for line in re.split(r"<br\s*/?>", m.group(1)):
+            line = re.sub(r"<[^>]+>", "", line).strip()
+            if not line.startswith("o "):
+                continue
+            line = line[2:].strip()
+            parts = re.split(r"[:：]", line, maxsplit=1)
+            if len(parts) != 2:
+                continue
+            name, region_cell = parts[0].strip(), parts[1].strip()
+
+            if not _area_in_region_cell(area_name, region_cell):
                 continue
 
-            wv = _BASE_NAME_TO_WARNVAR.get(warn_type)
-            if not wv:
-                continue
-            pair = _WARN_TYPE_MAP.get(wv)
+            pair = _FULL_NAME_TO_WV.get(name)
             if not pair:
                 continue
-            if level == "중대경보" and len(pair) > 2:
-                result[wv] = pair[2]
-            elif level == "경보":
-                result[wv] = pair[1]
-            else:
-                result[wv] = pair[0]
+            wv, display_name = pair
+            result[wv] = display_name
 
         return result
 
