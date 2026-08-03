@@ -322,7 +322,14 @@ class TestPollenAdditionalCoverage:
 
     @pytest.mark.asyncio
     async def test_check_code_99_returns_none_for_season_kinds(self):
-        """check_code=99 → 시즌 항목 None, 비시즌 항목 좋음"""
+        """resultCode=99 → 시즌 항목 None, 비시즌 항목 좋음
+
+        pollen이 이미 승인된 상태이므로(=_make_api 기본값) 소나무 사전 점검
+        분기를 타지 않고, 각 항목(pine/oak/grass)을 실제로 개별 조회한다.
+        조회 자체는 이루어졌으므로 announcement는 실제 조회 시각 형식으로
+        채워지고("데이터없음" 플레이스홀더가 아님), 시즌 항목 값만 99로 인해
+        None이 된다.
+        """
         api = self._make_api()
         api._fetch = AsyncMock(return_value=self._99_response())
         now = datetime(2026, 5, 1, 10, 0, tzinfo=ZoneInfo("Asia/Seoul"))  # oak/pine 시즌
@@ -332,7 +339,7 @@ class TestPollenAdditionalCoverage:
         assert result.get("pine") is None   # 시즌 → unknown
         assert result.get("grass") == "좋음"  # 비시즌 → 좋음
         assert result.get("worst") is None
-        assert result.get("announcement") == "데이터없음"
+        assert result.get("announcement") == "2026년 05월 01일 06시 발표"
 
     @pytest.mark.asyncio
     async def test_never_approved_yet_and_rc99_still_marks_approved(self):
