@@ -786,11 +786,10 @@ class KMAWeatherAPI:
                 "area_name": area_name, "area_no": area_no, "announcement": "비시즌",
             }
 
-        if "pollen" in self._approved_apis or "pollen" in self._pending_apis:
-            if "pollen" in self._pending_apis:
-                for k in _POLLEN_KINDS:
-                    self._pollen_cache[k] = {"today": None, "tomorrow": None,
-                                             "today_date": None, "tomorrow_date": None}
+        if "pollen" in self._pending_apis:
+            for k in _POLLEN_KINDS:
+                self._pollen_cache[k] = {"today": None, "tomorrow": None,
+                                         "today_date": None, "tomorrow_date": None}
 
             check_time = today_str + "06" if h >= 6 else prev_str + "18"
             check_r = await self._fetch(
@@ -874,7 +873,7 @@ class KMAWeatherAPI:
             if h < 7:
                 if c["tomorrow"] is None:
                     g = await _fetch_one(kind, prev_str + "18", "tomorrow")
-                    if g == "UNSUB": return None
+                    if g == "UNSUB": return "UNSUB"
                     if g is not None:
                         c["tomorrow"] = g
                         c["tomorrow_date"] = today_str
@@ -884,7 +883,7 @@ class KMAWeatherAPI:
                 if c["today"] is not None:
                     if h >= 19 and c["tomorrow_date"] != today_str:
                         g = await _fetch_one(kind, today_str + "18", "tomorrow")
-                        if g == "UNSUB": return None
+                        if g == "UNSUB": return "UNSUB"
                         if g is not None:
                             c["tomorrow"] = g
                             c["tomorrow_date"] = today_str
@@ -895,7 +894,7 @@ class KMAWeatherAPI:
 
                 if c["today_date"] != today_str:
                     g = await _fetch_one(kind, today_str + "06", "today")
-                    if g == "UNSUB": return None
+                    if g == "UNSUB": return "UNSUB"
                     if g is not None:
                         c["today"] = g
                         c["today_date"] = today_str
@@ -908,7 +907,7 @@ class KMAWeatherAPI:
 
                 if c["tomorrow"] is None:
                     g = await _fetch_one(kind, prev_str + "18", "tomorrow")
-                    if g == "UNSUB": return None
+                    if g == "UNSUB": return "UNSUB"
                     if g is not None:
                         c["tomorrow"] = g
                         c["tomorrow_date"] = today_str
@@ -920,6 +919,22 @@ class KMAWeatherAPI:
             oak_g = await _get_grade("oak")
             await asyncio.sleep(1.2)
             grass_g = await _get_grade("grass")
+
+            # 시즌 중인 항목의 실제 API 조회에서 미신청/구독 해지가 확인되면
+            # (자잘한 "이 시점 데이터 없음"과 구분되는 진짜 해지 신호이므로)
+            # 특정 항목만 빈 값으로 두지 않고 센서 전체를 unavailable로 처리한다.
+            if any(
+                in_season[k] and g == "UNSUB"
+                for k, g in (("pine", pine_g), ("oak", oak_g), ("grass", grass_g))
+            ):
+                for kk in _POLLEN_KINDS:
+                    self._pollen_cache[kk] = {"today": None, "tomorrow": None,
+                                               "today_date": None, "tomorrow_date": None}
+                return None
+
+            pine_g = None if pine_g == "UNSUB" else pine_g
+            oak_g = None if oak_g == "UNSUB" else oak_g
+            grass_g = None if grass_g == "UNSUB" else grass_g
 
             if pine_g is None and oak_g is None and grass_g is None:
                 return {} if not any(in_season.values()) else {}
