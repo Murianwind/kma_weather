@@ -63,7 +63,7 @@ def _split_top_level(s: str, sep: str = ",") -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def _area_in_region_cell(area_name: str, region_cell: str) -> bool:
+def _area_in_region_cell(area_name: str, region_cell: str, ancestors: list[str] | None = None) -> bool:
     """
     기상청 특보 요약의 지역 표기("서울(서울서북권 제외), 경상북도(구미, 영천)"
     같은 형식)에서 area_name이 포함되는지 판단한다.
@@ -72,13 +72,24 @@ def _area_in_region_cell(area_name: str, region_cell: str) -> bool:
     괄호 없이 시/도 이름만 적고 하위 지역명을 나열하지 않으며("서울" 단독),
     일부만 제외할 때는 "(제외될 지역 제외)"로 표기한다. 둘 다 area_name
     문자열이 그대로 텍스트에 나타나지 않으므로 별도 해석이 필요하다.
+
+    ancestors: area_name의 상위(도/시) 이름 목록(가까운 부모 → 최상위 순,
+    예: "청주동부" → ["청주", "충청북도"]). "서울동북권"처럼 하위지역명에
+    상위 이름이 그대로 포함된 경우는 문자열 startswith로도 잡히지만,
+    "청주동부"처럼 상위(충청북도)와 하위 이름이 문자열로 이어지지 않는
+    경우는 ancestors 없이는 "충청북도" 전역 표기를 못 알아본다.
     """
+    ancestors = ancestors or []
+
+    def _is_area_or_descendant_of(name: str) -> bool:
+        return area_name == name or name in ancestors
+
     for segment in _split_top_level(region_cell, ","):
         idx = segment.find("(")
         if idx == -1:
             # 괄호 없이 시/도 이름만 있으면 그 시/도 전역이 해당됨
             city = segment.strip()
-            if area_name == city or area_name.startswith(city):
+            if _is_area_or_descendant_of(city) or area_name.startswith(city):
                 return True
             continue
 
@@ -93,14 +104,17 @@ def _area_in_region_cell(area_name: str, region_cell: str) -> bool:
         if has_exclude:
             # "시/도(A, B 제외)" → A, B를 제외한 시/도 전역이 해당됨
             excluded_hit = any(
-                c and (area_name == c or area_name in c or c in area_name)
+                c and (_is_area_or_descendant_of(c) or c in area_name or area_name in c)
                 for c in cleaned
             )
-            if (area_name == city or area_name.startswith(city)) and not excluded_hit:
+            if (_is_area_or_descendant_of(city) or area_name.startswith(city)) and not excluded_hit:
                 return True
         else:
             # "시/도(A, B)" → A, B에 해당하는 지역만 포함됨
-            if any(c and (area_name == c or area_name in c or c in area_name) for c in cleaned):
+            if any(
+                c and (_is_area_or_descendant_of(c) or c in area_name or area_name in c)
+                for c in cleaned
+            ):
                 return True
     return False
 
@@ -116,6 +130,21 @@ def _load_warn_area_names() -> None:
     global _WARN_AREA_NAMES
     _WARN_AREA_NAMES = json.loads(
         (Path(__file__).parent / "warn_area_names.json").read_text(encoding="utf-8")
+    )
+
+
+# ── 특보구역코드(L코드) → 상위(도/시) 이름 목록 ─────────────────────────────
+# "청주동부"의 상위는 ["청주", "충청북도"]처럼, 가까운 부모부터 최상위(시/도)
+# 순으로 담긴다. weather.go.kr 요약이 "충청북도"처럼 광역 단위를 괄호 없이
+# 통째로 쓸 때, 그 안에 속한 하위지역인지 판별하는 데 쓴다.
+# 기상청 특보구역코드 안내(260601 기준, REG_UP 계층) 기반으로 생성.
+_WARN_AREA_ANCESTORS: dict[str, list[str]] = {}
+
+
+def _load_warn_area_ancestors() -> None:
+    global _WARN_AREA_ANCESTORS
+    _WARN_AREA_ANCESTORS = json.loads(
+        (Path(__file__).parent / "warn_area_ancestors.json").read_text(encoding="utf-8")
     )
 
 
@@ -644,7 +673,8 @@ class KMAWeatherAPI:
             area_name = await self._get_warn_area_display_name(warn_area_code)
             if area_name:
                 try:
-                    page_result = await self._fetch_page_warnings_for_area(area_name)
+                    ancestors = await self._get_warn_area_ancestors(warn_area_code)
+                    page_result = await self._fetch_page_warnings_for_area(area_name, ancestors)
                     for wv, name in page_result.items():
                         if wv not in api_result:
                             _LOGGER.info(
@@ -682,6 +712,24 @@ class KMAWeatherAPI:
                 return None
         return _WARN_AREA_NAMES.get(warn_area_code)
 
+    async def _get_warn_area_ancestors(self, warn_area_code: str) -> list[str]:
+        """
+        특보구역코드(L코드)의 상위(도/시) 이름 목록을 반환한다
+        (가까운 부모 → 최상위 순, 예: "청주동부" → ["청주", "충청북도"]).
+        weather.go.kr 요약이 "충청북도"처럼 광역 단위를 통째로 표기할 때,
+        area_name 문자열만으로는 하위지역 소속을 알 수 없는 경우를 위해 사용.
+        """
+        if not _WARN_AREA_ANCESTORS:
+            try:
+                if self.hass is not None:
+                    await self.hass.async_add_executor_job(_load_warn_area_ancestors)
+                else:
+                    _load_warn_area_ancestors()
+            except Exception as e:
+                _LOGGER.debug("특보구역 상위지역 매핑 로드 실패: %s", e)
+                return []
+        return _WARN_AREA_ANCESTORS.get(warn_area_code, [])
+
     def _notify_warn_page_failure(self, reason: str) -> None:
         """
         특보 보완 확인용 페이지 조회 실패를 알린다. 매 폴링마다 반복 실패해도
@@ -699,7 +747,9 @@ class KMAWeatherAPI:
             self._mask_key(reason),
         )
 
-    async def _fetch_page_warnings_for_area(self, area_name: str) -> dict[str, str]:
+    async def _fetch_page_warnings_for_area(
+        self, area_name: str, ancestors: list[str] | None = None
+    ) -> dict[str, str]:
         """
         weather.go.kr에서 area_name에 해당하는 "현재 유효한" 특보를
         {warnVar: 표시명} 형태로 반환한다.
@@ -752,7 +802,7 @@ class KMAWeatherAPI:
                 continue
             name, region_cell = parts[0].strip(), parts[1].strip()
 
-            if not _area_in_region_cell(area_name, region_cell):
+            if not _area_in_region_cell(area_name, region_cell, ancestors):
                 continue
 
             pair = _FULL_NAME_TO_WV.get(name)
