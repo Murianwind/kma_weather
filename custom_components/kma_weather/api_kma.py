@@ -148,6 +148,34 @@ def _load_warn_area_ancestors() -> None:
     )
 
 
+# ── 에어코리아(airkorea.or.kr) 대기질 상세 조회 페이지의 시/도 코드 ──────────
+# https://www.airkorea.or.kr/web/getDynamicDistrictList 응답 기준.
+# API(getMsrstnAcctoRltmMesureDnsty)가 실패했을 때, 측정소별 시간대 실측값을
+# 보완용으로 긁어오기 위해 사용한다. 전남/광주는 이 사이트에서 "065" 코드를
+# 같이 쓴다(사이트 자체 구분).
+_AIRKOREA_DISTRICT_CODES: list[tuple[str, str]] = [
+    ("세종", "044"),   # "서울"보다 먼저 검사해야 하는 것은 아니지만,
+    ("서울", "02"), ("부산", "051"), ("대구", "053"), ("인천", "032"),
+    ("대전", "042"), ("울산", "052"), ("경기", "031"), ("강원", "033"),
+    ("충북", "043"), ("충청북", "043"), ("충남", "041"), ("충청남", "041"),
+    ("전북", "063"), ("전라북", "063"), ("전남", "065"), ("전라남", "065"),
+    ("광주", "065"), ("경북", "054"), ("경상북", "054"),
+    ("경남", "055"), ("경상남", "055"), ("제주", "064"),
+]
+
+
+def _airkorea_district_code(city_name: str) -> str | None:
+    """주소의 시/도 부분(예: '서울특별시', '전라남도')으로 에어코리아
+    district 코드를 찾는다. 접두어 매칭이라 신구 명칭(강원도/강원특별자치도,
+    전북특별자치도 등) 변화에 영향받지 않는다."""
+    if not city_name:
+        return None
+    for prefix, code in _AIRKOREA_DISTRICT_CODES:
+        if city_name.startswith(prefix):
+            return code
+    return None
+
+
 KOR_TO_CONDITION: dict[str, str] = {
     "맑음": "sunny",
     "구름많음": "partlycloudy",
@@ -483,6 +511,26 @@ class KMAWeatherAPI:
             ai_list = (air_json.get("response", {}).get("body", {}).get("items", [])
                        if air_json else [])
             if not ai_list:
+                page_result = {}
+                try:
+                    city_name = (await self._get_address(lat, lon)).split()[0] if lat and lon else ""
+                    page_result = await self._fetch_page_air_quality(sn, city_name)
+                except Exception as e:
+                    _LOGGER.debug("대기질 페이지 보완 확인 실패 (무시): %s", self._mask_key(e))
+                if page_result:
+                    _LOGGER.info(
+                        "대기질 보완: API 응답이 비어있어 에어코리아 페이지에서 "
+                        "측정소 '%s'의 실측값을 가져와 채웁니다.", sn,
+                    )
+                    p10v = page_result.get("pm10Value")
+                    p25v = page_result.get("pm25Value")
+                    return {
+                        "pm10Value": p10v,
+                        "pm10Grade": self._get_air_grade(p10v, "pm10") if p10v else None,
+                        "pm25Value": p25v,
+                        "pm25Grade": self._get_air_grade(p25v, "pm25") if p25v else None,
+                        "station": sn,
+                    }
                 return {"station": sn}
 
             ai = ai_list[0]
@@ -729,6 +777,69 @@ class KMAWeatherAPI:
                 _LOGGER.debug("특보구역 상위지역 매핑 로드 실패: %s", e)
                 return []
         return _WARN_AREA_ANCESTORS.get(warn_area_code, [])
+
+    async def _fetch_page_air_quality(self, station_name: str, city_name: str) -> dict:
+        """
+        API(getMsrstnAcctoRltmMesureDnsty)가 실패했을 때 보완용으로,
+        airkorea.or.kr의 측정소별 시간대 표에서 오늘자 PM10/PM2.5 최신
+        실측값을 가져온다. 그 시간까지 채워진 마지막 칸(비어있지 않은 마지막
+        시간)을 "지금 시점 값"으로 사용한다 — 이후 시간 칸은 아직 관측 전이라
+        비어있기 때문.
+
+        station_name: getNearbyMsrstnList가 돌려준 측정소명(예: "강남구").
+        city_name: 시/도명(예: "서울특별시"). 실패하거나 매핑 안 되는
+        시/도면 빈 딕셔너리를 반환한다(API 결과 그대로 유지).
+        """
+        code = _airkorea_district_code(city_name)
+        if not code:
+            return {}
+
+        now = datetime.now(self.tz)
+        date_str = now.strftime("%Y-%m-%d")
+        month_str = now.strftime("%Y%m")
+
+        async def _fetch_item(item_code: str) -> int | None:
+            try:
+                async with self.session.get(
+                    "https://www.airkorea.or.kr/web/pmRelaySub",
+                    params={
+                        "strDateDiv": "1", "searchDate": date_str,
+                        "district": code, "itemCode": item_code,
+                        "searchDate_f": month_str,
+                    },
+                    timeout=10,
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    html = await resp.text()
+            except Exception:
+                return None
+
+            for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL):
+                cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
+                if len(cells) < 3:
+                    continue
+                strip_tags = lambda s: re.sub(r"<[^>]+>", "", s).strip()
+                station_cell = strip_tags(cells[1])  # 예: "[서울 강남구]강남구"
+                if not station_cell.endswith(f"]{station_name}"):
+                    continue
+                latest: int | None = None
+                for cell in cells[2:]:
+                    v = strip_tags(cell)
+                    if v.isdigit():
+                        latest = int(v)
+                return latest
+            return None
+
+        pm10 = await _fetch_item("10007")
+        pm25 = await _fetch_item("11008")
+
+        result: dict = {}
+        if pm10 is not None:
+            result["pm10Value"] = str(pm10)
+        if pm25 is not None:
+            result["pm25Value"] = str(pm25)
+        return result
 
     def _notify_warn_page_failure(self, reason: str) -> None:
         """
