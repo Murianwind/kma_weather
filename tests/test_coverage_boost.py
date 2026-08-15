@@ -140,7 +140,7 @@ async def test_air_quality_cache_hit():
         }
     }
 
-    async def mock_fetch(url, params=None, timeout=10):
+    async def mock_fetch(url, params=None, timeout=10, retry_log_level=None):
         assert "MsrstnInfoInqireSvc" not in url, "캐시 HIT인데 측정소 재조회 발생"
         return air_json
 
@@ -154,7 +154,7 @@ async def test_air_quality_no_station_items():
     api = KMAWeatherAPI(MagicMock(), "key")
     api.lat, api.lon = 37.56, 126.98
 
-    async def mock_fetch(url, params=None, timeout=10):
+    async def mock_fetch(url, params=None, timeout=10, retry_log_level=None):
         if "MsrstnInfoInqireSvc" in url:
             return {"response": {"body": {"items": []}}}
         return {}
@@ -168,7 +168,7 @@ async def test_air_quality_no_air_data_items():
     api = KMAWeatherAPI(MagicMock(), "key")
     api.lat, api.lon = 37.56, 126.98
 
-    async def mock_fetch(url, params=None, timeout=10):
+    async def mock_fetch(url, params=None, timeout=10, retry_log_level=None):
         if "MsrstnInfoInqireSvc" in url:
             return {"response": {"body": {"items": [{"stationName": "중구"}]}}}
         return {"response": {"body": {"items": []}}}
@@ -182,7 +182,7 @@ async def test_air_quality_fetch_returns_none():
     api = KMAWeatherAPI(MagicMock(), "key")
     api.lat, api.lon = 37.56, 126.98
 
-    async def mock_fetch(url, params=None, timeout=10):
+    async def mock_fetch(url, params=None, timeout=10, retry_log_level=None):
         return None
 
     api._fetch = mock_fetch
@@ -542,10 +542,11 @@ class TestStationCachePersistence:
         """
         [Given] api._cached_station에 값이 설정되어 있음
         [When]  _save_station_cache 호출
-        [Then]  저장소에 station/lat/lon이 그대로 기록됨
+        [Then]  저장소에 station/station_code/lat/lon이 그대로 기록됨
         """
         coord = self._make_coordinator(hass)
         coord.api._cached_station = "구월동"
+        coord.api._cached_station_code = "823661"
         coord.api._cached_station_lat = 37.447
         coord.api._cached_station_lon = 126.731
 
@@ -554,7 +555,7 @@ class TestStationCachePersistence:
 
         await coord._save_station_cache()
 
-        assert saved == {"station": "구월동", "lat": 37.447, "lon": 126.731}
+        assert saved == {"station": "구월동", "station_code": "823661", "lat": 37.447, "lon": 126.731}
 
     @pytest.mark.asyncio
     async def test_save_station_cache_skips_when_no_station(self, hass):

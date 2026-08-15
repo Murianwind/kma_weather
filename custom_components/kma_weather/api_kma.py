@@ -207,6 +207,7 @@ class KMAWeatherAPI:
         self.lat = self.lon = self.nx = self.ny = None
 
         self._cached_station: str | None = None
+        self._cached_station_code: str | None = None
         self._cached_station_lat: float | None = None
         self._cached_station_lon: float | None = None
         self._warn_page_fetch_failed_notified = False  # 페이지 실패 경고 중복 방지용
@@ -313,7 +314,7 @@ class KMAWeatherAPI:
         "HealthWthrIdxServiceV3":    "꽃가루",
     }
 
-    async def _fetch(self, url, params, headers=None, timeout=15):
+    async def _fetch(self, url, params, headers=None, timeout=15, retry_log_level=logging.WARNING):
         if self.hass is not None:
             for fragment, key in self._CALL_COUNT_KEY.items():
                 if fragment in url:
@@ -329,10 +330,11 @@ class KMAWeatherAPI:
                     if response.status in (429, 500, 502, 503, 504):
                         _desc = "요청 한도 초과" if response.status == 429 else "일시적 서버 오류"
                         if attempt == 0:
-                            _LOGGER.warning("API HTTP %s 발생 (%s). 10초 후 재시도합니다. (%s)", response.status, _desc, self._mask_key(url))
+                            _LOGGER.log(retry_log_level, "API HTTP %s 발생 (%s). 10초 후 재시도합니다. (%s)", response.status, _desc, self._mask_key(url))
                             await asyncio.sleep(10.0)
                             continue
-                        _LOGGER.warning(
+                        _LOGGER.log(
+                            retry_log_level,
                             "API HTTP %s 재시도 실패 (%s) → 이번 주기 데이터 생략, 캐시로 대체합니다. (%s)",
                             response.status, _desc, self._mask_key(url),
                         )
@@ -476,6 +478,7 @@ class KMAWeatherAPI:
                     self._cached_station,
                 )
                 self._cached_station = None
+                self._cached_station_code = None
                 self._cached_station_lat = None
                 self._cached_station_lon = None
 
@@ -496,6 +499,7 @@ class KMAWeatherAPI:
                     return {}
                 sn = items[0].get("stationName")
                 self._cached_station = sn
+                self._cached_station_code = items[0].get("stationCode")
                 self._cached_station_lat = lat
                 self._cached_station_lon = lon
 
@@ -503,6 +507,10 @@ class KMAWeatherAPI:
                 "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
                 {"serviceKey": self.api_key, "returnType": "json",
                  "stationName": sn, "dataTerm": "daily", "ver": "1.3"},
+                # 대기질은 실패해도 에어코리아 실시간 조회로 보완할 수 있으므로,
+                # 재시도 단계의 5xx 로그는 굳이 경고로 남기지 않는다(debug).
+                # 진짜 경고는 보완까지 실패했을 때만 아래에서 별도로 남긴다.
+                retry_log_level=logging.DEBUG,
             )
             code = self._extract_result_code(air_json)
             if code and self._check_unsubscribed("air", code):
@@ -514,35 +522,48 @@ class KMAWeatherAPI:
                 page_result = {}
                 try:
                     city_name = (await self._get_address(lat, lon)).split()[0] if lat and lon else ""
-                    page_result = await self._fetch_page_air_quality(sn, city_name)
+                    page_result = await self._fetch_page_air_quality(
+                        self._cached_station_code, city_name
+                    )
                 except Exception as e:
                     _LOGGER.debug("대기질 페이지 보완 확인 실패 (무시): %s", self._mask_key(e))
                 if page_result:
                     _LOGGER.info(
-                        "대기질 보완: API 응답이 비어있어 에어코리아 페이지에서 "
+                        "대기질 보완: API 응답이 비어있어 에어코리아 실시간 조회에서 "
                         "측정소 '%s'의 실측값을 가져와 채웁니다.", sn,
                     )
                     p10v = page_result.get("pm10Value")
                     p25v = page_result.get("pm25Value")
+                    o3v = page_result.get("o3Value")
                     return {
                         "pm10Value": p10v,
                         "pm10Grade": self._get_air_grade(p10v, "pm10") if p10v else None,
                         "pm25Value": p25v,
                         "pm25Grade": self._get_air_grade(p25v, "pm25") if p25v else None,
+                        "o3Value": o3v,
+                        "o3Grade": self._get_air_grade(o3v, "o3") if o3v else None,
                         "station": sn,
                     }
+                # API도, 보완용 실시간 조회도 둘 다 실패했을 때만 실제로 경고한다.
+                _LOGGER.warning(
+                    "대기질 조회 실패: API와 에어코리아 실시간 조회(보완) 둘 다 "
+                    "값을 가져오지 못했습니다 (측정소 '%s'). 다음 주기에 재시도합니다.", sn,
+                )
                 return {"station": sn}
 
             ai = ai_list[0]
             self._mark_approved("air")
             p10v = ai.get("pm10Value")
             p25v = ai.get("pm25Value")
+            o3v = ai.get("o3Value")
 
             return {
                 "pm10Value": p10v,
                 "pm10Grade": self._get_air_grade(p10v, "pm10"),
                 "pm25Value": p25v,
                 "pm25Grade": self._get_air_grade(p25v, "pm25"),
+                "o3Value": o3v,
+                "o3Grade": self._get_air_grade(o3v, "o3"),
                 "station": sn,
             }
         except Exception as e:
@@ -558,6 +579,12 @@ class KMAWeatherAPI:
             if v <= 30: return "좋음"
             if v <= 80: return "보통"
             if v <= 150: return "나쁨"
+            return "매우나쁨"
+
+        if p_type == "o3":
+            if v <= 0.030: return "좋음"
+            if v <= 0.090: return "보통"
+            if v <= 0.150: return "나쁨"
             return "매우나쁨"
 
         if v <= 15: return "좋음"
@@ -778,67 +805,95 @@ class KMAWeatherAPI:
                 return []
         return _WARN_AREA_ANCESTORS.get(warn_area_code, [])
 
-    async def _fetch_page_air_quality(self, station_name: str, city_name: str) -> dict:
+    async def _fetch_page_air_quality(self, station_code: str, city_name: str) -> dict:
         """
         API(getMsrstnAcctoRltmMesureDnsty)가 실패했을 때 보완용으로,
-        airkorea.or.kr의 측정소별 시간대 표에서 오늘자 PM10/PM2.5 최신
-        실측값을 가져온다. 그 시간까지 채워진 마지막 칸(비어있지 않은 마지막
-        시간)을 "지금 시점 값"으로 사용한다 — 이후 시간 칸은 아직 관측 전이라
-        비어있기 때문.
+        airkorea.or.kr의 실시간 차트 조회(getRealChart)에서 오늘자
+        PM10/PM2.5/오존 최신 실측값을 가져온다.
 
-        station_name: getNearbyMsrstnList가 돌려준 측정소명(예: "강남구").
+        이 엔드포인트는 측정소코드(station_code) 기준으로 정확히 조회되고,
+        미세먼지·초미세먼지·오존을 한 번에 JSON으로 준다(표 긁기보다 정확·단순).
+        다만 호출 전에 "key"라는 값이 있어야 하는데, 이건 로그인이나 특정
+        세션에 묶인 게 아니라 실시간 조회 화면(realSearch)에 아무 값이나
+        채워서 한 번 들어가면 그 응답 HTML 안에 `var key = '...'`로 새로
+        발급되는 값이다 — 측정소와도 무관하게 항상 새로 발급되므로, 여기선
+        더미 값으로 그 페이지를 한 번 "방문"해서 key만 뽑아 쓴다.
+
+        station_code: getNearbyMsrstnList가 돌려준 측정소코드(예: "111312").
         city_name: 시/도명(예: "서울특별시"). 실패하거나 매핑 안 되는
         시/도면 빈 딕셔너리를 반환한다(API 결과 그대로 유지).
         """
+        if not station_code:
+            return {}
         code = _airkorea_district_code(city_name)
         if not code:
             return {}
 
         now = datetime.now(self.tz)
-        date_str = now.strftime("%Y-%m-%d")
-        month_str = now.strftime("%Y%m")
+        today = now.strftime("%Y-%m-%d")
+        today_compact = now.strftime("%Y%m%d")
 
-        async def _fetch_item(item_code: str) -> int | None:
-            try:
-                async with self.session.get(
-                    "https://www.airkorea.or.kr/web/pmRelaySub",
-                    params={
-                        "strDateDiv": "1", "searchDate": date_str,
-                        "district": code, "itemCode": item_code,
-                        "searchDate_f": month_str,
-                    },
-                    timeout=10,
-                ) as resp:
-                    if resp.status != 200:
-                        return None
-                    html = await resp.text()
-            except Exception:
-                return None
+        try:
+            # 1단계: key 발급 — 측정소 정보는 더미로 채워도 무방(실측 확인됨)
+            async with self.session.post(
+                "https://www.airkorea.or.kr/web/realSearch",
+                data={
+                    "pMENU_NO": "97", "schFlag": "1", "myDistrict": code,
+                    "dateDiv": "1", "from_date": today, "from_date_hour": "00",
+                    "to_date": today, "to_date_hour": "23",
+                    "key": "0", "tm_x": "0", "tm_y": "0", "tm": "0.0",
+                    "stationId": "stationCode0", "station": "0",
+                    "station_mang": "3", "station_code": " ",
+                    "loading": "yes", "leftShow": "realTime",
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=10,
+            ) as resp:
+                if resp.status != 200:
+                    return {}
+                html = await resp.text()
+            m = re.search(r"var key = '([^']+)'", html)
+            if not m:
+                return {}
+            key = m.group(1)
 
-            for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL):
-                cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
-                if len(cells) < 3:
-                    continue
-                strip_tags = lambda s: re.sub(r"<[^>]+>", "", s).strip()
-                station_cell = strip_tags(cells[1])  # 예: "[서울 강남구]강남구"
-                if not station_cell.endswith(f"]{station_name}"):
-                    continue
-                latest: int | None = None
-                for cell in cells[2:]:
-                    v = strip_tags(cell)
-                    if v.isdigit():
-                        latest = int(v)
-                return latest
-            return None
+            # 2단계: 그 key로 실제 측정소의 실시간 값 조회
+            async with self.session.post(
+                "https://www.airkorea.or.kr/web/pollution/getRealChart",
+                data={
+                    "dateDiv": "1", "stationCode": station_code,
+                    "from_date": f"{today_compact}00", "to_date": f"{today_compact}23",
+                    "key": key, "token": "",
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": "https://www.airkorea.or.kr/web/realSearch",
+                },
+                timeout=10,
+            ) as resp:
+                if resp.status != 200:
+                    return {}
+                data = await resp.json(content_type=None)
+        except Exception:
+            return {}
 
-        pm10 = await _fetch_item("10007")
-        pm25 = await _fetch_item("11008")
-
+        charts = data.get("charts") or []
         result: dict = {}
-        if pm10 is not None:
-            result["pm10Value"] = str(pm10)
-        if pm25 is not None:
-            result["pm25Value"] = str(pm25)
+
+        def _valid(v) -> bool:
+            return v is not None and str(v).strip() not in ("", "-")
+
+        # charts는 최신 시각이 먼저 오지만, 혹시 몰라 안전하게 값이 있는
+        # 첫 항목(가장 최근 관측치)을 그대로 채택한다.
+        for c in charts:
+            if "pm10Value" not in result and _valid(c.get("VALUE_10007")):
+                result["pm10Value"] = str(c["VALUE_10007"])
+            if "pm25Value" not in result and _valid(c.get("VALUE_10008")):
+                result["pm25Value"] = str(c["VALUE_10008"])
+            if "o3Value" not in result and _valid(c.get("VALUE_10003")):
+                result["o3Value"] = str(c["VALUE_10003"])
+            if all(k in result for k in ("pm10Value", "pm25Value", "o3Value")):
+                break
         return result
 
     def _notify_warn_page_failure(self, reason: str) -> None:

@@ -425,6 +425,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             stored = await self._station_store.async_load()
             if stored and stored.get("station"):
                 self.api._cached_station = stored.get("station")
+                self.api._cached_station_code = stored.get("station_code")
                 self.api._cached_station_lat = stored.get("lat")
                 self.api._cached_station_lon = stored.get("lon")
                 _LOGGER.debug(
@@ -442,6 +443,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await self._station_store.async_save({
                     "station": self.api._cached_station,
+                    "station_code": self.api._cached_station_code,
                     "lat": self.api._cached_station_lat,
                     "lon": self.api._cached_station_lon,
                 })
@@ -457,7 +459,19 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             self._daily_date, self._daily_max_temp, self._daily_min_temp = today_date, None, None
             changed = True
 
-        temps = [float(s["TMP"]) for s in forecast_map.get(today_str, {}).values() if s.get("TMP")]
+        temps = []
+        for t_str, s in forecast_map.get(today_str, {}).items():
+            raw_tmp = s.get("TMP")
+            if raw_tmp is None:
+                continue
+            parsed = _safe_float(raw_tmp)
+            if parsed is None:
+                _LOGGER.warning(
+                    "TMP 파싱 실패(원본 데이터 이상): 날짜=%s 시각=%s 원본값=%r → 해당 슬롯 제외",
+                    today_str, t_str, raw_tmp,
+                )
+                continue
+            temps.append(parsed)
         if temps:
             n_min, n_max = min(temps), max(temps)
             if self._daily_min_temp is None or n_min < self._daily_min_temp:

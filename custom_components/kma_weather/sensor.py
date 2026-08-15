@@ -2,7 +2,7 @@ import logging
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, UnitOfPrecipitationDepth, EntityCategory
+from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, UnitOfPrecipitationDepth, EntityCategory, CONCENTRATION_PARTS_PER_MILLION
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.core import callback
 from datetime import date
@@ -25,6 +25,8 @@ SENSOR_TYPES = {
     "pm10Grade":          ["미세먼지 등급",   None,                                "mdi:check-circle-outline",    None,                          "pm10_grade",           None],
     "pm25Value":          ["초미세먼지 농도", "µg/m³",                             "mdi:blur-linear",             SensorDeviceClass.PM25,        "pm25",                 None],
     "pm25Grade":          ["초미세먼지 등급", None,                                "mdi:check-circle-outline",    None,                          "pm25_grade",           None],
+    "o3Value":            ["오존 농도",       CONCENTRATION_PARTS_PER_MILLION,    "mdi:weather-sunny-alert",     SensorDeviceClass.OZONE,       "o3",                   None],
+    "o3Grade":            ["오존 등급",       None,                                "mdi:check-circle-outline",    None,                          "o3_grade",             None],
     "address":            ["현재 위치",       None,                                "mdi:map-marker",              None,                          "location",             EntityCategory.DIAGNOSTIC],
     "last_updated":       ["업데이트 시간",   None,                                "mdi:update",                  SensorDeviceClass.TIMESTAMP,   "last_updated",         EntityCategory.DIAGNOSTIC],
     "api_expire":         ["API 잔여일수",    "일",                                "mdi:key-alert",               None,                          "api_expire",           EntityCategory.DIAGNOSTIC],
@@ -70,7 +72,7 @@ SENSOR_API_GROUPS: dict[str | None, list[str]] = {
         "TMX_tomorrow", "TMN_tomorrow", "wf_am_tomorrow", "wf_pm_tomorrow",
     ],
     "air": [
-        "pm10Value", "pm10Grade", "pm25Value", "pm25Grade",
+        "pm10Value", "pm10Grade", "pm25Value", "pm25Grade", "o3Value", "o3Grade",
     ],
     "warning": [
         "warning",
@@ -436,7 +438,11 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
         # ── 현재 예상 강수량 센서: 다음 24시간 시간대별 강수량 (평탄화) ────────
         if self._type == "precip_amount":
-            hourly = w.get("hourly_precipitation_mm")
-            return hourly if hourly else None
+            hourly = w.get("hourly_precipitation_mm") or {}
+            display = w.get("precip_amount_display")
+            attrs = dict(hourly)
+            if display:
+                attrs["표기"] = display
+            return attrs or None
 
         return None
