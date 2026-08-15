@@ -506,7 +506,7 @@ class KMAWeatherAPI:
             air_json = await self._fetch(
                 "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
                 {"serviceKey": self.api_key, "returnType": "json",
-                 "stationName": sn, "dataTerm": "daily", "ver": "1.3"},
+                 "stationName": sn, "dataTerm": "daily", "ver": "1.5"},
                 # 대기질은 실패해도 에어코리아 실시간 조회로 보완할 수 있으므로,
                 # 재시도 단계의 5xx 로그는 굳이 경고로 남기지 않는다(debug).
                 # 진짜 경고는 보완까지 실패했을 때만 아래에서 별도로 남긴다.
