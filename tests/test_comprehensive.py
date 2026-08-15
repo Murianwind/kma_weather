@@ -280,7 +280,9 @@ async def test_init_unload_entry_full_logic(hass):
     """Line 131-139: async_unload_entry 언로드 및 데이터 정리 타격"""
     entry = MockConfigEntry(domain=DOMAIN, data={}, entry_id="test_entry")
     entry.add_to_hass(hass)
-    hass.data[DOMAIN] = {entry.entry_id: MagicMock()}
+    mock_coord = MagicMock()
+    mock_coord.api.async_close = AsyncMock()
+    hass.data[DOMAIN] = {entry.entry_id: mock_coord}
     with patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_unload", return_value=True):
         assert await async_unload_entry(hass, entry) is True
         assert entry.entry_id not in hass.data[DOMAIN]
