@@ -208,6 +208,12 @@ class KMAWeatherAPI:
 
         self._cached_station: str | None = None
         self._cached_station_code: str | None = None
+        # 에어코리아 실시간 조회(key 발급 → 조회) 전용, 이 인스턴스만 쓰는 세션.
+        # HA 공유 세션(self.session)을 쓰면 같은 위치의 다른 기기(다른 config
+        # entry)와 쿠키(로그인 세션)를 공유하게 되어, 두 기기가 거의 동시에
+        # 갱신될 때 한쪽이 발급받은 key가 다른 쪽이 방금 갱신한 쿠키와 섞여
+        # 실패하는 레이스 컨디션이 생긴다. 그래서 이 흐름만 별도 세션으로 분리한다.
+        self._airkorea_session: aiohttp.ClientSession | None = None
         self._cached_station_lat: float | None = None
         self._cached_station_lon: float | None = None
         self._warn_page_fetch_failed_notified = False  # 페이지 실패 경고 중복 방지용
@@ -805,6 +811,19 @@ class KMAWeatherAPI:
                 return []
         return _WARN_AREA_ANCESTORS.get(warn_area_code, [])
 
+    def _get_airkorea_session(self) -> aiohttp.ClientSession:
+        """에어코리아 실시간 조회(key 발급 → 조회) 전용 세션을 반환한다.
+        없으면 새로 만든다. HA 공유 세션과 분리하는 이유는 클래스 위
+        _airkorea_session 필드 주석 참고."""
+        if self._airkorea_session is None or self._airkorea_session.closed:
+            self._airkorea_session = aiohttp.ClientSession()
+        return self._airkorea_session
+
+    async def async_close(self) -> None:
+        """통합구성요소 언로드 시 호출 — 전용 세션이 열려 있으면 닫는다."""
+        if self._airkorea_session is not None and not self._airkorea_session.closed:
+            await self._airkorea_session.close()
+
     async def _fetch_page_air_quality(self, station_code: str, city_name: str) -> dict:
         """
         API(getMsrstnAcctoRltmMesureDnsty)가 실패했을 때 보완용으로,
@@ -834,8 +853,9 @@ class KMAWeatherAPI:
         today_compact = now.strftime("%Y%m%d")
 
         try:
+            session = self._get_airkorea_session()
             # 1단계: key 발급 — 측정소 정보는 더미로 채워도 무방(실측 확인됨)
-            async with self.session.post(
+            async with session.post(
                 "https://www.airkorea.or.kr/web/realSearch",
                 data={
                     "pMENU_NO": "97", "schFlag": "1", "myDistrict": code,
@@ -857,8 +877,9 @@ class KMAWeatherAPI:
                 return {}
             key = m.group(1)
 
-            # 2단계: 그 key로 실제 측정소의 실시간 값 조회
-            async with self.session.post(
+            # 2단계: 그 key로 실제 측정소의 실시간 값 조회 (같은 전용 세션 →
+            # 같은 쿠키로 이어서 요청해야 key와 세션이 일치한다)
+            async with session.post(
                 "https://www.airkorea.or.kr/web/pollution/getRealChart",
                 data={
                     "dateDiv": "1", "stationCode": station_code,
