@@ -483,7 +483,7 @@ class TestAirQualityStationCache:
         api._cached_station_lat = 37.56
         api._cached_station_lon = 126.98
 
-        station_resp = {"response": {"body": {"items": [{"stationName": "강남"}]}}}
+        station_resp = {"response": {"body": {"items": [{"stationName": "강남", "stationCode": "111121"}]}}}
         air_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": [{"pm10Value": "30", "pm10Grade": "1",
                                                       "pm25Value": "15", "pm25Grade": "1"}]}}}
 
