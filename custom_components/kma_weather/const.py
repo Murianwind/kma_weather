@@ -122,6 +122,7 @@ API_SERVICES: dict[str, tuple[str, str]] = {
     "station": ("에어코리아 측정소정보",  "https://www.data.go.kr/data/15073877/openapi.do"),
     "warning": ("기상특보 조회서비스",    "https://www.data.go.kr/data/15000415/openapi.do"),
     "pollen":  ("기상청 생활기상지수",    "https://www.data.go.kr/data/15085289/openapi.do"),
+    "uv":      ("기상청 생활기상지수(자외선)", "https://www.data.go.kr/data/15085288/openapi.do"),
 }
 
 # ── 미신청으로 판단하는 resultCode 목록 ─────────────────────────────────
@@ -134,3 +135,10 @@ POLLEN_GRADE: dict[str, str] = {"0": "좋음", "1": "보통", "2": "나쁨", "3"
 POLLEN_SEASONS: dict[str, tuple[int, int]] = {
     "oak": (4, 6), "pine": (4, 6), "grass": (8, 10)
 }
+
+# ── 자외선지수 등급 기준 (기상청 생활기상지수 API 문서 공식 기준) ────────
+# 낮음 0~2, 보통 3~5, 높음 6~7, 매우높음 8~10, 위험 11이상
+UV_GRADES: tuple[tuple[int, str], ...] = (
+    (3, "낮음"), (6, "보통"), (8, "높음"), (11, "매우높음"),
+)
+UV_GRADE_MAX = "위험"
