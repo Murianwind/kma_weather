@@ -1356,14 +1356,14 @@ class TestPollenLocationCache:
     def _make_coordinator(self):
         from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
         coord = MagicMock(spec=KMAWeatherUpdateCoordinator)
-        coord._pollen_area_data = [
+        coord._admin_area_data = [
             {"c": "1111051500", "n": "서울특별시 종로구 청운효자동", "la": 37.58, "lo": 126.97},
             {"c": "2611010100", "n": "부산광역시 중구 중앙동", "la": 35.10, "lo": 129.03},
         ]
-        coord._pollen_cached_lat = None
-        coord._pollen_cached_lon = None
-        coord._pollen_cached_area_no = None
-        coord._pollen_cached_area_name = ""
+        coord._admin_cached_lat = None
+        coord._admin_cached_lon = None
+        coord._admin_cached_area_no = None
+        coord._admin_cached_area_name = ""
         coord.hass = MagicMock()
         coord.hass.async_add_executor_job = AsyncMock(return_value=None)
         return coord
@@ -1388,19 +1388,19 @@ class TestPollenLocationCache:
         lat1 = lat0 + move_km / 111.0
         lon1 = lon0
 
-        # 초기 조회
-        area_no_0, _ = await KMAWeatherUpdateCoordinator.find_pollen_area(coord, lat0, lon0)
-        cached_no = coord._pollen_cached_area_no
+        # 초기 조회 (find_pollen_area는 _find_admin_area를 그대로 위임 호출)
+        area_no_0, _ = await KMAWeatherUpdateCoordinator._find_admin_area(coord, lat0, lon0)
+        cached_no = coord._admin_cached_area_no
 
         # 이동 후 재조회
-        area_no_1, _ = await KMAWeatherUpdateCoordinator.find_pollen_area(coord, lat1, lon1)
+        area_no_1, _ = await KMAWeatherUpdateCoordinator._find_admin_area(coord, lat1, lon1)
 
         if expect_reset:
             # 좌표가 달라 새로 탐색
-            assert coord._pollen_cached_lat == lat1
+            assert coord._admin_cached_lat == lat1
         else:
             # 동일 좌표면 캐시 유지
-            assert coord._pollen_cached_area_no == cached_no
+            assert coord._admin_cached_area_no == cached_no
 
 
 # ══════════════════════════════════════════════════════════════════════════════
