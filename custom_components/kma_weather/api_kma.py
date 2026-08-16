@@ -21,6 +21,8 @@ from .const import (
     UNSUBSCRIBED_CODES   as _UNSUBSCRIBED_CODES,
     POLLEN_GRADE         as _POLLEN_GRADE,
     POLLEN_SEASONS       as _POLLEN_SEASONS,
+    UV_GRADES            as _UV_GRADES,
+    UV_GRADE_MAX         as _UV_GRADE_MAX,
 )
 _POLLEN_KINDS: tuple[str, ...] = tuple(_POLLEN_SEASONS.keys())
 _POLLEN_GRADE_RANK = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
@@ -227,7 +229,7 @@ class KMAWeatherAPI:
 
         self._notified_unsubscribed: set[str] = set()
         self._approved_apis: set[str] = set()
-        self._pending_apis: set[str] = {"air", "station", "warning", "pollen"}
+        self._pending_apis: set[str] = {"air", "station", "warning", "pollen", "uv"}
         self._call_counter_ref = None
 
         self._pollen_cache: dict[str, dict] = {
@@ -318,6 +320,7 @@ class KMAWeatherAPI:
         "ArpltnInforInqireSvc":      "에어코리아_대기",
         "WthrWrnInfoService":        "기상특보",
         "HealthWthrIdxServiceV3":    "꽃가루",
+        "LivingWthrIdxServiceV5":    "자외선지수",
     }
 
     async def _fetch(self, url, params, headers=None, timeout=15, retry_log_level=logging.WARNING):
@@ -401,6 +404,8 @@ class KMAWeatherAPI:
         warn_area_code: str | None,
         pollen_area_no: str,
         pollen_area_name: str,
+        uv_area_no: str = "",
+        uv_area_name: str = "",
     ) -> dict | None:
         self.lat, self.lon, self.nx, self.ny = lat, lon, nx, ny
         now = datetime.now(self.tz)
@@ -411,7 +416,7 @@ class KMAWeatherAPI:
         def _should_call(key: str) -> bool:
             return key in self._approved_apis or key in self._pending_apis
 
-        short_res = mid_res = air_data = address = warning = pollen_data = None
+        short_res = mid_res = air_data = address = warning = pollen_data = uv_data = None
 
         try:
             short_res = await self._get_short_term(now)
@@ -440,11 +445,17 @@ class KMAWeatherAPI:
                 pollen_data = await self._get_pollen(now, pollen_area_no, pollen_area_name)
             else:
                 pollen_data = None
+
+            if _should_call("uv"):
+                await asyncio.sleep(1.2)
+                uv_data = await self._get_uv_index(now, uv_area_no, uv_area_name)
+            else:
+                uv_data = None
         except Exception as e:
             _LOGGER.error("데이터 수집 중 오류 발생: %s", self._mask_key(e))
             return None
 
-        merged = self._merge_all(now, short_res, mid_res, air_data, address, warning, pollen_data)
+        merged = self._merge_all(now, short_res, mid_res, air_data, address, warning, pollen_data, uv_data)
         if short_res == "UNSUBSCRIBED":
             merged["_short_unsubscribed"] = True
         if isinstance(mid_res, tuple) and mid_res[0] == "UNSUBSCRIBED":
@@ -1214,6 +1225,80 @@ class KMAWeatherAPI:
             _LOGGER.error("꽃가루 데이터 수집 중 오류 발생: %s", self._mask_key(e))
             return {}
 
+    def _get_uv_grade(self, val: object) -> str | None:
+        """자외선지수(정수/실수 문자열)를 등급으로 변환한다.
+        낮음 0~2, 보통 3~5, 높음 6~7, 매우높음 8~10, 위험 11이상."""
+        v = _safe_float(val)
+        if v is None:
+            return None
+        for threshold, grade in _UV_GRADES:
+            if v < threshold:
+                return grade
+        return _UV_GRADE_MAX
+
+    @staticmethod
+    def _calc_uv_base_time(now: datetime) -> str:
+        """자외선지수는 00,03,06,...,21시(KST)에 하루 8회 발표된다.
+        지금 시각 기준으로 가장 최근에 발표됐을 시각을 YYYYMMDDHH로 반환한다."""
+        today_str = now.strftime("%Y%m%d")
+        h = now.hour
+        base_h = (h // 3) * 3
+        return f"{today_str}{base_h:02d}"
+
+    async def _get_uv_index(self, now: datetime, area_no: str, area_name: str) -> dict | None:
+        """
+        자외선지수를 조회한다. 대기질/꽃가루와 달리 별도 보완 수단(웹 스크래핑
+        폴백)은 없다 — API가 실패하면 그냥 이번 주기는 빈 값이 된다. 기상청
+        API는 5xx 재시도로 대부분의 일시 장애가 이미 흡수되기 때문에, 별도
+        폴백 없이도 실사용에 큰 문제는 없을 것으로 판단해 우선 API 단독으로
+        구현한다.
+        """
+        if not area_no:
+            return None
+
+        base_time = self._calc_uv_base_time(now)
+
+        try:
+            r = await self._fetch(
+                "https://apis.data.go.kr/1360000/LivingWthrIdxServiceV5/getUVIdxV5",
+                {"serviceKey": self.api_key, "dataType": "JSON",
+                 "areaNo": area_no, "time": base_time,
+                 "numOfRows": "1", "pageNo": "1"},
+            )
+            code = self._extract_result_code(r)
+            if code and self._check_unsubscribed("uv", code):
+                return None
+            if code and code not in ("00", "03"):
+                # 03(NODATA)은 아직 그 시각 자료가 안 올라온 경우로 흔히
+                # 있을 수 있어 오류로 취급하지 않고 그냥 빈 값으로 넘어간다.
+                return {}
+
+            self._mark_approved("uv")
+
+            items = (r.get("response", {}).get("body", {}).get("items", {})
+                     if r else {})
+            if isinstance(items, dict):
+                items = items.get("item", [])
+            if not items:
+                return {}
+            item = items[0] if isinstance(items, list) else items
+
+            val = item.get("h0")
+            grade = self._get_uv_grade(val)
+            date_raw = item.get("date", "")
+            ann = (
+                f"{date_raw[:4]}년 {date_raw[4:6]}월 {date_raw[6:8]}일 {date_raw[8:10]}시 발표"
+                if len(date_raw) >= 10 else base_time
+            )
+
+            return {
+                "value": val, "grade": grade,
+                "area_name": area_name, "area_no": area_no, "announcement": ann,
+            }
+        except Exception as e:
+            _LOGGER.error("자외선지수 조회 중 오류 발생: %s", self._mask_key(e))
+            return {}
+
     # ── 유틸리티 ────────────────────────────────────────────────────────────
 
     def _calculate_apparent_temp(self, temp, reh, wsd):
@@ -1285,7 +1370,7 @@ class KMAWeatherAPI:
         wf_pm = rep_slot(pm_hours)
         return wf_am, wf_pm
 
-    def _merge_all(self, now, short_res, mid_res, air_data, address=None, warning=None, pollen_data=None):
+    def _merge_all(self, now, short_res, mid_res, air_data, address=None, warning=None, pollen_data=None, uv_data=None):
         weather_data = {
             "TMP": None, "REH": None, "WSD": None, "VEC": None, "POP": None,
             "TMX_today": None, "TMN_today": None, "TMX_tomorrow": None, "TMN_tomorrow": None,
@@ -1688,6 +1773,7 @@ class KMAWeatherAPI:
             "weather": weather_data,
             "air": air_data or {},
             "pollen": pollen_data,
+            "uv": uv_data,
             "raw_forecast": forecast_map,
         }
 
