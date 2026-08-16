@@ -14,6 +14,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.core import callback
 from datetime import date
 from .const import DOMAIN, CONF_PREFIX, CONF_EXPIRE_DATE
+from .api_kma import KMAWeatherAPI
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -474,7 +475,11 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
             area_name = uv.get("area_name")
             if area_name:
                 attrs["지역"] = area_name
-            attrs.update(uv.get("hourly") or {})
+            hourly = uv.get("hourly") or {}
+            if self._type == "uv_grade":
+                # 등급 센서는 숫자 지수가 아니라 각 시간대의 등급(낮음/보통/...)을 보여준다
+                hourly = {k: KMAWeatherAPI._get_uv_grade(v) for k, v in hourly.items()}
+            attrs.update(hourly)
             return attrs
 
         # ── 관측 조건 센서 ───────────────────────────────────────────────────
