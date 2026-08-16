@@ -460,7 +460,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     self.api._cached_station_lon = None
                     _LOGGER.info(
                         "에어코리아 측정소 캐시에 측정소코드가 없어(예전 버전 캐시) "
-                        "'%s' 측정소를 다음 갱신 때 다시 조회해 보완합니다.",
+                        "'%s' 측정소를 재조회해 보완합니다.",
                         stored.get("station"),
                     )
                 _LOGGER.debug(
