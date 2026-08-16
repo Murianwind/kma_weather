@@ -523,13 +523,26 @@ class KMAWeatherAPI:
                     _LOGGER.warning("에어코리아 측정소 재조회 실패: 조회 결과가 비어있습니다. 다음 주기에 재시도합니다.")
                     return {}
                 sn = items[0].get("stationName")
+                station_code = items[0].get("stationCode")
+                if not station_code:
+                    # 측정소명은 왔는데 측정소코드가 비어있는 경우 — 이걸 "성공"으로
+                    # 캐싱해버리면(self._cached_station이 채워지는 순간) 위 "if not sn"
+                    # 게이트가 다음부터 계속 False가 되어, 재부팅 전까지는 다시 시도할
+                    # 기회 자체가 사라진다. 그래서 캐시에 반영하지 않고 이번 주기는
+                    # 실패로 처리해 다음 정기 갱신 때 자동으로 다시 시도되게 한다.
+                    _LOGGER.warning(
+                        "에어코리아 측정소 재조회: '%s'는 찾았지만 측정소코드가 "
+                        "비어있어 이번 주기는 보류합니다. 원본 응답 항목: %s",
+                        sn, items[0],
+                    )
+                    return {}
                 self._cached_station = sn
-                self._cached_station_code = items[0].get("stationCode")
+                self._cached_station_code = station_code
                 self._cached_station_lat = lat
                 self._cached_station_lon = lon
                 _LOGGER.info(
                     "에어코리아 측정소 재조회 완료: '%s' (측정소코드: %s)",
-                    sn, self._cached_station_code,
+                    sn, station_code,
                 )
 
             air_json = await self._fetch(
