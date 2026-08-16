@@ -400,6 +400,39 @@ class TestUvSensorExposure:
         # 강수량 센서처럼 hourly 값들이 별도 키(중첩)가 아니라 그대로 펼쳐져 있어야 함
         assert "hourly" not in attrs
 
+    def test_extra_state_attributes_grade_sensor_shows_grade_labels_not_numbers(self):
+        """uv_grade 센서의 시간대별 속성은 숫자가 아니라 등급(낮음/보통/...)이어야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {
+            "weather": {}, "air": {},
+            "uv": {"value": "6", "grade": "높음",
+                   "announcement": "2026년 08월 16일 06시 발표",
+                   "area_name": "청운효자동",
+                   "hourly": {"08/16 09시": 1.0, "08/16 12시": 6.0, "08/16 15시": 12.0}},
+        }
+        entry = MagicMock()
+        sensor = KMACustomSensor(coordinator, "uv_grade", "kma_weather", entry)
+        attrs = sensor.extra_state_attributes
+        assert attrs["08/16 09시"] == "낮음"
+        assert attrs["08/16 12시"] == "높음"
+        assert attrs["08/16 15시"] == "위험"
+
+    def test_extra_state_attributes_value_sensor_still_shows_numbers(self):
+        """uv_value 센서는 (등급 변환 로직 추가 이후에도) 여전히 숫자 그대로여야 한다."""
+        from custom_components.kma_weather.sensor import KMACustomSensor
+        coordinator = MagicMock()
+        coordinator.data = {
+            "weather": {}, "air": {},
+            "uv": {"value": "6", "grade": "높음",
+                   "hourly": {"08/16 09시": 1.0, "08/16 12시": 6.0}},
+        }
+        entry = MagicMock()
+        sensor = KMACustomSensor(coordinator, "uv_value", "kma_weather", entry)
+        attrs = sensor.extra_state_attributes
+        assert attrs["08/16 09시"] == 1.0
+        assert attrs["08/16 12시"] == 6.0
+
     def test_extra_state_attributes_none_when_no_uv_data(self):
         from custom_components.kma_weather.sensor import KMACustomSensor
         coordinator = MagicMock()
