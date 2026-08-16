@@ -221,10 +221,10 @@ class TestCheckUnsubscribed:
     def test_all_services_defined_in_api_services(self):
         """_API_SERVICES에 정의된 서비스 키가 정확히 일치함
 
-        꽃가루 농도 위험지수(pollen) API가 추가되었으므로 6개.
-        short, mid, air, station, warning, pollen
+        자외선지수(uv) API가 추가되었으므로 7개.
+        short, mid, air, station, warning, pollen, uv
         """
-        expected_keys = {"short", "mid", "air", "station", "warning", "pollen"}
+        expected_keys = {"short", "mid", "air", "station", "warning", "pollen", "uv"}
         assert set(_API_SERVICES.keys()) == expected_keys
 
     def test_all_services_have_url(self):
@@ -412,7 +412,7 @@ class TestCoordinatorApiIntegration:
         coord._store_loaded = True
         captured = {}
 
-        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="", pollen_area_name=""):
+        async def mock_fetch_data(lat, lon, nx, ny, reg_id_temp, reg_id_land, warn_area_code, pollen_area_no="", pollen_area_name="", uv_area_no="", uv_area_name=""):
             captured.update({
                 "reg_id_temp": reg_id_temp,
                 "reg_id_land": reg_id_land,
