@@ -87,13 +87,13 @@ async def test_astro_service_exact_logic(hass: HomeAssistant):
 
 @pytest.mark.asyncio
 async def test_api_3_1_pollen_map_error(mock_api):
-    """[TC 3-1] 꽃가루 맵 파일 로드 실패 대응 (Line 146)"""
+    """[TC 3-1] 행정구역코드 맵 파일 로드 실패 대응 (꽃가루/자외선지수 공용)"""
     from custom_components.kma_weather.coordinator import KMAWeatherUpdateCoordinator
     coord = MagicMock()
-    coord._pollen_area_data = None
+    coord._admin_area_data = None
     with patch("builtins.open", side_effect=FileNotFoundError):
-        KMAWeatherUpdateCoordinator._load_pollen_area_map(coord)
-        assert coord._pollen_area_data is None
+        KMAWeatherUpdateCoordinator._load_admin_area_map(coord)
+        assert coord._admin_area_data is None
 
 @pytest.mark.asyncio
 async def test_api_3_2_fetch_xml_and_401(mock_api):
