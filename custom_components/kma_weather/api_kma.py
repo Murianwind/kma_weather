@@ -1291,9 +1291,27 @@ class KMAWeatherAPI:
                 if len(date_raw) >= 10 else base_time
             )
 
+            # h0(지금)은 상태값으로 이미 쓰고, h3~h75(다음 시간부터 78시간 후까지
+            # 3시간 간격)를 강수량 센서(hourly_precipitation_mm)와 같은 방식으로
+            # 속성에 펼쳐 담는다. 하루를 넘어가는 범위라 "13시"처럼 시각만 쓰면
+            # 날짜가 헷갈리므로 "월/일 시" 형식으로 표기한다.
+            try:
+                base_dt = datetime.strptime(base_time, "%Y%m%d%H").replace(tzinfo=self.tz)
+            except ValueError:
+                base_dt = now
+            hourly: dict[str, float] = {}
+            for offset in range(3, 76, 3):
+                v = item.get(f"h{offset}")
+                fv = _safe_float(v)
+                if fv is None:
+                    continue
+                label = (base_dt + timedelta(hours=offset)).strftime("%m/%d %H시")
+                hourly[label] = fv
+
             return {
                 "value": val, "grade": grade,
                 "area_name": area_name, "area_no": area_no, "announcement": ann,
+                "hourly": hourly,
             }
         except Exception as e:
             _LOGGER.error("자외선지수 조회 중 오류 발생: %s", self._mask_key(e))
