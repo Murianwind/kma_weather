@@ -2,7 +2,14 @@ import logging
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, UnitOfPrecipitationDepth, EntityCategory, CONCENTRATION_PARTS_PER_MILLION
+from homeassistant.const import UnitOfTemperature, PERCENTAGE, UnitOfSpeed, UnitOfPrecipitationDepth, EntityCategory
+try:
+    # HA 2025.x 이후: 신규 상수. 구버전 HA에는 없을 수 있어 문자열로 폴백한다
+    # (CONCENTRATION_PARTS_PER_MILLION은 2027.8에 제거 예정이라 쓰지 않음).
+    from homeassistant.const import UnitOfRatio
+    _PPM_UNIT = UnitOfRatio.PARTS_PER_MILLION
+except ImportError:
+    _PPM_UNIT = "ppm"
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.core import callback
 from datetime import date
@@ -25,7 +32,7 @@ SENSOR_TYPES = {
     "pm10Grade":          ["미세먼지 등급",   None,                                "mdi:check-circle-outline",    None,                          "pm10_grade",           None],
     "pm25Value":          ["초미세먼지 농도", "µg/m³",                             "mdi:blur-linear",             SensorDeviceClass.PM25,        "pm25",                 None],
     "pm25Grade":          ["초미세먼지 등급", None,                                "mdi:check-circle-outline",    None,                          "pm25_grade",           None],
-    "o3Value":            ["오존 농도",       CONCENTRATION_PARTS_PER_MILLION,    "mdi:weather-sunny-alert",     SensorDeviceClass.OZONE,       "o3",                   None],
+    "o3Value":            ["오존 농도",       _PPM_UNIT,                           "mdi:weather-sunny-alert",     SensorDeviceClass.OZONE,       "o3",                   None],
     "o3Grade":            ["오존 등급",       None,                                "mdi:check-circle-outline",    None,                          "o3_grade",             None],
     "address":            ["현재 위치",       None,                                "mdi:map-marker",              None,                          "location",             EntityCategory.DIAGNOSTIC],
     "last_updated":       ["업데이트 시간",   None,                                "mdi:update",                  SensorDeviceClass.TIMESTAMP,   "last_updated",         EntityCategory.DIAGNOSTIC],
