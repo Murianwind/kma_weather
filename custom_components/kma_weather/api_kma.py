@@ -1225,7 +1225,8 @@ class KMAWeatherAPI:
             _LOGGER.error("꽃가루 데이터 수집 중 오류 발생: %s", self._mask_key(e))
             return {}
 
-    def _get_uv_grade(self, val: object) -> str | None:
+    @staticmethod
+    def _get_uv_grade(val: object) -> str | None:
         """자외선지수(정수/실수 문자열)를 등급으로 변환한다.
         낮음 0~2, 보통 3~5, 높음 6~7, 매우높음 8~10, 위험 11이상."""
         v = _safe_float(val)
