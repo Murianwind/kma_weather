@@ -163,6 +163,10 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
         if sensor_type == "api_calls_today":
             self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        elif sensor_type == "uv_value":
+            # 자외선지수는 공식 단위가 없는 순수 수치 지수라 unit은 비워뒀지만,
+            # 숫자값이므로 히스토리 그래프 대상이 되려면 state_class는 필요하다.
+            self._attr_state_class = SensorStateClass.MEASUREMENT
         elif details[1] is not None and sensor_type not in ("api_expire",):
             self._attr_state_class = SensorStateClass.MEASUREMENT
 
