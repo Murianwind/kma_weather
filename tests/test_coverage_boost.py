@@ -170,12 +170,46 @@ async def test_air_quality_no_air_data_items():
 
     async def mock_fetch(url, params=None, timeout=10, retry_log_level=None):
         if "MsrstnInfoInqireSvc" in url:
-            return {"response": {"body": {"items": [{"stationName": "중구"}]}}}
+            return {"response": {"body": {"items": [{"stationName": "중구", "stationCode": "111181"}]}}}
         return {"response": {"body": {"items": []}}}
 
     api._fetch = mock_fetch
     result = await api._get_air_quality(37.56, 126.98)
     assert result == {"station": "중구"}
+
+@pytest.mark.asyncio
+async def test_air_quality_missing_station_code_not_cached_and_retried_next_poll():
+    """
+    [Given] 측정소 조회 응답에 stationName은 있지만 stationCode가 비어있음
+    [When]  _get_air_quality 호출
+    [Then]  성공으로 캐싱하지 않고(재부팅 없이도 다음 폴링에서 다시 시도되도록)
+            빈 딕셔너리를 반환한다. 이후 정상 응답이 오면 그때 정상적으로 캐싱된다.
+    """
+    api = KMAWeatherAPI(MagicMock(), "key")
+
+    async def mock_fetch_missing_code(url, params=None, timeout=10, retry_log_level=None):
+        if "MsrstnInfoInqireSvc" in url:
+            return {"response": {"body": {"items": [{"stationName": "화랑로"}]}}}  # stationCode 없음
+        return {"response": {"body": {"items": []}}}
+
+    api._fetch = mock_fetch_missing_code
+    result = await api._get_air_quality(37.6, 127.09)
+
+    assert result == {}
+    assert api._cached_station is None, "측정소코드 없이 성공으로 캐싱되면 안 됨"
+    assert api._cached_station_code is None
+
+    async def mock_fetch_with_code(url, params=None, timeout=10, retry_log_level=None):
+        if "MsrstnInfoInqireSvc" in url:
+            return {"response": {"body": {"items": [{"stationName": "화랑로", "stationCode": "111312"}]}}}
+        return {"response": {"header": {"resultCode": "00"}, "body": {"items": [
+            {"pm10Value": "20", "pm10Grade": "1", "pm25Value": "10", "pm25Grade": "1"},
+        ]}}}
+
+    api._fetch = mock_fetch_with_code
+    result2 = await api._get_air_quality(37.6, 127.09)
+    assert api._cached_station == "화랑로"
+    assert api._cached_station_code == "111312"
 
 @pytest.mark.asyncio
 async def test_air_quality_fetch_returns_none():
