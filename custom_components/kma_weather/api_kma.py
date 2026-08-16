@@ -14,6 +14,13 @@ from homeassistant.core import HomeAssistant
 from .const import haversine as _haversine_fn, safe_float as _safe_float
 
 _LOGGER = logging.getLogger(__name__)
+# 에어코리아 실시간 조회 보완(realSearch+getRealChart) 전용 하위 로거.
+# api_kma 전체를 debug로 켜면 날씨/특보/꽃가루 등 다른 로그까지 전부 쏟아지므로,
+# 이 흐름만 따로 진단하고 싶을 때는 아래 로거 이름 하나만 debug로 켜면 된다:
+#   logger:
+#     logs:
+#       custom_components.kma_weather.api_kma.airkorea_fallback: debug
+_AIRKOREA_LOGGER = _LOGGER.getChild("airkorea_fallback")
 
 from .const import (
     WARN_TYPE_MAP        as _WARN_TYPE_MAP,
@@ -849,78 +856,95 @@ class KMAWeatherAPI:
         발급되는 값이다 — 측정소와도 무관하게 항상 새로 발급되므로, 여기선
         더미 값으로 그 페이지를 한 번 "방문"해서 key만 뽑아 쓴다.
 
+        HA 재시작 직후처럼 네트워크/DNS가 아직 안정화되기 전이면 이 2단계
+        요청이 일시적으로 실패할 수 있어, 한 번 더 시도해본다(약 5초 간격).
+        그래도 안 되면 포기하고 다음 폴링 주기에 다시 시도한다.
+
         station_code: getNearbyMsrstnList가 돌려준 측정소코드(예: "111312").
         city_name: 시/도명(예: "서울특별시"). 실패하거나 매핑 안 되는
         시/도면 빈 딕셔너리를 반환한다(API 결과 그대로 유지).
+
+        진단 로그는 전부 별도 로거(_AIRKOREA_LOGGER, 이름:
+        custom_components.kma_weather.api_kma.airkorea_fallback)로 남긴다.
+        api_kma 전체를 debug로 켜지 않고 이 흐름만 targeting해서 볼 수 있다.
         """
         if not station_code:
-            _LOGGER.debug("대기질 보완: 캐시된 측정소코드가 없어 건너뜀")
+            _AIRKOREA_LOGGER.debug("캐시된 측정소코드가 없어 건너뜀")
             return {}
         code = _airkorea_district_code(city_name)
         if not code:
-            _LOGGER.debug("대기질 보완: 시/도(%s)를 district 코드로 매핑 못함", city_name)
+            _AIRKOREA_LOGGER.debug("시/도(%s)를 district 코드로 매핑 못함", city_name)
             return {}
 
-        now = datetime.now(self.tz)
-        today = now.strftime("%Y-%m-%d")
-        today_compact = now.strftime("%Y%m%d")
+        async def _attempt() -> dict | None:
+            now = datetime.now(self.tz)
+            today = now.strftime("%Y-%m-%d")
+            today_compact = now.strftime("%Y%m%d")
+            try:
+                session = self._get_airkorea_session()
+                # 1단계: key 발급 — 측정소 정보는 더미로 채워도 무방(실측 확인됨)
+                async with session.post(
+                    "https://www.airkorea.or.kr/web/realSearch",
+                    data={
+                        "pMENU_NO": "97", "schFlag": "1", "myDistrict": code,
+                        "dateDiv": "1", "from_date": today, "from_date_hour": "00",
+                        "to_date": today, "to_date_hour": "23",
+                        "key": "0", "tm_x": "0", "tm_y": "0", "tm": "0.0",
+                        "stationId": "stationCode0", "station": "0",
+                        "station_mang": "3", "station_code": " ",
+                        "loading": "yes", "leftShow": "realTime",
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=10,
+                ) as resp:
+                    if resp.status != 200:
+                        _AIRKOREA_LOGGER.debug("realSearch HTTP %s (key 발급 실패)", resp.status)
+                        return None
+                    html = await resp.text()
+                m = re.search(r"var key = '([^']+)'", html)
+                if not m:
+                    _AIRKOREA_LOGGER.debug(
+                        "realSearch 응답(길이=%d)에서 key를 못 찾음 "
+                        "(사이트 마크업이 바뀌었을 수 있음)", len(html),
+                    )
+                    return None
+                key = m.group(1)
 
-        try:
-            session = self._get_airkorea_session()
-            # 1단계: key 발급 — 측정소 정보는 더미로 채워도 무방(실측 확인됨)
-            async with session.post(
-                "https://www.airkorea.or.kr/web/realSearch",
-                data={
-                    "pMENU_NO": "97", "schFlag": "1", "myDistrict": code,
-                    "dateDiv": "1", "from_date": today, "from_date_hour": "00",
-                    "to_date": today, "to_date_hour": "23",
-                    "key": "0", "tm_x": "0", "tm_y": "0", "tm": "0.0",
-                    "stationId": "stationCode0", "station": "0",
-                    "station_mang": "3", "station_code": " ",
-                    "loading": "yes", "leftShow": "realTime",
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=10,
-            ) as resp:
-                if resp.status != 200:
-                    _LOGGER.debug("대기질 보완: realSearch HTTP %s (key 발급 실패)", resp.status)
-                    return {}
-                html = await resp.text()
-            m = re.search(r"var key = '([^']+)'", html)
-            if not m:
-                _LOGGER.debug(
-                    "대기질 보완: realSearch 응답(길이=%d)에서 key를 못 찾음 "
-                    "(사이트 마크업이 바뀌었을 수 있음)", len(html),
-                )
+                # 2단계: 그 key로 실제 측정소의 실시간 값 조회 (같은 전용 세션 →
+                # 같은 쿠키로 이어서 요청해야 key와 세션이 일치한다)
+                async with session.post(
+                    "https://www.airkorea.or.kr/web/pollution/getRealChart",
+                    data={
+                        "dateDiv": "1", "stationCode": station_code,
+                        "from_date": f"{today_compact}00", "to_date": f"{today_compact}23",
+                        "key": key, "token": "",
+                    },
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Referer": "https://www.airkorea.or.kr/web/realSearch",
+                    },
+                    timeout=10,
+                ) as resp:
+                    if resp.status != 200:
+                        _AIRKOREA_LOGGER.debug("getRealChart HTTP %s", resp.status)
+                        return None
+                    return await resp.json(content_type=None)
+            except Exception as e:
+                _AIRKOREA_LOGGER.debug("요청 중 예외 발생 (%s): %s", type(e).__name__, e)
+                return None
+
+        data = await _attempt()
+        if data is None:
+            _AIRKOREA_LOGGER.debug("1차 시도 실패 → 5초 후 재시도")
+            await asyncio.sleep(5.0)
+            data = await _attempt()
+            if data is None:
+                _AIRKOREA_LOGGER.debug("재시도도 실패 → 이번 주기 포기")
                 return {}
-            key = m.group(1)
-
-            # 2단계: 그 key로 실제 측정소의 실시간 값 조회 (같은 전용 세션 →
-            # 같은 쿠키로 이어서 요청해야 key와 세션이 일치한다)
-            async with session.post(
-                "https://www.airkorea.or.kr/web/pollution/getRealChart",
-                data={
-                    "dateDiv": "1", "stationCode": station_code,
-                    "from_date": f"{today_compact}00", "to_date": f"{today_compact}23",
-                    "key": key, "token": "",
-                },
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Referer": "https://www.airkorea.or.kr/web/realSearch",
-                },
-                timeout=10,
-            ) as resp:
-                if resp.status != 200:
-                    _LOGGER.debug("대기질 보완: getRealChart HTTP %s", resp.status)
-                    return {}
-                data = await resp.json(content_type=None)
-        except Exception as e:
-            _LOGGER.debug("대기질 보완: 요청 중 예외 발생 (%s): %s", type(e).__name__, e)
-            return {}
 
         charts = data.get("charts") or []
         if not charts:
-            _LOGGER.debug("대기질 보완: getRealChart 응답에 charts가 비어있음")
+            _AIRKOREA_LOGGER.debug("getRealChart 응답에 charts가 비어있음")
         result: dict = {}
 
         def _valid(v) -> bool:
@@ -938,8 +962,8 @@ class KMAWeatherAPI:
             if all(k in result for k in ("pm10Value", "pm25Value", "o3Value")):
                 break
         if not result:
-            _LOGGER.debug(
-                "대기질 보완: charts %d건 다 훑었지만 유효한 값이 없음 "
+            _AIRKOREA_LOGGER.debug(
+                "charts %d건 다 훑었지만 유효한 값이 없음 "
                 "(측정소코드 '%s'가 이 charts에 없거나 전부 결측치)",
                 len(charts), station_code,
             )
