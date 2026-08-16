@@ -58,6 +58,8 @@ SENSOR_TYPES = {
     "moonset":            ["다음 월몰",          None,   "mdi:weather-moonset-down",        None,  "moonset",            None],
     "observation_condition": ["천문 관측 조건",  None,   "mdi:telescope",                   None,  "observation_condition", None],
     "pollen":             ["꽃가루 농도",      None,                                "mdi:flower-pollen-outline",   None,                          "pollen",               None],
+    "uv_value":           ["자외선지수",      None,                                "mdi:sun-wireless-outline",    None,                          "uv_value",              None],
+    "uv_grade":           ["자외선지수 등급", None,                                "mdi:check-circle-outline",    None,                          "uv_grade",              None],
     "api_calls_today":    ["오늘 API 호출 수", "회",                                "mdi:counter",                 None,                          "api_calls_today",      EntityCategory.DIAGNOSTIC],
 }
 
@@ -86,6 +88,9 @@ SENSOR_API_GROUPS: dict[str | None, list[str]] = {
     ],
     "pollen": [
         "pollen",
+    ],
+    "uv": [
+        "uv_value", "uv_grade",
     ],
 }
 
@@ -325,6 +330,22 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
                 return None
             return worst
 
+        if self._type in ("uv_value", "uv_grade"):
+            uv = self.coordinator.data.get("uv")
+            if uv is None:
+                # 미신청/만료 → unavailable
+                return None
+            if self._type == "uv_grade":
+                return uv.get("grade")
+            v = uv.get("value")
+            if v in (None, "-", ""):
+                return None
+            try:
+                f_val = float(v)
+                return int(f_val) if f_val == int(f_val) else f_val
+            except (ValueError, TypeError):
+                return None
+
         if self._type == "TMN_today":
             val = self.coordinator._daily_min_temp
         elif self._type == "TMX_today":
@@ -358,6 +379,7 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
                 "에어코리아_대기":  counts.get("에어코리아_대기", 0),
                 "기상특보":        counts.get("기상특보", 0),
                 "꽃가루":          counts.get("꽃가루", 0),
+                "자외선지수":       counts.get("자외선지수", 0),
                 "집계일":          counts.get("date") or "-",
                 "마지막_호출_이유": counts.get("last_reason") or "-",
             }
@@ -437,6 +459,17 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
                 "잡초류":    _disp(pollen.get("grass")),
                 "발표 시각": pollen.get("announcement", "-"),
             }
+            return attrs
+
+        # ── 자외선지수 센서 ──────────────────────────────────────────────────
+        if self._type in ("uv_value", "uv_grade"):
+            uv = self.coordinator.data.get("uv")
+            if not uv:
+                return None
+            attrs = {"발표 시각": uv.get("announcement", "-")}
+            area_name = uv.get("area_name")
+            if area_name:
+                attrs["지역"] = area_name
             return attrs
 
         # ── 관측 조건 센서 ───────────────────────────────────────────────────
