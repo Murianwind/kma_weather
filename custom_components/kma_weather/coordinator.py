@@ -138,17 +138,15 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._api_call_store = Store(hass, version=1, key=f"{DOMAIN}_global_api_calls")
         self._api_call_store_loaded = False
 
-        self._pollen_area_data: list[dict] | None = None
-        self._pollen_cached_area_no: str | None = None
-        self._pollen_cached_area_name: str = ""
-        self._pollen_cached_lat: float | None = None
-        self._pollen_cached_lon: float | None = None
-
-        self._uv_area_data: list[dict] | None = None
-        self._uv_cached_area_no: str | None = None
-        self._uv_cached_area_name: str = ""
-        self._uv_cached_lat: float | None = None
-        self._uv_cached_lon: float | None = None
+        # 꽃가루·자외선지수는 기상청이 배포하는 동일한 행정구역코드 파일
+        # (admin_area_map.json)을 쓴다. 완전히 같은 데이터라 캐시도
+        # find_pollen_area/find_uv_area가 함께 공유한다 — 매 갱신마다
+        # 같은 좌표로 지역을 두 번 계산하지 않는다.
+        self._admin_area_data: list[dict] | None = None
+        self._admin_cached_area_no: str | None = None
+        self._admin_cached_area_name: str = ""
+        self._admin_cached_lat: float | None = None
+        self._admin_cached_lon: float | None = None
 
         self._approved_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_approved_apis")
         self._approved_store_loaded = False
@@ -209,10 +207,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
 
         self._cached_area_lat = lat
         self._cached_area_lon = lon
-        self._pollen_cached_lat = None
-        self._pollen_cached_lon = None
-        self._uv_cached_lat = None
-        self._uv_cached_lon = None
+        self._admin_cached_lat = None
+        self._admin_cached_lon = None
         for kind in ("pine", "oak", "grass"):
             self.api._pollen_cache[kind] = {
                 "today": None, "tomorrow": None,
@@ -306,99 +302,61 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         except Exception:
             pass
 
-    def _load_pollen_area_map(self) -> None:
+    def _load_admin_area_map(self) -> None:
         try:
-            json_path = pathlib.Path(__file__).parent / "pollen_area_map.json"
+            json_path = pathlib.Path(__file__).parent / "admin_area_map.json"
             with open(json_path, encoding="utf-8") as f:
-                self._pollen_area_data = json.load(f)
-            _LOGGER.debug("꽃가루 지역코드 룩업 로드 완료: %d개 읍면동", len(self._pollen_area_data))
+                self._admin_area_data = json.load(f)
+            _LOGGER.debug("행정구역코드 룩업 로드 완료: %d개 읍면동", len(self._admin_area_data))
         except Exception as e:
-            _LOGGER.warning("꽃가루 지역코드 룩업 로드 실패 (pollen_area_map.json 누락?): %s", e)
-            self._pollen_area_data = None
+            _LOGGER.warning("행정구역코드 룩업 로드 실패 (admin_area_map.json 누락?): %s", e)
+            self._admin_area_data = None
+
+    async def _find_admin_area(self, lat: float, lon: float) -> tuple[str, str]:
+        """
+        꽃가루·자외선지수 공용 지역코드(10자리 행정동코드) 룩업.
+
+        두 API는 기상청이 배포하는 동일한 지역코드표(2026-07-01자, admin_area_map.json)를
+        쓴다 — 실제로 대조해서 완전히 같은 데이터임을 확인했다. 그래서 파일도
+        하나, 좌표→지역 매칭 로직과 캐시도 하나만 두고 find_pollen_area/
+        find_uv_area가 이 함수를 그대로 공유한다.
+        """
+        if (self._admin_cached_lat == lat
+                and self._admin_cached_lon == lon
+                and self._admin_cached_area_no):
+            return self._admin_cached_area_no, self._admin_cached_area_name
+
+        if not self._admin_area_data:
+            try:
+                await self.hass.async_add_executor_job(self._load_admin_area_map)
+            except Exception as e:
+                _LOGGER.warning("admin_area_map.json 로드 실패: %s", e)
+            if not self._admin_area_data:
+                _LOGGER.warning("admin_area_map.json 로드 실패 → 꽃가루/자외선지수 조회 불가")
+                return "", ""
+
+        best, best_d = None, float("inf")
+        for r in self._admin_area_data:
+            d = (r["la"] - lat) ** 2 + (r["lo"] - lon) ** 2
+            if d < best_d:
+                best_d, best = d, r
+
+        if best:
+            self._admin_cached_lat = lat
+            self._admin_cached_lon = lon
+            self._admin_cached_area_no = best["c"]
+            self._admin_cached_area_name = best["n"]
+            _LOGGER.debug("행정구역 지역 매칭: (%.4f, %.4f) → %s (%s)", lat, lon, best["n"], best["c"])
+            return best["c"], best["n"]
+
+        _LOGGER.warning("행정구역 지역 매칭 실패: (%.4f, %.4f)", lat, lon)
+        return "", ""
 
     async def find_pollen_area(self, lat: float, lon: float) -> tuple[str, str]:
-        if (self._pollen_cached_lat == lat
-                and self._pollen_cached_lon == lon
-                and self._pollen_cached_area_no):
-            return self._pollen_cached_area_no, self._pollen_cached_area_name
-
-        if not self._pollen_area_data:
-            try:
-                await self.hass.async_add_executor_job(self._load_pollen_area_map)
-            except Exception as e:
-                _LOGGER.warning("pollen_area_map.json 로드 실패: %s", e)
-            if not self._pollen_area_data:
-                _LOGGER.warning("pollen_area_map.json 로드 실패 → 꽃가루 조회 불가")
-                return "", ""
-
-        best, best_d = None, float("inf")
-        for r in self._pollen_area_data:
-            d = (r["la"] - lat) ** 2 + (r["lo"] - lon) ** 2
-            if d < best_d:
-                best_d, best = d, r
-
-        if best:
-            self._pollen_cached_lat = lat
-            self._pollen_cached_lon = lon
-            self._pollen_cached_area_no = best["c"]
-            self._pollen_cached_area_name = best["n"]
-            _LOGGER.debug("꽃가루 지역 매칭: (%.4f, %.4f) → %s (%s)", lat, lon, best["n"], best["c"])
-            return best["c"], best["n"]
-
-        _LOGGER.warning("꽃가루 지역 매칭 실패: (%.4f, %.4f)", lat, lon)
-        return "", ""
-
-    def _load_uv_area_map(self) -> None:
-        try:
-            json_path = pathlib.Path(__file__).parent / "uv_area_map.json"
-            with open(json_path, encoding="utf-8") as f:
-                self._uv_area_data = json.load(f)
-            _LOGGER.debug("자외선지수 지역코드 룩업 로드 완료: %d개 읍면동", len(self._uv_area_data))
-        except Exception as e:
-            _LOGGER.warning("자외선지수 지역코드 룩업 로드 실패 (uv_area_map.json 누락?): %s", e)
-            self._uv_area_data = None
+        return await self._find_admin_area(lat, lon)
 
     async def find_uv_area(self, lat: float, lon: float) -> tuple[str, str]:
-        """
-        자외선지수 API 전용 지역코드 룩업.
-
-        꽃가루(pollen_area_map.json)와 같은 10자리 행정동코드 체계지만,
-        파일 자체는 공유하지 않고 별도(uv_area_map.json)로 둔다 — 대조해보니
-        두 파일 사이에 코드가 서로 다른 경우가 있었다(행정구역 개편으로 한쪽만
-        갱신된 사례, 예: 화성시 동탄구/효행구/병점구/만세구 신설). 자외선지수
-        API 신청 시 받은 최신(2026-07-01자) 지역코드표를 그대로 사용해서
-        해당 API와 항상 정합성이 맞도록 한다.
-        """
-        if (self._uv_cached_lat == lat
-                and self._uv_cached_lon == lon
-                and self._uv_cached_area_no):
-            return self._uv_cached_area_no, self._uv_cached_area_name
-
-        if not self._uv_area_data:
-            try:
-                await self.hass.async_add_executor_job(self._load_uv_area_map)
-            except Exception as e:
-                _LOGGER.warning("uv_area_map.json 로드 실패: %s", e)
-            if not self._uv_area_data:
-                _LOGGER.warning("uv_area_map.json 로드 실패 → 자외선지수 조회 불가")
-                return "", ""
-
-        best, best_d = None, float("inf")
-        for r in self._uv_area_data:
-            d = (r["la"] - lat) ** 2 + (r["lo"] - lon) ** 2
-            if d < best_d:
-                best_d, best = d, r
-
-        if best:
-            self._uv_cached_lat = lat
-            self._uv_cached_lon = lon
-            self._uv_cached_area_no = best["c"]
-            self._uv_cached_area_name = best["n"]
-            _LOGGER.debug("자외선지수 지역 매칭: (%.4f, %.4f) → %s (%s)", lat, lon, best["n"], best["c"])
-            return best["c"], best["n"]
-
-        _LOGGER.warning("자외선지수 지역 매칭 실패: (%.4f, %.4f)", lat, lon)
-        return "", ""
+        return await self._find_admin_area(lat, lon)
 
     async def async_setup(self) -> None:
         from homeassistant.helpers.event import async_track_time_change
