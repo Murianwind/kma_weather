@@ -520,12 +520,17 @@ class KMAWeatherAPI:
                 items = (st_json.get("response", {}).get("body", {}).get("items", [])
                          if st_json else [])
                 if not items:
+                    _LOGGER.warning("에어코리아 측정소 재조회 실패: 조회 결과가 비어있습니다. 다음 주기에 재시도합니다.")
                     return {}
                 sn = items[0].get("stationName")
                 self._cached_station = sn
                 self._cached_station_code = items[0].get("stationCode")
                 self._cached_station_lat = lat
                 self._cached_station_lon = lon
+                _LOGGER.info(
+                    "에어코리아 측정소 재조회 완료: '%s' (측정소코드: %s)",
+                    sn, self._cached_station_code,
+                )
 
             air_json = await self._fetch(
                 "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
