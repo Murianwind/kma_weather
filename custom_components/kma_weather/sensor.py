@@ -470,6 +470,7 @@ class KMACustomSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
             area_name = uv.get("area_name")
             if area_name:
                 attrs["지역"] = area_name
+            attrs.update(uv.get("hourly") or {})
             return attrs
 
         # ── 관측 조건 센서 ───────────────────────────────────────────────────
