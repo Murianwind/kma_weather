@@ -497,14 +497,72 @@ class TestStationCachePersistence:
         """
         coord = self._make_coordinator(hass)
         coord._station_store.async_load = AsyncMock(return_value={
-            "station": "서석동", "lat": 35.145, "lon": 126.918,
+            "station": "서석동", "station_code": "231411", "lat": 35.145, "lon": 126.918,
         })
 
         await coord._restore_station_cache()
 
         assert coord.api._cached_station == "서석동"
+        assert coord.api._cached_station_code == "231411"
         assert coord.api._cached_station_lat == 35.145
         assert coord.api._cached_station_lon == 126.918
+
+    @pytest.mark.asyncio
+    async def test_restore_station_cache_migrates_legacy_format_without_code(self, hass):
+        """
+        [Given] station_code 필드가 생기기 전에 저장된 예전 형식 캐시
+                (station/lat/lon만 있고 station_code는 아예 없음)
+        [When]  _restore_station_cache 호출
+        [Then]  아무것도 복원하지 않고 전부 None으로 비워서, 다음 갱신 때
+                getNearbyMsrstnList를 다시 타 measurementCode까지 채우게 한다
+                (station 이름까지 남아있으면 재조회 분기 자체를 안 타게 되므로
+                이름도 반드시 같이 비워야 한다).
+        """
+        coord = self._make_coordinator(hass)
+        coord._station_store.async_load = AsyncMock(return_value={
+            "station": "서석동", "lat": 35.145, "lon": 126.918,
+            # station_code 키 자체가 없음 — 이 필드가 생기기 전 저장분
+        })
+
+        await coord._restore_station_cache()
+
+        assert coord.api._cached_station is None
+        assert coord.api._cached_station_code is None
+        assert coord.api._cached_station_lat is None
+        assert coord.api._cached_station_lon is None
+
+    @pytest.mark.asyncio
+    async def test_restore_station_cache_migration_triggers_fresh_lookup(self, hass):
+        """
+        [Given] station_code 없는 예전 형식 캐시로 복원된 상태
+        [When]  _get_air_quality 호출
+        [Then]  getNearbyMsrstnList를 다시 호출해 station_code까지 새로 채운다
+                (예전에는 station 이름이 남아있어 이 재조회 자체가 영영 안
+                일어나 대기질 보완이 계속 막히는 버그가 있었다)
+        """
+        coord = self._make_coordinator(hass)
+        coord._station_store.async_load = AsyncMock(return_value={
+            "station": "서석동", "lat": 35.145, "lon": 126.918,
+        })
+        await coord._restore_station_cache()
+
+        station_search_called = {"n": 0}
+
+        async def mock_fetch(url, params, **kwargs):
+            if "MsrstnInfoInqireSvc" in url:
+                station_search_called["n"] += 1
+                return {"response": {"body": {"items": [
+                    {"stationName": "서석동", "stationCode": "231411"},
+                ]}}}
+            return {"response": {"body": {"items": []}}}
+
+        coord.api._fetch = mock_fetch
+        coord.api._get_address = AsyncMock(return_value="")
+
+        await coord.api._get_air_quality(35.145, 126.918)
+
+        assert station_search_called["n"] == 1, "예전 캐시 복원 후 재조회가 안 일어남"
+        assert coord.api._cached_station_code == "231411"
 
     @pytest.mark.asyncio
     async def test_restore_station_cache_no_stored_data(self, hass):
@@ -529,7 +587,7 @@ class TestStationCachePersistence:
         """
         coord = self._make_coordinator(hass)
         coord._station_store.async_load = AsyncMock(return_value={
-            "station": "서석동", "lat": 35.145, "lon": 126.918,
+            "station": "서석동", "station_code": "231411", "lat": 35.145, "lon": 126.918,
         })
 
         await coord._restore_station_cache()
@@ -583,7 +641,7 @@ class TestStationCachePersistence:
         """
         coord = self._make_coordinator(hass)
         coord._station_store.async_load = AsyncMock(return_value={
-            "station": "서석동", "lat": 35.145, "lon": 126.918,
+            "station": "서석동", "station_code": "231411", "lat": 35.145, "lon": 126.918,
         })
         await coord._restore_station_cache()
 
@@ -614,7 +672,7 @@ class TestStationCachePersistence:
         """
         coord = self._make_coordinator(hass)
         coord._station_store.async_load = AsyncMock(return_value={
-            "station": "서석동", "lat": 35.145, "lon": 126.918,
+            "station": "서석동", "station_code": "231411", "lat": 35.145, "lon": 126.918,
         })
         await coord._restore_station_cache()
 
