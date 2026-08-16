@@ -843,9 +843,11 @@ class KMAWeatherAPI:
         시/도면 빈 딕셔너리를 반환한다(API 결과 그대로 유지).
         """
         if not station_code:
+            _LOGGER.debug("대기질 보완: 캐시된 측정소코드가 없어 건너뜀")
             return {}
         code = _airkorea_district_code(city_name)
         if not code:
+            _LOGGER.debug("대기질 보완: 시/도(%s)를 district 코드로 매핑 못함", city_name)
             return {}
 
         now = datetime.now(self.tz)
@@ -870,10 +872,15 @@ class KMAWeatherAPI:
                 timeout=10,
             ) as resp:
                 if resp.status != 200:
+                    _LOGGER.debug("대기질 보완: realSearch HTTP %s (key 발급 실패)", resp.status)
                     return {}
                 html = await resp.text()
             m = re.search(r"var key = '([^']+)'", html)
             if not m:
+                _LOGGER.debug(
+                    "대기질 보완: realSearch 응답(길이=%d)에서 key를 못 찾음 "
+                    "(사이트 마크업이 바뀌었을 수 있음)", len(html),
+                )
                 return {}
             key = m.group(1)
 
@@ -893,12 +900,16 @@ class KMAWeatherAPI:
                 timeout=10,
             ) as resp:
                 if resp.status != 200:
+                    _LOGGER.debug("대기질 보완: getRealChart HTTP %s", resp.status)
                     return {}
                 data = await resp.json(content_type=None)
-        except Exception:
+        except Exception as e:
+            _LOGGER.debug("대기질 보완: 요청 중 예외 발생 (%s): %s", type(e).__name__, e)
             return {}
 
         charts = data.get("charts") or []
+        if not charts:
+            _LOGGER.debug("대기질 보완: getRealChart 응답에 charts가 비어있음")
         result: dict = {}
 
         def _valid(v) -> bool:
@@ -915,6 +926,12 @@ class KMAWeatherAPI:
                 result["o3Value"] = str(c["VALUE_10003"])
             if all(k in result for k in ("pm10Value", "pm25Value", "o3Value")):
                 break
+        if not result:
+            _LOGGER.debug(
+                "대기질 보완: charts %d건 다 훑었지만 유효한 값이 없음 "
+                "(측정소코드 '%s'가 이 charts에 없거나 전부 결측치)",
+                len(charts), station_code,
+            )
         return result
 
     def _notify_warn_page_failure(self, reason: str) -> None:
