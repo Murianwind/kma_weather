@@ -132,7 +132,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._api_call_counts: dict[str, int] = {
             "단기예보": 0, "중기예보": 0,
             "에어코리아_측정소": 0, "에어코리아_대기": 0,
-            "기상특보": 0, "꽃가루": 0,
+            "기상특보": 0, "꽃가루": 0, "자외선지수": 0,
         }
         self._api_call_date: str | None = None
         self._api_call_store = Store(hass, version=1, key=f"{DOMAIN}_global_api_calls")
@@ -143,6 +143,12 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._pollen_cached_area_name: str = ""
         self._pollen_cached_lat: float | None = None
         self._pollen_cached_lon: float | None = None
+
+        self._uv_area_data: list[dict] | None = None
+        self._uv_cached_area_no: str | None = None
+        self._uv_cached_area_name: str = ""
+        self._uv_cached_lat: float | None = None
+        self._uv_cached_lon: float | None = None
 
         self._approved_store = Store(hass, version=1, key=f"{DOMAIN}_{safe_key}_approved_apis")
         self._approved_store_loaded = False
@@ -205,6 +211,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         self._cached_area_lon = lon
         self._pollen_cached_lat = None
         self._pollen_cached_lon = None
+        self._uv_cached_lat = None
+        self._uv_cached_lon = None
         for kind in ("pine", "oak", "grass"):
             self.api._pollen_cache[kind] = {
                 "today": None, "tomorrow": None,
@@ -230,7 +238,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         return self.hass.data.setdefault(f"{DOMAIN}_api_call_counts", {
             "단기예보": 0, "중기예보": 0,
             "에어코리아_측정소": 0, "에어코리아_대기": 0,
-            "기상특보": 0, "꽃가루": 0,
+            "기상특보": 0, "꽃가루": 0, "자외선지수": 0,
             "date": None,
         })
 
@@ -338,6 +346,58 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             return best["c"], best["n"]
 
         _LOGGER.warning("꽃가루 지역 매칭 실패: (%.4f, %.4f)", lat, lon)
+        return "", ""
+
+    def _load_uv_area_map(self) -> None:
+        try:
+            json_path = pathlib.Path(__file__).parent / "uv_area_map.json"
+            with open(json_path, encoding="utf-8") as f:
+                self._uv_area_data = json.load(f)
+            _LOGGER.debug("자외선지수 지역코드 룩업 로드 완료: %d개 읍면동", len(self._uv_area_data))
+        except Exception as e:
+            _LOGGER.warning("자외선지수 지역코드 룩업 로드 실패 (uv_area_map.json 누락?): %s", e)
+            self._uv_area_data = None
+
+    async def find_uv_area(self, lat: float, lon: float) -> tuple[str, str]:
+        """
+        자외선지수 API 전용 지역코드 룩업.
+
+        꽃가루(pollen_area_map.json)와 같은 10자리 행정동코드 체계지만,
+        파일 자체는 공유하지 않고 별도(uv_area_map.json)로 둔다 — 대조해보니
+        두 파일 사이에 코드가 서로 다른 경우가 있었다(행정구역 개편으로 한쪽만
+        갱신된 사례, 예: 화성시 동탄구/효행구/병점구/만세구 신설). 자외선지수
+        API 신청 시 받은 최신(2026-07-01자) 지역코드표를 그대로 사용해서
+        해당 API와 항상 정합성이 맞도록 한다.
+        """
+        if (self._uv_cached_lat == lat
+                and self._uv_cached_lon == lon
+                and self._uv_cached_area_no):
+            return self._uv_cached_area_no, self._uv_cached_area_name
+
+        if not self._uv_area_data:
+            try:
+                await self.hass.async_add_executor_job(self._load_uv_area_map)
+            except Exception as e:
+                _LOGGER.warning("uv_area_map.json 로드 실패: %s", e)
+            if not self._uv_area_data:
+                _LOGGER.warning("uv_area_map.json 로드 실패 → 자외선지수 조회 불가")
+                return "", ""
+
+        best, best_d = None, float("inf")
+        for r in self._uv_area_data:
+            d = (r["la"] - lat) ** 2 + (r["lo"] - lon) ** 2
+            if d < best_d:
+                best_d, best = d, r
+
+        if best:
+            self._uv_cached_lat = lat
+            self._uv_cached_lon = lon
+            self._uv_cached_area_no = best["c"]
+            self._uv_cached_area_name = best["n"]
+            _LOGGER.debug("자외선지수 지역 매칭: (%.4f, %.4f) → %s (%s)", lat, lon, best["n"], best["c"])
+            return best["c"], best["n"]
+
+        _LOGGER.warning("자외선지수 지역 매칭 실패: (%.4f, %.4f)", lat, lon)
         return "", ""
 
     async def async_setup(self) -> None:
@@ -574,6 +634,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                 )
 
                 pollen_area_no, pollen_area_name = await self.find_pollen_area(curr_lat, curr_lon)
+                uv_area_no, uv_area_name = await self.find_uv_area(curr_lat, curr_lon)
                 new_data = await self.api.fetch_data(
                     lat=curr_lat, lon=curr_lon,
                     nx=nx, ny=ny,
@@ -581,6 +642,8 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     warn_area_code=warn_area_code,
                     pollen_area_no=pollen_area_no,
                     pollen_area_name=pollen_area_name,
+                    uv_area_no=uv_area_no,
+                    uv_area_name=uv_area_name,
                 )
                 if not new_data:
                     return self._cached_data
@@ -599,7 +662,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
                     self._wf_am_today = self._wf_pm_today = None
                     shared = self._shared_counts
                     shared["api_중지"] = which
-                    empty = {"weather": {}, "air": self._cached_data.get("air", {}) if self._cached_data else {}, "pollen": self._cached_data.get("pollen") if self._cached_data else None}
+                    empty = {"weather": {}, "air": self._cached_data.get("air", {}) if self._cached_data else {}, "pollen": self._cached_data.get("pollen") if self._cached_data else None, "uv": self._cached_data.get("uv") if self._cached_data else None}
                     self._cached_data = empty
                     self.async_update_listeners()
                     return empty
