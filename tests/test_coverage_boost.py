@@ -178,37 +178,82 @@ async def test_air_quality_no_air_data_items():
     assert result == {"station": "중구"}
 
 @pytest.mark.asyncio
-async def test_air_quality_missing_station_code_not_cached_and_retried_next_poll():
+async def test_air_quality_missing_station_code_backfilled_via_msrstn_list():
     """
-    [Given] 측정소 조회 응답에 stationName은 있지만 stationCode가 비어있음
+    [Given] 근접측정소 조회(getNearbyMsrstnList) 응답엔 stationName만 있고
+            stationCode가 없음(실측 확인된 실제 API 동작)
     [When]  _get_air_quality 호출
-    [Then]  성공으로 캐싱하지 않고(재부팅 없이도 다음 폴링에서 다시 시도되도록)
-            빈 딕셔너리를 반환한다. 이후 정상 응답이 오면 그때 정상적으로 캐싱된다.
+    [Then]  이름은 정상적으로 캐싱되어 원래 대기질 API가 계속 정상 동작하고,
+            코드는 별도 보완 조회(getMsrstnList, 이름 검색)로 채워진다.
     """
     api = KMAWeatherAPI(MagicMock(), "key")
 
-    async def mock_fetch_missing_code(url, params=None, timeout=10, retry_log_level=None):
-        if "MsrstnInfoInqireSvc" in url:
-            return {"response": {"body": {"items": [{"stationName": "화랑로"}]}}}  # stationCode 없음
-        return {"response": {"body": {"items": []}}}
-
-    api._fetch = mock_fetch_missing_code
-    result = await api._get_air_quality(37.6, 127.09)
-
-    assert result == {}
-    assert api._cached_station is None, "측정소코드 없이 성공으로 캐싱되면 안 됨"
-    assert api._cached_station_code is None
-
-    async def mock_fetch_with_code(url, params=None, timeout=10, retry_log_level=None):
-        if "MsrstnInfoInqireSvc" in url:
-            return {"response": {"body": {"items": [{"stationName": "화랑로", "stationCode": "111312"}]}}}
+    async def mock_fetch(url, params=None, timeout=10, retry_log_level=None):
+        if "getNearbyMsrstnList" in url:
+            return {"response": {"header": {"resultCode": "00"}, "body": {"items": [
+                {"tm": 1.9, "addr": "서울 노원구 화랑로 429", "stationName": "화랑로"},
+            ]}}}  # 실제 API처럼 stationCode 필드 자체가 없음
+        if "getMsrstnList" in url:
+            return {"response": {"body": {"items": [
+                {"stationName": "화랑로", "stationCode": "111312"},
+            ]}}}
         return {"response": {"header": {"resultCode": "00"}, "body": {"items": [
             {"pm10Value": "20", "pm10Grade": "1", "pm25Value": "10", "pm25Grade": "1"},
         ]}}}
 
-    api._fetch = mock_fetch_with_code
-    result2 = await api._get_air_quality(37.6, 127.09)
+    api._fetch = mock_fetch
+    result = await api._get_air_quality(37.6, 127.09)
+
+    # 이름 기반 원래 API는 코드 유무와 무관하게 정상 동작해야 함
+    assert result["pm10Value"] == "20"
+    assert result["station"] == "화랑로"
     assert api._cached_station == "화랑로"
+    assert api._cached_station_code == "111312"
+
+
+@pytest.mark.asyncio
+async def test_air_quality_code_backfill_fails_still_returns_air_data():
+    """
+    [Given] 이름 검색 보완 조회(getMsrstnList)마저 코드를 못 찾음
+    [When]  _get_air_quality 호출
+    [Then]  코드 없이 진행하고, 그래도 이름 기반 원래 API 결과는 정상 반환한다
+            (재부팅 없이도, 이름은 캐싱된 채로 다음 폴링 때 코드만 다시 시도됨).
+    """
+    api = KMAWeatherAPI(MagicMock(), "key")
+
+    async def mock_fetch(url, params=None, timeout=10, retry_log_level=None):
+        if "getNearbyMsrstnList" in url:
+            return {"response": {"header": {"resultCode": "00"}, "body": {"items": [
+                {"stationName": "화랑로"},
+            ]}}}
+        if "getMsrstnList" in url:
+            return {"response": {"body": {"items": []}}}  # 보완도 실패
+        return {"response": {"header": {"resultCode": "00"}, "body": {"items": [
+            {"pm10Value": "20", "pm10Grade": "1", "pm25Value": "10", "pm25Grade": "1"},
+        ]}}}
+
+    api._fetch = mock_fetch
+    result = await api._get_air_quality(37.6, 127.09)
+
+    assert result["pm10Value"] == "20"
+    assert api._cached_station == "화랑로"
+    assert api._cached_station_code is None
+
+    # 다음 폴링: 이름 재검색(getNearbyMsrstnList) 없이 코드만 재시도
+    call_log = []
+    async def mock_fetch2(url, params=None, timeout=10, retry_log_level=None):
+        call_log.append(url)
+        if "getMsrstnList" in url:
+            return {"response": {"body": {"items": [
+                {"stationName": "화랑로", "stationCode": "111312"},
+            ]}}}
+        return {"response": {"header": {"resultCode": "00"}, "body": {"items": [
+            {"pm10Value": "25", "pm10Grade": "1", "pm25Value": "12", "pm25Grade": "1"},
+        ]}}}
+
+    api._fetch = mock_fetch2
+    await api._get_air_quality(37.6, 127.09)
+    assert not any("getNearbyMsrstnList" in u for u in call_log), "이름은 이미 캐싱돼 재검색하면 안 됨"
     assert api._cached_station_code == "111312"
 
 @pytest.mark.asyncio
@@ -713,9 +758,9 @@ class TestStationCachePersistence:
         station_search_called = {"n": 0}
 
         async def mock_fetch(url, params, **kwargs):
-            if "MsrstnInfoInqireSvc" in url:
+            if "getNearbyMsrstnList" in url:
                 station_search_called["n"] += 1
-                return {"response": {"body": {"items": [{"stationName": "신도시동"}]}}}
+                return {"response": {"body": {"items": [{"stationName": "신도시동", "stationCode": "999999"}]}}}
             return {"response": {"body": {"items": [
                 {"pm10Value": "30", "pm25Value": "15"}
             ]}}}
