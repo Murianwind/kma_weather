@@ -14,6 +14,14 @@ from homeassistant.core import HomeAssistant
 from .const import haversine as _haversine_fn, safe_float as _safe_float
 
 _LOGGER = logging.getLogger(__name__)
+# 에어코리아 대기질 보완(측정소코드 확보 + realSearch/getRealChart) 전용
+# 하위 로거. api_kma 전체를 debug로 켜면 날씨/특보/꽃가루 등 다른 로그까지
+# 전부 쏟아지므로, 이 흐름만 따로 진단하고 싶을 때는 아래 로거 이름 하나만
+# debug로 켜면 된다:
+#   logger:
+#     logs:
+#       custom_components.kma_weather.api_kma.airkorea_fallback: debug
+_AIRKOREA_LOGGER = _LOGGER.getChild("airkorea_fallback")
 
 from .const import (
     WARN_TYPE_MAP        as _WARN_TYPE_MAP,
@@ -866,19 +874,19 @@ class KMAWeatherAPI:
                     timeout=10,
                 ) as resp:
                     if resp.status != 200:
-                        _LOGGER.debug("측정소코드 확보: realSearch HTTP %s", resp.status)
+                        _AIRKOREA_LOGGER.debug("측정소코드 확보: realSearch HTTP %s", resp.status)
                         return None
                     html = await resp.text()
         except Exception as e:
-            _LOGGER.debug("측정소코드 확보 중 예외 발생 (%s): %s", type(e).__name__, e)
+            _AIRKOREA_LOGGER.debug("측정소코드 확보 중 예외 발생 (%s): %s", type(e).__name__, e)
             return None
 
         m = re.search(r'value="(\d+)_([^_]+)_', html)
         if not m:
-            _LOGGER.debug("측정소코드 확보: realSearch 응답에서 측정소 목록을 못 찾음")
+            _AIRKOREA_LOGGER.debug("측정소코드 확보: realSearch 응답에서 측정소 목록을 못 찾음")
             return None
         code, name = m.group(1), m.group(2)
-        _LOGGER.debug("측정소코드 확보 성공: '%s' → %s", name, code)
+        _AIRKOREA_LOGGER.debug("측정소코드 확보 성공: '%s' → %s", name, code)
         return code
 
     async def _fetch_page_air_quality(self, station_code: str | None) -> dict:
@@ -899,7 +907,7 @@ class KMAWeatherAPI:
         station_code가 없으면(아직 확보 전) 빈 딕셔너리를 반환한다.
         """
         if not station_code:
-            _LOGGER.debug("대기질 보완: 측정소코드가 아직 없어 건너뜀")
+            _AIRKOREA_LOGGER.debug("대기질 보완: 측정소코드가 아직 없어 건너뜀")
             return {}
 
         async def _attempt() -> dict | None:
@@ -927,12 +935,12 @@ class KMAWeatherAPI:
                         timeout=10,
                     ) as resp:
                         if resp.status != 200:
-                            _LOGGER.debug("대기질 보완: realSearch HTTP %s (key 발급 실패)", resp.status)
+                            _AIRKOREA_LOGGER.debug("대기질 보완: realSearch HTTP %s (key 발급 실패)", resp.status)
                             return None
                         html = await resp.text()
                     m = re.search(r"var key = '([^']+)'", html)
                     if not m:
-                        _LOGGER.debug("대기질 보완: realSearch 응답에서 key를 못 찾음")
+                        _AIRKOREA_LOGGER.debug("대기질 보완: realSearch 응답에서 key를 못 찾음")
                         return None
                     key = m.group(1)
 
@@ -950,22 +958,22 @@ class KMAWeatherAPI:
                         timeout=10,
                     ) as resp:
                         if resp.status != 200:
-                            _LOGGER.debug("대기질 보완: getRealChart HTTP %s", resp.status)
+                            _AIRKOREA_LOGGER.debug("대기질 보완: getRealChart HTTP %s", resp.status)
                             return None
                         return await resp.json(content_type=None)
             except Exception as e:
-                _LOGGER.debug("대기질 보완: 요청 중 예외 발생 (%s): %s", type(e).__name__, e)
+                _AIRKOREA_LOGGER.debug("대기질 보완: 요청 중 예외 발생 (%s): %s", type(e).__name__, e)
                 return None
 
         # HA 재시작 직후처럼 네트워크/DNS가 아직 안정화되기 전이면 이 2단계
         # 요청이 일시적으로 실패할 수 있어, 한 번 더 시도해본다(약 5초 간격).
         data = await _attempt()
         if data is None:
-            _LOGGER.debug("대기질 보완: 1차 시도 실패 → 5초 후 재시도")
+            _AIRKOREA_LOGGER.debug("대기질 보완: 1차 시도 실패 → 5초 후 재시도")
             await asyncio.sleep(5.0)
             data = await _attempt()
             if data is None:
-                _LOGGER.debug("대기질 보완: 재시도도 실패 → 이번 주기 포기")
+                _AIRKOREA_LOGGER.debug("대기질 보완: 재시도도 실패 → 이번 주기 포기")
                 return {}
 
         charts = data.get("charts") or []
@@ -986,7 +994,7 @@ class KMAWeatherAPI:
             if all(k in result for k in ("pm10Value", "pm25Value", "o3Value")):
                 break
         if not result:
-            _LOGGER.debug(
+            _AIRKOREA_LOGGER.debug(
                 "대기질 보완: charts %d건 다 훑었지만 유효한 값이 없음 (측정소코드 '%s')",
                 len(charts), station_code,
             )
