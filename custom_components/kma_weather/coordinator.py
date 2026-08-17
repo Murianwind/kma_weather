@@ -442,27 +442,9 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
         try:
             stored = await self._station_store.async_load()
             if stored and stored.get("station"):
-                station_code = stored.get("station_code")
-                if station_code:
-                    self.api._cached_station = stored.get("station")
-                    self.api._cached_station_code = station_code
-                    self.api._cached_station_lat = stored.get("lat")
-                    self.api._cached_station_lon = stored.get("lon")
-                else:
-                    # station_code가 없는 예전 캐시(이 필드가 생기기 전에 저장된 것).
-                    # 이름/위경도까지 그대로 복원하면 "이미 측정소 있음"으로 판단돼
-                    # getNearbyMsrstnList 재조회 자체가 영영 안 일어나 대기질 보완이
-                    # 계속 막힌다. 아무것도 복원하지 않고 다음 갱신 때 완전히
-                    # 새로 조회해서 이번엔 measurementCode까지 같이 저장되게 한다.
-                    self.api._cached_station = None
-                    self.api._cached_station_code = None
-                    self.api._cached_station_lat = None
-                    self.api._cached_station_lon = None
-                    _LOGGER.info(
-                        "에어코리아 측정소 캐시에 측정소코드가 없어(예전 버전 캐시) "
-                        "'%s' 측정소를 재조회해 보완합니다.",
-                        stored.get("station"),
-                    )
+                self.api._cached_station = stored.get("station")
+                self.api._cached_station_lat = stored.get("lat")
+                self.api._cached_station_lon = stored.get("lon")
                 _LOGGER.debug(
                     "에어코리아 측정소 캐시 복구: %s (%.4f, %.4f)",
                     self.api._cached_station,
@@ -478,7 +460,6 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await self._station_store.async_save({
                     "station": self.api._cached_station,
-                    "station_code": self.api._cached_station_code,
                     "lat": self.api._cached_station_lat,
                     "lon": self.api._cached_station_lon,
                 })
