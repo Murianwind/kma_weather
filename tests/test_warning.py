@@ -459,7 +459,6 @@ class TestAirQualityStationCache:
         """2km 이내 이동 시 측정소 캐시를 재사용함 (측정소 API 재호출 없음)"""
         api = self._make_api()
         api._cached_station = "화성"
-        api._cached_station_code = "231411"
         api._cached_station_lat = 37.56
         api._cached_station_lon = 126.98
 
@@ -484,7 +483,7 @@ class TestAirQualityStationCache:
         api._cached_station_lat = 37.56
         api._cached_station_lon = 126.98
 
-        station_resp = {"response": {"body": {"items": [{"stationName": "강남", "stationCode": "111121"}]}}}
+        station_resp = {"response": {"body": {"items": [{"stationName": "강남"}]}}}
         air_resp = {"response": {"header": {"resultCode": "00"}, "body": {"items": [{"pm10Value": "30", "pm10Grade": "1",
                                                       "pm25Value": "15", "pm25Grade": "1"}]}}}
 
