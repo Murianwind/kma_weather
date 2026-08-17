@@ -6,11 +6,17 @@ test_coverage_boost.py
   - TestLandCodeMapping 클래스 제거     → test_coordinator_validation.py 에 있음
 """
 import pytest
+import aiohttp
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from unittest.mock import AsyncMock, MagicMock
 
 from custom_components.kma_weather.api_kma import KMAWeatherAPI, _safe_float
+
+# autouse fixture(conftest.py)가 KMAWeatherAPI._discover_airkorea_station_code를
+# 매 테스트마다 None 반환 mock으로 기본 차단하므로, 그 실제 동작 자체를
+# 검증하는 테스트는 이 원본 참조로 복원해서 써야 한다.
+_REAL_DISCOVER_AIRKOREA_STATION_CODE = KMAWeatherAPI._discover_airkorea_station_code
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. _safe_float
@@ -203,6 +209,181 @@ async def test_air_quality_station_lookup_ignores_missing_station_code_field():
     assert result["pm10Value"] == "20"
     assert result["station"] == "화랑로"
     assert api._cached_station == "화랑로"
+
+
+class TestAirkoreaStationCodeDiscovery:
+    """
+    측정소코드 확보(_discover_airkorea_station_code)는 공식 API가 안 주는
+    코드를 airkorea.or.kr의 실시간조회 화면(realSearch)에서 별도로 구하는
+    로직이다. 로그인/세션이 필요 없다는 것과, 응답 HTML의 첫 번째(가장
+    가까운) 측정소 라디오버튼 값에서 코드/이름을 정확히 파싱하는지를
+    검증한다. (실측 확인: 2026-08-18, 완전히 새 쿠키로도 정상 동작)
+    """
+
+    def _make_api(self, monkeypatch):
+        api = KMAWeatherAPI(MagicMock(), "key")
+        api.hass = None
+        # conftest.py의 autouse fixture가 기본으로 None mock을 씌워두므로,
+        # 실제 동작을 검증하는 이 클래스에서는 원본으로 되돌린다.
+        monkeypatch.setattr(KMAWeatherAPI, "_discover_airkorea_station_code", _REAL_DISCOVER_AIRKOREA_STATION_CODE)
+        return api
+
+    def _fake_session_cm(self, html_text, status=200):
+        class FakeResp:
+            def __init__(self, text, status):
+                self._text = text
+                self.status = status
+            async def text(self):
+                return self._text
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+
+        class FakeSession:
+            def __init__(self, text, status):
+                self._text = text
+                self._status = status
+            def post(self, url, data=None, headers=None, timeout=None):
+                return FakeResp(self._text, self._status)
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+
+        return FakeSession(html_text, status)
+
+    @pytest.mark.asyncio
+    async def test_parses_code_and_name_from_first_station(self, monkeypatch):
+        """실측 응답과 동일한 형태의 HTML에서 가장 가까운 측정소의
+        코드/이름을 정확히 파싱한다."""
+        api = self._make_api(monkeypatch)
+        html = (
+            'var key = \'11fe5e35-7a3b-4915-89c2-32493f7afdb1\';'
+            '<input type="radio" value="111312_화랑로_서울 노원구 화랑로 429 태능입구역 8번 출구_206564_457267_stationCode0" checked>'
+            '<input type="radio" value="111151_중랑구_서울 중랑구 용마산로 369 건강가정지원센터_208072_453936_stationCode1">'
+        )
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: self._fake_session_cm(html))
+        code = await api._discover_airkorea_station_code(37.608, 127.094, "서울특별시")
+        assert code == "111312"
+
+    @pytest.mark.asyncio
+    async def test_http_error_returns_none(self, monkeypatch):
+        api = self._make_api(monkeypatch)
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: self._fake_session_cm("", status=500))
+        code = await api._discover_airkorea_station_code(37.608, 127.094, "서울특별시")
+        assert code is None
+
+    @pytest.mark.asyncio
+    async def test_no_station_list_in_html_returns_none(self, monkeypatch):
+        api = self._make_api(monkeypatch)
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: self._fake_session_cm("<html>측정소 없음</html>"))
+        code = await api._discover_airkorea_station_code(37.608, 127.094, "서울특별시")
+        assert code is None
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_none(self, monkeypatch):
+        api = self._make_api(monkeypatch)
+        def boom():
+            raise RuntimeError("network down")
+        monkeypatch.setattr(aiohttp, "ClientSession", boom)
+        code = await api._discover_airkorea_station_code(37.608, 127.094, "서울특별시")
+        assert code is None
+
+
+class TestAirkoreaPageFallbackWithCode:
+    """
+    _fetch_page_air_quality(station_code)는 realSearch로 key를 발급받고
+    getRealChart로 PM10/PM2.5/오존을 한 번에 가져온다. 실측 확인된 실제
+    응답 구조(VALUE_10007/10008/10003)를 그대로 재현해서 검증한다.
+    """
+
+    def _make_api(self):
+        api = KMAWeatherAPI(MagicMock(), "key")
+        api.hass = None
+        return api
+
+    def _make_session(self, key_html, chart_json, key_status=200, chart_status=200):
+        import json as _json
+
+        class FakeResp:
+            def __init__(self, text, status):
+                self._text = text
+                self.status = status
+            async def text(self):
+                return self._text
+            async def json(self, content_type=None):
+                return _json.loads(self._text)
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+
+        class FakeSession:
+            def post(self, url, data=None, headers=None, timeout=None):
+                if "realSearch" in url:
+                    return FakeResp(key_html, key_status)
+                return FakeResp(_json.dumps(chart_json), chart_status)
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+
+        return FakeSession()
+
+    @pytest.mark.asyncio
+    async def test_no_station_code_returns_empty_without_network_call(self):
+        api = self._make_api()
+        result = await api._fetch_page_air_quality(None)
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_success_extracts_pm10_pm25_o3_together(self, monkeypatch):
+        """실측 응답(2026-08-18, 화랑로)과 동일한 형태로 검증 —
+        PM10/PM2.5/오존이 한 번의 조회로 전부 채워져야 한다."""
+        api = self._make_api()
+        key_html = "var key = '546606c9-f586-4295-9f63-bc1124120114';"
+        chart_json = {"charts": [
+            {"VALUE_10007": "29", "VALUE_10008": "19", "VALUE_10003": "0.0095"},
+        ]}
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: self._make_session(key_html, chart_json))
+        result = await api._fetch_page_air_quality("111312")
+        assert result == {"pm10Value": "29", "pm25Value": "19", "o3Value": "0.0095"}
+
+    @pytest.mark.asyncio
+    async def test_dash_values_treated_as_missing(self, monkeypatch):
+        api = self._make_api()
+        key_html = "var key = 'abc';"
+        chart_json = {"charts": [
+            {"VALUE_10007": "-", "VALUE_10008": "19", "VALUE_10003": None},
+            {"VALUE_10007": "29", "VALUE_10008": "-", "VALUE_10003": "0.01"},
+        ]}
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: self._make_session(key_html, chart_json))
+        result = await api._fetch_page_air_quality("111312")
+        assert result == {"pm10Value": "29", "pm25Value": "19", "o3Value": "0.01"}
+
+    @pytest.mark.asyncio
+    async def test_key_mint_failure_retries_once_then_gives_up(self, monkeypatch):
+        api = self._make_api()
+        call_count = {"n": 0}
+
+        class FakeResp:
+            def __init__(self, status): self.status = status
+            async def text(self): return ""
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        class FakeSession:
+            def post(self, url, data=None, headers=None, timeout=None):
+                call_count["n"] += 1
+                return FakeResp(500)
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda: FakeSession())
+        result = await api._fetch_page_air_quality("111312")
+        assert result == {}
+        assert call_count["n"] == 2, "1차 실패 후 정확히 한 번 재시도해야 함"
 
 @pytest.mark.asyncio
 async def test_air_quality_fetch_returns_none():
@@ -569,10 +750,11 @@ class TestStationCachePersistence:
         """
         [Given] api._cached_station에 값이 설정되어 있음
         [When]  _save_station_cache 호출
-        [Then]  저장소에 station/lat/lon이 그대로 기록됨
+        [Then]  저장소에 station/station_code/lat/lon이 그대로 기록됨
         """
         coord = self._make_coordinator(hass)
         coord.api._cached_station = "구월동"
+        coord.api._cached_station_code = "823661"
         coord.api._cached_station_lat = 37.447
         coord.api._cached_station_lon = 126.731
 
@@ -581,7 +763,7 @@ class TestStationCachePersistence:
 
         await coord._save_station_cache()
 
-        assert saved == {"station": "구월동", "lat": 37.447, "lon": 126.731}
+        assert saved == {"station": "구월동", "station_code": "823661", "lat": 37.447, "lon": 126.731}
 
     @pytest.mark.asyncio
     async def test_save_station_cache_skips_when_no_station(self, hass):
