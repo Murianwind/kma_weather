@@ -14,13 +14,6 @@ from homeassistant.core import HomeAssistant
 from .const import haversine as _haversine_fn, safe_float as _safe_float
 
 _LOGGER = logging.getLogger(__name__)
-# 에어코리아 실시간 조회 보완(realSearch+getRealChart) 전용 하위 로거.
-# api_kma 전체를 debug로 켜면 날씨/특보/꽃가루 등 다른 로그까지 전부 쏟아지므로,
-# 이 흐름만 따로 진단하고 싶을 때는 아래 로거 이름 하나만 debug로 켜면 된다:
-#   logger:
-#     logs:
-#       custom_components.kma_weather.api_kma.airkorea_fallback: debug
-_AIRKOREA_LOGGER = _LOGGER.getChild("airkorea_fallback")
 
 from .const import (
     WARN_TYPE_MAP        as _WARN_TYPE_MAP,
@@ -216,13 +209,6 @@ class KMAWeatherAPI:
         self.lat = self.lon = self.nx = self.ny = None
 
         self._cached_station: str | None = None
-        self._cached_station_code: str | None = None
-        # 에어코리아 실시간 조회(key 발급 → 조회) 전용, 이 인스턴스만 쓰는 세션.
-        # HA 공유 세션(self.session)을 쓰면 같은 위치의 다른 기기(다른 config
-        # entry)와 쿠키(로그인 세션)를 공유하게 되어, 두 기기가 거의 동시에
-        # 갱신될 때 한쪽이 발급받은 key가 다른 쪽이 방금 갱신한 쿠키와 섞여
-        # 실패하는 레이스 컨디션이 생긴다. 그래서 이 흐름만 별도 세션으로 분리한다.
-        self._airkorea_session: aiohttp.ClientSession | None = None
         self._cached_station_lat: float | None = None
         self._cached_station_lon: float | None = None
         self._warn_page_fetch_failed_notified = False  # 페이지 실패 경고 중복 방지용
@@ -490,39 +476,6 @@ class KMAWeatherAPI:
             pass
         return f"{lat:.4f}, {lon:.4f}"
 
-    async def _backfill_station_code(self, station_name: str) -> str | None:
-        """
-        근접측정소 조회(getNearbyMsrstnList)는 실측 확인 결과 응답에
-        stationCode 필드 자체를 아예 안 준다(문서엔 있다고 나오지만 실제로는
-        없음). 코드가 필요한 건 대기질 페이지 보완(realSearch+getRealChart)
-        때뿐이고, 대기질 API 자체는 측정소 이름만으로도 정상 조회되니, 이름은
-        정상 캐싱하고 코드만 별도 API(측정소 목록 조회, 이름 검색)로 보완
-        시도한다. 실패해도 원래 API 동작에는 지장이 없다 — 값 없으면(None)
-        페이지 보완만 그동안 못 쓰고, 다음 폴링 때 이 함수가 다시 시도된다.
-        """
-        try:
-            ms_json = await self._fetch(
-                "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getMsrstnList",
-                {"serviceKey": self.api_key, "returnType": "json",
-                 "stationName": station_name, "numOfRows": "10", "pageNo": "1"},
-            )
-        except Exception as e:
-            _LOGGER.debug("측정소코드 보완 조회 중 예외 발생: %s", self._mask_key(e))
-            return None
-        ms_items = (ms_json.get("response", {}).get("body", {}).get("items", [])
-                    if ms_json else [])
-        match = next((it for it in ms_items if it.get("stationName") == station_name), None)
-        station_code = (match or {}).get("stationCode")
-        if station_code:
-            _LOGGER.debug("측정소코드 보완 조회 성공: '%s' → %s", station_name, station_code)
-        else:
-            _LOGGER.info(
-                "측정소코드를 아직 확보하지 못했습니다('%s'). 미세먼지/오존 값은 "
-                "정상 조회되고, API 실패 시 자동 보완만 그동안 못 씁니다. "
-                "다음 갱신 때 다시 시도합니다.", station_name,
-            )
-        return station_code
-
     async def _get_air_quality(self, lat: float, lon: float) -> dict:
         try:
             if (self._cached_station
@@ -535,7 +488,6 @@ class KMAWeatherAPI:
                     self._cached_station,
                 )
                 self._cached_station = None
-                self._cached_station_code = None
                 self._cached_station_lat = None
                 self._cached_station_lon = None
 
@@ -553,35 +505,21 @@ class KMAWeatherAPI:
                 items = (st_json.get("response", {}).get("body", {}).get("items", [])
                          if st_json else [])
                 if not items:
-                    _LOGGER.warning("에어코리아 측정소 재조회 실패: 조회 결과가 비어있습니다. 다음 주기에 재시도합니다.")
+                    _LOGGER.warning("에어코리아 측정소 조회 실패: 조회 결과가 비어있습니다. 다음 주기에 재시도합니다.")
                     return {}
                 sn = items[0].get("stationName")
-                station_code = items[0].get("stationCode")
-
-                if not station_code:
-                    station_code = await self._backfill_station_code(sn)
-
                 self._cached_station = sn
-                self._cached_station_code = station_code
                 self._cached_station_lat = lat
                 self._cached_station_lon = lon
-                _LOGGER.info(
-                    "에어코리아 측정소 재조회 완료: '%s' (측정소코드: %s)",
-                    sn, station_code,
-                )
-            elif not self._cached_station_code:
-                # 이름은 이미 캐싱돼 있지만 코드가 아직 없는 경우(위 보완 조회가
-                # 지난 주기에 실패했던 등) — 이름 재조회(비용이 더 큰 근접측정소
-                # 검색)는 건너뛰고, 코드만 매 폴링마다 계속 가볍게 재시도한다.
-                self._cached_station_code = await self._backfill_station_code(sn)
+                _LOGGER.info("에어코리아 측정소 확인: '%s'", sn)
 
             air_json = await self._fetch(
                 "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
                 {"serviceKey": self.api_key, "returnType": "json",
                  "stationName": sn, "dataTerm": "daily", "ver": "1.5"},
-                # 대기질은 실패해도 에어코리아 실시간 조회로 보완할 수 있으므로,
-                # 재시도 단계의 5xx 로그는 굳이 경고로 남기지 않는다(debug).
-                # 진짜 경고는 보완까지 실패했을 때만 아래에서 별도로 남긴다.
+                # 대기질은 실패해도 에어코리아 실시간 조회 페이지로 보완할 수
+                # 있으므로, 재시도 단계의 5xx 로그는 굳이 경고로 남기지 않는다
+                # (debug). 진짜 경고는 보완까지 실패했을 때만 아래에서 남긴다.
                 retry_log_level=logging.DEBUG,
             )
             code = self._extract_result_code(air_json)
@@ -594,26 +532,25 @@ class KMAWeatherAPI:
                 page_result = {}
                 try:
                     city_name = (await self._get_address(lat, lon)).split()[0] if lat and lon else ""
-                    page_result = await self._fetch_page_air_quality(
-                        self._cached_station_code, city_name
-                    )
+                    page_result = await self._fetch_page_air_quality(sn, city_name)
                 except Exception as e:
                     _LOGGER.debug("대기질 페이지 보완 확인 실패 (무시): %s", self._mask_key(e))
                 if page_result:
                     _LOGGER.info(
-                        "대기질 보완: API 응답이 비어있어 에어코리아 실시간 조회에서 "
+                        "대기질 보완: API 응답이 비어있어 에어코리아 실시간 조회 페이지에서 "
                         "측정소 '%s'의 실측값을 가져와 채웁니다.", sn,
                     )
                     p10v = page_result.get("pm10Value")
                     p25v = page_result.get("pm25Value")
-                    o3v = page_result.get("o3Value")
                     return {
                         "pm10Value": p10v,
                         "pm10Grade": self._get_air_grade(p10v, "pm10") if p10v else None,
                         "pm25Value": p25v,
                         "pm25Grade": self._get_air_grade(p25v, "pm25") if p25v else None,
-                        "o3Value": o3v,
-                        "o3Grade": self._get_air_grade(o3v, "o3") if o3v else None,
+                        # 오존은 이 페이지(pmRelaySub)가 지원하지 않아(실측 확인)
+                        # 보완이 안 된다 — API가 정상화될 때까지 정보없음.
+                        "o3Value": None,
+                        "o3Grade": "정보없음",
                         "station": sn,
                     }
                 # API도, 보완용 실시간 조회도 둘 다 실패했을 때만 실제로 경고한다.
@@ -877,144 +814,81 @@ class KMAWeatherAPI:
                 return []
         return _WARN_AREA_ANCESTORS.get(warn_area_code, [])
 
-    def _get_airkorea_session(self) -> aiohttp.ClientSession:
-        """에어코리아 실시간 조회(key 발급 → 조회) 전용 세션을 반환한다.
-        없으면 새로 만든다. HA 공유 세션과 분리하는 이유는 클래스 위
-        _airkorea_session 필드 주석 참고."""
-        if self._airkorea_session is None or self._airkorea_session.closed:
-            self._airkorea_session = aiohttp.ClientSession()
-        return self._airkorea_session
-
-    async def async_close(self) -> None:
-        """통합구성요소 언로드 시 호출 — 전용 세션이 열려 있으면 닫는다."""
-        if self._airkorea_session is not None and not self._airkorea_session.closed:
-            await self._airkorea_session.close()
-
-    async def _fetch_page_air_quality(self, station_code: str, city_name: str) -> dict:
+    async def _fetch_page_air_quality(self, station_name: str, city_name: str) -> dict:
         """
         API(getMsrstnAcctoRltmMesureDnsty)가 실패했을 때 보완용으로,
-        airkorea.or.kr의 실시간 차트 조회(getRealChart)에서 오늘자
-        PM10/PM2.5/오존 최신 실측값을 가져온다.
+        airkorea.or.kr의 측정소별 시간대 표(pmRelaySub)에서 오늘자
+        PM10/PM2.5 최신 실측값을 가져온다. 그 시간까지 채워진 마지막 칸
+        (비어있지 않은 마지막 시간)을 "지금 시점 값"으로 사용한다 — 이후
+        시간 칸은 아직 관측 전이라 비어있기 때문.
 
-        이 엔드포인트는 측정소코드(station_code) 기준으로 정확히 조회되고,
-        미세먼지·초미세먼지·오존을 한 번에 JSON으로 준다(표 긁기보다 정확·단순).
-        다만 호출 전에 "key"라는 값이 있어야 하는데, 이건 로그인이나 특정
-        세션에 묶인 게 아니라 실시간 조회 화면(realSearch)에 아무 값이나
-        채워서 한 번 들어가면 그 응답 HTML 안에 `var key = '...'`로 새로
-        발급되는 값이다 — 측정소와도 무관하게 항상 새로 발급되므로, 여기선
-        더미 값으로 그 페이지를 한 번 "방문"해서 key만 뽑아 쓴다.
+        측정소 매칭은 "코드"가 아니라 "이름"으로 한다 — 에어코리아의
+        측정소 조회 API 2종(근접측정소 조회, 이름 검색 조회) 둘 다 실측
+        확인 결과 stationCode 필드를 아예 안 준다(문서엔 있다고 나오지만
+        실제 응답엔 없음). 반면 이름은 항상 확실히 오므로, 이 페이지에서도
+        이름으로 매칭한다.
 
-        HA 재시작 직후처럼 네트워크/DNS가 아직 안정화되기 전이면 이 2단계
-        요청이 일시적으로 실패할 수 있어, 한 번 더 시도해본다(약 5초 간격).
-        그래도 안 되면 포기하고 다음 폴링 주기에 다시 시도한다.
+        오존은 이 페이지가 지원하지 않는다(itemCode=10003으로 실측해보면
+        모든 셀이 빈 값 "-"만 나옴). PM10/PM2.5만 보완 가능하고, 오존은
+        API가 정상화될 때까지 정보없음으로 남는다.
 
-        station_code: getNearbyMsrstnList가 돌려준 측정소코드(예: "111312").
+        station_name: getNearbyMsrstnList가 돌려준 측정소명(예: "화랑로").
         city_name: 시/도명(예: "서울특별시"). 실패하거나 매핑 안 되는
         시/도면 빈 딕셔너리를 반환한다(API 결과 그대로 유지).
-
-        진단 로그는 전부 별도 로거(_AIRKOREA_LOGGER, 이름:
-        custom_components.kma_weather.api_kma.airkorea_fallback)로 남긴다.
-        api_kma 전체를 debug로 켜지 않고 이 흐름만 targeting해서 볼 수 있다.
         """
-        if not station_code:
-            _AIRKOREA_LOGGER.debug("캐시된 측정소코드가 없어 건너뜀")
-            return {}
         code = _airkorea_district_code(city_name)
         if not code:
-            _AIRKOREA_LOGGER.debug("시/도(%s)를 district 코드로 매핑 못함", city_name)
+            _LOGGER.debug("대기질 보완: 시/도(%s)를 district 코드로 매핑 못함", city_name)
             return {}
 
-        async def _attempt() -> dict | None:
-            now = datetime.now(self.tz)
-            today = now.strftime("%Y-%m-%d")
-            today_compact = now.strftime("%Y%m%d")
+        now = datetime.now(self.tz)
+        date_str = now.strftime("%Y-%m-%d")
+        month_str = now.strftime("%Y%m")
+
+        async def _fetch_item(item_code: str) -> str | None:
             try:
-                session = self._get_airkorea_session()
-                # 1단계: key 발급 — 측정소 정보는 더미로 채워도 무방(실측 확인됨)
-                async with session.post(
-                    "https://www.airkorea.or.kr/web/realSearch",
-                    data={
-                        "pMENU_NO": "97", "schFlag": "1", "myDistrict": code,
-                        "dateDiv": "1", "from_date": today, "from_date_hour": "00",
-                        "to_date": today, "to_date_hour": "23",
-                        "key": "0", "tm_x": "0", "tm_y": "0", "tm": "0.0",
-                        "stationId": "stationCode0", "station": "0",
-                        "station_mang": "3", "station_code": " ",
-                        "loading": "yes", "leftShow": "realTime",
+                async with self.session.get(
+                    "https://www.airkorea.or.kr/web/pmRelaySub",
+                    params={
+                        "strDateDiv": "1", "searchDate": date_str,
+                        "district": code, "itemCode": item_code,
+                        "searchDate_f": month_str,
                     },
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
                     timeout=10,
                 ) as resp:
                     if resp.status != 200:
-                        _AIRKOREA_LOGGER.debug("realSearch HTTP %s (key 발급 실패)", resp.status)
+                        _LOGGER.debug("대기질 보완: pmRelaySub HTTP %s", resp.status)
                         return None
                     html = await resp.text()
-                m = re.search(r"var key = '([^']+)'", html)
-                if not m:
-                    _AIRKOREA_LOGGER.debug(
-                        "realSearch 응답(길이=%d)에서 key를 못 찾음 "
-                        "(사이트 마크업이 바뀌었을 수 있음)", len(html),
-                    )
-                    return None
-                key = m.group(1)
-
-                # 2단계: 그 key로 실제 측정소의 실시간 값 조회 (같은 전용 세션 →
-                # 같은 쿠키로 이어서 요청해야 key와 세션이 일치한다)
-                async with session.post(
-                    "https://www.airkorea.or.kr/web/pollution/getRealChart",
-                    data={
-                        "dateDiv": "1", "stationCode": station_code,
-                        "from_date": f"{today_compact}00", "to_date": f"{today_compact}23",
-                        "key": key, "token": "",
-                    },
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Referer": "https://www.airkorea.or.kr/web/realSearch",
-                    },
-                    timeout=10,
-                ) as resp:
-                    if resp.status != 200:
-                        _AIRKOREA_LOGGER.debug("getRealChart HTTP %s", resp.status)
-                        return None
-                    return await resp.json(content_type=None)
             except Exception as e:
-                _AIRKOREA_LOGGER.debug("요청 중 예외 발생 (%s): %s", type(e).__name__, e)
+                _LOGGER.debug("대기질 보완: 요청 중 예외 발생 (%s): %s", type(e).__name__, e)
                 return None
 
-        data = await _attempt()
-        if data is None:
-            _AIRKOREA_LOGGER.debug("1차 시도 실패 → 5초 후 재시도")
-            await asyncio.sleep(5.0)
-            data = await _attempt()
-            if data is None:
-                _AIRKOREA_LOGGER.debug("재시도도 실패 → 이번 주기 포기")
-                return {}
+            _num_re = re.compile(r"^\d+(\.\d+)?$")
+            for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL):
+                cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
+                if len(cells) < 3:
+                    continue
+                strip_tags = lambda s: re.sub(r"<[^>]+>", "", s).strip()
+                station_cell = strip_tags(cells[1])  # 예: "[서울 노원구]화랑로"
+                if not station_cell.endswith(f"]{station_name}"):
+                    continue
+                latest: str | None = None
+                for cell in cells[2:]:
+                    v = strip_tags(cell)
+                    if _num_re.match(v):
+                        latest = v
+                return latest
+            return None
 
-        charts = data.get("charts") or []
-        if not charts:
-            _AIRKOREA_LOGGER.debug("getRealChart 응답에 charts가 비어있음")
+        pm10 = await _fetch_item("10007")
+        pm25 = await _fetch_item("11008")
+
         result: dict = {}
-
-        def _valid(v) -> bool:
-            return v is not None and str(v).strip() not in ("", "-")
-
-        # charts는 최신 시각이 먼저 오지만, 혹시 몰라 안전하게 값이 있는
-        # 첫 항목(가장 최근 관측치)을 그대로 채택한다.
-        for c in charts:
-            if "pm10Value" not in result and _valid(c.get("VALUE_10007")):
-                result["pm10Value"] = str(c["VALUE_10007"])
-            if "pm25Value" not in result and _valid(c.get("VALUE_10008")):
-                result["pm25Value"] = str(c["VALUE_10008"])
-            if "o3Value" not in result and _valid(c.get("VALUE_10003")):
-                result["o3Value"] = str(c["VALUE_10003"])
-            if all(k in result for k in ("pm10Value", "pm25Value", "o3Value")):
-                break
-        if not result:
-            _AIRKOREA_LOGGER.debug(
-                "charts %d건 다 훑었지만 유효한 값이 없음 "
-                "(측정소코드 '%s'가 이 charts에 없거나 전부 결측치)",
-                len(charts), station_code,
-            )
+        if pm10 is not None:
+            result["pm10Value"] = str(pm10)
+        if pm25 is not None:
+            result["pm25Value"] = str(pm25)
         return result
 
     def _notify_warn_page_failure(self, reason: str) -> None:
