@@ -443,6 +443,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             stored = await self._station_store.async_load()
             if stored and stored.get("station"):
                 self.api._cached_station = stored.get("station")
+                self.api._cached_station_code = stored.get("station_code")
                 self.api._cached_station_lat = stored.get("lat")
                 self.api._cached_station_lon = stored.get("lon")
                 _LOGGER.debug(
@@ -460,6 +461,7 @@ class KMAWeatherUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await self._station_store.async_save({
                     "station": self.api._cached_station,
+                    "station_code": self.api._cached_station_code,
                     "lat": self.api._cached_station_lat,
                     "lon": self.api._cached_station_lon,
                 })
