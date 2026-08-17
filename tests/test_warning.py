@@ -459,6 +459,7 @@ class TestAirQualityStationCache:
         """2km 이내 이동 시 측정소 캐시를 재사용함 (측정소 API 재호출 없음)"""
         api = self._make_api()
         api._cached_station = "화성"
+        api._cached_station_code = "231411"
         api._cached_station_lat = 37.56
         api._cached_station_lon = 126.98
 
