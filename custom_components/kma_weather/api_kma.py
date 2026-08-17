@@ -490,6 +490,39 @@ class KMAWeatherAPI:
             pass
         return f"{lat:.4f}, {lon:.4f}"
 
+    async def _backfill_station_code(self, station_name: str) -> str | None:
+        """
+        근접측정소 조회(getNearbyMsrstnList)는 실측 확인 결과 응답에
+        stationCode 필드 자체를 아예 안 준다(문서엔 있다고 나오지만 실제로는
+        없음). 코드가 필요한 건 대기질 페이지 보완(realSearch+getRealChart)
+        때뿐이고, 대기질 API 자체는 측정소 이름만으로도 정상 조회되니, 이름은
+        정상 캐싱하고 코드만 별도 API(측정소 목록 조회, 이름 검색)로 보완
+        시도한다. 실패해도 원래 API 동작에는 지장이 없다 — 값 없으면(None)
+        페이지 보완만 그동안 못 쓰고, 다음 폴링 때 이 함수가 다시 시도된다.
+        """
+        try:
+            ms_json = await self._fetch(
+                "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getMsrstnList",
+                {"serviceKey": self.api_key, "returnType": "json",
+                 "stationName": station_name, "numOfRows": "10", "pageNo": "1"},
+            )
+        except Exception as e:
+            _LOGGER.debug("측정소코드 보완 조회 중 예외 발생: %s", self._mask_key(e))
+            return None
+        ms_items = (ms_json.get("response", {}).get("body", {}).get("items", [])
+                    if ms_json else [])
+        match = next((it for it in ms_items if it.get("stationName") == station_name), None)
+        station_code = (match or {}).get("stationCode")
+        if station_code:
+            _LOGGER.debug("측정소코드 보완 조회 성공: '%s' → %s", station_name, station_code)
+        else:
+            _LOGGER.info(
+                "측정소코드를 아직 확보하지 못했습니다('%s'). 미세먼지/오존 값은 "
+                "정상 조회되고, API 실패 시 자동 보완만 그동안 못 씁니다. "
+                "다음 갱신 때 다시 시도합니다.", station_name,
+            )
+        return station_code
+
     async def _get_air_quality(self, lat: float, lon: float) -> dict:
         try:
             if (self._cached_station
@@ -524,18 +557,10 @@ class KMAWeatherAPI:
                     return {}
                 sn = items[0].get("stationName")
                 station_code = items[0].get("stationCode")
+
                 if not station_code:
-                    # 측정소명은 왔는데 측정소코드가 비어있는 경우 — 이걸 "성공"으로
-                    # 캐싱해버리면(self._cached_station이 채워지는 순간) 위 "if not sn"
-                    # 게이트가 다음부터 계속 False가 되어, 재부팅 전까지는 다시 시도할
-                    # 기회 자체가 사라진다. 그래서 캐시에 반영하지 않고 이번 주기는
-                    # 실패로 처리해 다음 정기 갱신 때 자동으로 다시 시도되게 한다.
-                    _LOGGER.warning(
-                        "에어코리아 측정소 재조회: '%s'는 찾았지만 측정소코드가 "
-                        "비어있어 이번 주기는 보류합니다. 원본 응답 항목: %s",
-                        sn, items[0],
-                    )
-                    return {}
+                    station_code = await self._backfill_station_code(sn)
+
                 self._cached_station = sn
                 self._cached_station_code = station_code
                 self._cached_station_lat = lat
@@ -544,6 +569,11 @@ class KMAWeatherAPI:
                     "에어코리아 측정소 재조회 완료: '%s' (측정소코드: %s)",
                     sn, station_code,
                 )
+            elif not self._cached_station_code:
+                # 이름은 이미 캐싱돼 있지만 코드가 아직 없는 경우(위 보완 조회가
+                # 지난 주기에 실패했던 등) — 이름 재조회(비용이 더 큰 근접측정소
+                # 검색)는 건너뛰고, 코드만 매 폴링마다 계속 가볍게 재시도한다.
+                self._cached_station_code = await self._backfill_station_code(sn)
 
             air_json = await self._fetch(
                 "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
