@@ -17,12 +17,23 @@ def allow_pycares_thread(monkeypatch):
 def fast_sleep():
     """부하 분산을 위한 asyncio.sleep 대기 시간을 테스트 환경에서 무력화합니다."""
     with patch("custom_components.kma_weather.coordinator.asyncio.sleep", return_value=None), \
+         patch("custom_components.kma_weather.api_kma.asyncio.sleep", return_value=None), \
          patch("custom_components.kma_weather.asyncio.sleep", return_value=None):
         yield
 
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations):
     yield
+
+@pytest.fixture(autouse=True)
+def no_real_airkorea_station_discovery(monkeypatch):
+    """_discover_airkorea_station_code는 실제 airkorea.or.kr에 라이브 네트워크
+    요청을 보낸다 — 유닛 테스트가 실제 사이트 가용성에 의존하지 않도록
+    기본값을 None으로 막는다. 이 흐름 자체를 검증하는 테스트는 각자
+    명시적으로 다시 mock(또는 monkeypatch)해서 이 기본값을 덮어쓴다."""
+    from unittest.mock import AsyncMock
+    from custom_components.kma_weather.api_kma import KMAWeatherAPI
+    monkeypatch.setattr(KMAWeatherAPI, "_discover_airkorea_station_code", AsyncMock(return_value=None))
 
 # 2. 10일치 예보 데이터 생성 헬퍼
 def generate_forecast_data(start_date):
